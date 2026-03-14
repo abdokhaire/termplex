@@ -2014,6 +2014,13 @@ const Action = struct {
             .app => {},
             .surface => |v| {
                 v.rt_surface.gobj().sendDesktopNotification(n.title, n.body);
+
+                // Termplex: mark surface with attention class for visual ring
+                v.rt_surface.gobj().as(gtk.Widget).addCssClass("termplex-attention");
+
+                // TODO: find the parent Window and update sidebar unread indicator
+                // for the workspace containing this surface.
+
                 return;
             },
         }
@@ -2576,7 +2583,12 @@ const Action = struct {
     pub fn ringBell(target: apprt.Target) void {
         switch (target) {
             .app => {},
-            .surface => |v| v.rt_surface.surface.setBellRinging(true),
+            .surface => |v| {
+                v.rt_surface.surface.setBellRinging(true);
+
+                // Termplex: mark surface with attention class for visual ring
+                v.rt_surface.surface.as(gtk.Widget).addCssClass("termplex-attention");
+            },
         }
     }
 

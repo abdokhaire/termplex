@@ -2731,6 +2731,9 @@ pub const Surface = extern struct {
 
         // Bell stops ringing as soon as we gain focus
         self.setBellRinging(false);
+
+        // Termplex: clear attention class on focus
+        self.as(gtk.Widget).removeCssClass("termplex-attention");
     }
 
     fn ecFocusLeave(_: *gtk.EventControllerFocus, self: *Self) callconv(.c) void {
