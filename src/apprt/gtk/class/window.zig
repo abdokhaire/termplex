@@ -588,6 +588,22 @@ pub const Window = extern struct {
             "tooltip",
             .{ .sync_create = true },
         );
+
+        // Connect split-tree signals so surface handlers are wired up.
+        const split_tree = tab.getSplitTree();
+        _ = SplitTree.signals.changed.connect(
+            split_tree,
+            *Self,
+            tabSplitTreeChanged,
+            self,
+            .{},
+        );
+        tabSplitTreeChanged(
+            split_tree,
+            null,
+            split_tree.getTree(),
+            self,
+        );
     }
 
     fn newTabPage(

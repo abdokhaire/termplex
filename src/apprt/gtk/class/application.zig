@@ -538,6 +538,12 @@ pub const Application = extern struct {
         }
         priv.workspace_tab_views.deinit(alloc);
 
+        // Termplex: free any unconsumed restore tab counts.
+        if (priv.restore_tab_counts) |counts| {
+            alloc.free(counts);
+            priv.restore_tab_counts = null;
+        }
+
         // Termplex: shut down the IPC socket server.
         if (priv.socket_poll_timer) |source| {
             if (glib.Source.remove(source) == 0) {
@@ -1476,7 +1482,7 @@ pub const Application = extern struct {
                         .object => |obj| {
                             if (obj.get("tab_count")) |tcv| {
                                 switch (tcv) {
-                                    .integer => |n| if (n > 0) break :blk @as(u32, @intCast(n)),
+                                    .integer => |n| if (n > 0 and n <= std.math.maxInt(u32)) break :blk @as(u32, @intCast(n)),
                                     else => {},
                                 }
                             }
@@ -1540,7 +1546,10 @@ pub const Application = extern struct {
 
         // Store tab counts for Phase 2 (consumed in initAndShowWindow).
         if (priv.restore_tab_counts) |old| alloc.free(old);
-        priv.restore_tab_counts = tab_counts.toOwnedSlice(alloc) catch null;
+        priv.restore_tab_counts = tab_counts.toOwnedSlice(alloc) catch blk: {
+            tab_counts.deinit(alloc);
+            break :blk null;
+        };
 
         // Restore active workspace index.
         if (root.object.get("active_workspace_index")) |av| {
