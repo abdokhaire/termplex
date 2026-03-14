@@ -325,4 +325,19 @@ pub fn build(b: *std.Build) !void {
     } else {
         try translations_step.addError("cannot update translations when i18n is disabled", .{});
     }
+
+    // Termplex CLI binary — a standalone executable that connects to
+    // termplex-app via Unix socket.  No GTK dependency.
+    {
+        const cli = b.addExecutable(.{
+            .name = "termplex",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/termplex/cli_main.zig"),
+                .target = config.target,
+                .optimize = config.optimize,
+            }),
+        });
+        cli.linkLibC();
+        b.installArtifact(cli);
+    }
 }
