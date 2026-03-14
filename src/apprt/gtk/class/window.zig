@@ -562,13 +562,22 @@ pub const Window = extern struct {
         const priv: *Private = self.private();
         const tab_view = priv.active_tab_view;
 
+        // Default to workspace directory if no explicit override
+        var effective_overrides = overrides;
+        if (effective_overrides.working_directory == null) {
+            const app = Application.default();
+            if (app.workspaceDir(app.activeWorkspaceIndex())) |ws_dir| {
+                effective_overrides.working_directory = ws_dir;
+            }
+        }
+
         // Create our new tab object
         const tab = Tab.new(
             priv.config,
             .{
-                .command = overrides.command,
-                .working_directory = overrides.working_directory,
-                .title = overrides.title,
+                .command = effective_overrides.command,
+                .working_directory = effective_overrides.working_directory,
+                .title = effective_overrides.title,
             },
         );
 
