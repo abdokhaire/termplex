@@ -1,6 +1,7 @@
 const std = @import("std");
 const gobject = @import("gobject");
 const gtk = @import("gtk");
+const gdk = @import("gdk");
 
 const Common = @import("../class.zig").Common;
 
@@ -44,6 +45,13 @@ pub const WorkspaceTab = extern struct {
 
         /// Label showing "⎇ <branch>" (cyan, smaller font).
         branch_label: *gtk.Label = undefined,
+
+        /// Inline rename state.
+        rename_entry: ?*gtk.Entry = null,
+        is_renaming: bool = false,
+        on_rename_complete: ?*const fn (index: u32, new_name: [:0]const u8, userdata: ?*anyopaque) void = null,
+        rename_userdata: ?*anyopaque = null,
+        rename_index: u32 = 0,
 
         pub var offset: c_int = 0;
     };
@@ -151,6 +159,105 @@ pub const WorkspaceTab = extern struct {
         } else {
             border_widget.removeCssClass("termplex-sidebar-unread");
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Inline rename
+
+    /// Begin inline renaming: hide the name label, show a GtkEntry in its place.
+    pub fn startRename(
+        self: *Self,
+        index: u32,
+        on_complete: ?*const fn (u32, [:0]const u8, ?*anyopaque) void,
+        userdata: ?*anyopaque,
+    ) void {
+        const priv = self.private();
+        if (priv.is_renaming) return;
+
+        priv.on_rename_complete = on_complete;
+        priv.rename_userdata = userdata;
+        priv.rename_index = index;
+
+        const entry = gtk.Entry.new();
+        const current_name = priv.name_label.getLabel();
+        entry.as(gtk.Editable).setText(current_name);
+
+        // Hide label, show entry in same position.
+        priv.name_label.as(gtk.Widget).setVisible(0);
+
+        // Insert entry into row1 (parent of name_label).
+        const parent = priv.name_label.as(gtk.Widget).getParent();
+        if (parent) |p| {
+            const box: *gtk.Box = @ptrCast(@alignCast(p));
+            // Prepend so the entry appears where the label was.
+            box.prepend(entry.as(gtk.Widget));
+        }
+
+        _ = entry.as(gtk.Widget).grabFocus();
+        priv.rename_entry = entry;
+        priv.is_renaming = true;
+
+        // Connect Enter (activate).
+        _ = gtk.Entry.signals.activate.connect(entry, *Self, &onRenameActivate, self, .{});
+
+        // Connect Escape via EventControllerKey.
+        const key_controller = gtk.EventControllerKey.new();
+        _ = gtk.EventControllerKey.signals.key_pressed.connect(
+            key_controller,
+            *Self,
+            &onRenameKeyPress,
+            self,
+            .{},
+        );
+        entry.as(gtk.Widget).addController(key_controller.as(gtk.EventController));
+    }
+
+    fn onRenameActivate(_: *gtk.Entry, self: *Self) callconv(.c) void {
+        self.finishRename(true);
+    }
+
+    fn onRenameKeyPress(
+        _: *gtk.EventControllerKey,
+        keyval: c_uint,
+        _: c_uint,
+        _: gdk.ModifierType,
+        self: *Self,
+    ) callconv(.c) c_int {
+        if (keyval == gdk.KEY_Escape) {
+            self.finishRename(false);
+            return 1; // handled
+        }
+        return 0; // not handled
+    }
+
+    pub fn finishRename(self: *Self, confirm: bool) void {
+        const priv = self.private();
+        if (!priv.is_renaming) return;
+
+        if (confirm) {
+            if (priv.rename_entry) |entry| {
+                const text = entry.as(gtk.Editable).getText();
+                const name_slice = std.mem.span(text);
+                if (name_slice.len > 0) {
+                    priv.name_label.setLabel(text);
+                    if (priv.on_rename_complete) |cb| {
+                        cb(priv.rename_index, name_slice, priv.rename_userdata);
+                    }
+                }
+            }
+        }
+
+        // Remove entry, show label.
+        if (priv.rename_entry) |entry| {
+            const parent = entry.as(gtk.Widget).getParent();
+            if (parent) |p| {
+                const box: *gtk.Box = @ptrCast(@alignCast(p));
+                box.remove(entry.as(gtk.Widget));
+            }
+        }
+        priv.name_label.as(gtk.Widget).setVisible(1);
+        priv.rename_entry = null;
+        priv.is_renaming = false;
     }
 
     // ---------------------------------------------------------------
