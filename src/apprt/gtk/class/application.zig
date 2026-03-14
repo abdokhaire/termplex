@@ -224,14 +224,23 @@ pub const Application = extern struct {
         /// is responsible for freeing them in `deinit`.
         workspace_names: std.ArrayListUnmanaged([:0]const u8) = .empty,
 
+        /// Ordered list of working directories, one per workspace. Each
+        /// string is owned (allocated via the Application allocator).
+        workspace_dirs: std.ArrayListUnmanaged([:0]const u8) = .empty,
+
+        /// Ordered list of AdwTabView instances, one per workspace. Each
+        /// TabView has an Application-owned ref so it survives being
+        /// unparented when workspace switching occurs.
+        workspace_tab_views: std.ArrayListUnmanaged(*adw.TabView) = .empty,
+
         /// Index of the currently active workspace (0-based). Only
         /// meaningful when workspace_names is non-empty.
         active_workspace_idx: u32 = 0,
 
         /// Auto-incrementing counter used to generate default workspace
-        /// names ("Workspace 1", "Workspace 2", ...).  Starts at 2
-        /// because the initial workspace is "Workspace 1".
-        next_workspace_number: u32 = 2,
+        /// names ("Workspace 1", "Workspace 2", ...).  Starts at 1;
+        /// incremented by addWorkspaceWithDir after each workspace is created.
+        next_workspace_number: u32 = 1,
 
         // ----- Termplex IPC socket state -----
 
@@ -463,13 +472,9 @@ pub const Application = extern struct {
             .saved_language = saved_language,
         };
 
-        // Termplex: create the default "Workspace 1".
-        {
-            const ws_name: [:0]const u8 = alloc.dupeZ(u8, "Workspace 1") catch
-                @panic("OOM: cannot allocate initial workspace name");
-            priv.workspace_names.append(alloc, ws_name) catch
-                @panic("OOM: cannot append initial workspace");
-        }
+        // Termplex: create the default "Workspace 1" (name, dir, and TabView).
+        _ = self.addWorkspaceWithDir(null) orelse
+            @panic("OOM: cannot create initial workspace");
 
         // Termplex: start the IPC socket server.
         startIpcSocket(self) catch |err| {
@@ -516,6 +521,18 @@ pub const Application = extern struct {
             alloc.free(name);
         }
         priv.workspace_names.deinit(alloc);
+
+        // Termplex: free workspace dirs.
+        for (priv.workspace_dirs.items) |dir_str| {
+            alloc.free(dir_str);
+        }
+        priv.workspace_dirs.deinit(alloc);
+
+        // Termplex: release Application-owned refs on workspace TabViews.
+        for (priv.workspace_tab_views.items) |tv| {
+            tv.as(gobject.Object).unref();
+        }
+        priv.workspace_tab_views.deinit(alloc);
 
         // Termplex: shut down the IPC socket server.
         if (priv.socket_poll_timer) |source| {
@@ -636,20 +653,72 @@ pub const Application = extern struct {
     /// Create a new workspace with an auto-generated name.  Returns the
     /// 0-based index of the newly created workspace, or null on OOM.
     pub fn addWorkspace(self: *Self) ?u32 {
+        return self.addWorkspaceWithDir(null);
+    }
+
+    /// Create a new workspace with an auto-generated name and an optional
+    /// explicit working directory.  When `dir` is null the new workspace
+    /// inherits the active workspace's directory, or $HOME as a fallback.
+    /// Returns the 0-based index of the newly created workspace, or null on OOM.
+    pub fn addWorkspaceWithDir(self: *Self, dir: ?[:0]const u8) ?u32 {
         const alloc = self.allocator();
         const priv = self.private();
 
-        // Build name: "Workspace N"
+        // Generate name "Workspace N"
         var buf: [64]u8 = undefined;
         const name_slice = std.fmt.bufPrint(&buf, "Workspace {d}", .{priv.next_workspace_number}) catch return null;
         const name: [:0]const u8 = alloc.dupeZ(u8, name_slice) catch return null;
 
+        // Resolve directory: explicit > current workspace > $HOME
+        const resolved_dir: [:0]const u8 = blk: {
+            if (dir) |d| {
+                break :blk alloc.dupeZ(u8, d) catch {
+                    alloc.free(name);
+                    return null;
+                };
+            }
+            // Default to current workspace dir, or $HOME
+            if (priv.workspace_dirs.items.len > 0 and priv.active_workspace_idx < priv.workspace_dirs.items.len) {
+                break :blk alloc.dupeZ(u8, priv.workspace_dirs.items[priv.active_workspace_idx]) catch {
+                    alloc.free(name);
+                    return null;
+                };
+            }
+            const home = std.posix.getenv("HOME") orelse "/tmp";
+            break :blk alloc.dupeZ(u8, home) catch {
+                alloc.free(name);
+                return null;
+            };
+        };
+
+        // Create TabView for this workspace
+        const tab_view = adw.TabView.new();
+        // Take Application-owned ref so it survives being unparented
+        _ = tab_view.as(gobject.Object).ref();
+
         priv.workspace_names.append(alloc, name) catch {
             alloc.free(name);
+            alloc.free(resolved_dir);
+            tab_view.as(gobject.Object).unref();
             return null;
         };
-        priv.next_workspace_number += 1;
+        priv.workspace_dirs.append(alloc, resolved_dir) catch {
+            _ = priv.workspace_names.pop();
+            alloc.free(name);
+            alloc.free(resolved_dir);
+            tab_view.as(gobject.Object).unref();
+            return null;
+        };
+        priv.workspace_tab_views.append(alloc, tab_view) catch {
+            _ = priv.workspace_dirs.pop();
+            _ = priv.workspace_names.pop();
+            alloc.free(name);
+            alloc.free(resolved_dir);
+            tab_view.as(gobject.Object).unref();
+            return null;
+        };
 
+        priv.next_workspace_number += 1;
         return @intCast(priv.workspace_names.items.len - 1);
     }
 
@@ -661,23 +730,59 @@ pub const Application = extern struct {
         return priv.workspace_names.items[index];
     }
 
+    /// Get the working directory for the workspace at the given index,
+    /// or null if the index is out of range.
+    pub fn workspaceDir(self: *Self, index: u32) ?[:0]const u8 {
+        const priv = self.private();
+        if (index >= priv.workspace_dirs.items.len) return null;
+        return priv.workspace_dirs.items[index];
+    }
+
+    /// Get the AdwTabView for the workspace at the given index,
+    /// or null if the index is out of range.
+    pub fn workspaceTabView(self: *Self, index: u32) ?*adw.TabView {
+        const priv = self.private();
+        if (index >= priv.workspace_tab_views.items.len) return null;
+        return priv.workspace_tab_views.items[index];
+    }
+
+    /// Get the active workspace's AdwTabView, or null if there are no workspaces.
+    pub fn activeTabView(self: *Self) ?*adw.TabView {
+        return self.workspaceTabView(self.private().active_workspace_idx);
+    }
+
     /// Remove the workspace at `index` from the application state.
     ///
-    /// Frees the name string and removes the entry from `workspace_names`.
+    /// Frees the name string, dir string, and releases the TabView ref.
+    /// Protects the last workspace (no-op if only one workspace remains).
     /// If the active workspace index is at or beyond the end of the new list
     /// it is clamped to the last valid index.  The caller is responsible for
     /// keeping the sidebar widget in sync after this call.
     pub fn removeWorkspace(self: *Self, index: u32) void {
         const alloc = self.allocator();
         const priv = self.private();
-
+        if (priv.workspace_names.items.len <= 1) return; // protect last workspace
         if (index >= priv.workspace_names.items.len) return;
 
-        // Free the owned name string before removing the slot.
-        alloc.free(priv.workspace_names.items[index]);
+        // Close all tabs in this workspace's TabView before releasing it.
+        const tab_view = priv.workspace_tab_views.items[index];
+        while (tab_view.getNPages() > 0) {
+            const page = tab_view.getNthPage(0);
+            tab_view.closePage(page);
+            tab_view.closePageFinish(page, @intFromBool(true));
+        }
 
-        // Shift remaining entries down (preserves insertion order).
+        // Free the owned name string.
+        alloc.free(priv.workspace_names.items[index]);
         _ = priv.workspace_names.orderedRemove(index);
+
+        // Free the owned dir string.
+        alloc.free(priv.workspace_dirs.items[index]);
+        _ = priv.workspace_dirs.orderedRemove(index);
+
+        // Release Application-owned ref on the TabView.
+        tab_view.as(gobject.Object).unref();
+        _ = priv.workspace_tab_views.orderedRemove(index);
 
         // Clamp active_workspace_idx so it stays valid.
         const new_len = priv.workspace_names.items.len;
@@ -1248,11 +1353,17 @@ pub const Application = extern struct {
         const ws_arr = ws_val.array.items;
         if (ws_arr.len == 0) return;
 
-        // Clear the default "Workspace 1".
+        // Clear the default "Workspace 1" — free names, dirs, and TabViews.
         for (priv.workspace_names.items) |name| alloc.free(name);
         priv.workspace_names.clearRetainingCapacity();
+        for (priv.workspace_dirs.items) |dir_str| alloc.free(dir_str);
+        priv.workspace_dirs.clearRetainingCapacity();
+        for (priv.workspace_tab_views.items) |tv| tv.as(gobject.Object).unref();
+        priv.workspace_tab_views.clearRetainingCapacity();
+        // Reset counter so addWorkspaceWithDir assigns correct numbers below.
+        priv.next_workspace_number = 1;
 
-        // Re-populate from saved names.
+        // Re-populate from saved names, creating a dir and TabView for each.
         for (ws_arr) |item| {
             const name_str: []const u8 = switch (item) {
                 .string => |s| s,
@@ -1262,18 +1373,45 @@ pub const Application = extern struct {
                 log.warn("session restore: OOM allocating workspace name", .{});
                 continue;
             };
-            priv.workspace_names.append(alloc, name) catch {
+            const home = std.posix.getenv("HOME") orelse "/tmp";
+            const dir_str: [:0]const u8 = alloc.dupeZ(u8, home) catch {
                 alloc.free(name);
-                log.warn("session restore: OOM appending workspace", .{});
+                log.warn("session restore: OOM allocating workspace dir", .{});
                 continue;
             };
+            const tab_view = adw.TabView.new();
+            _ = tab_view.as(gobject.Object).ref();
+            priv.workspace_names.append(alloc, name) catch {
+                alloc.free(name);
+                alloc.free(dir_str);
+                tab_view.as(gobject.Object).unref();
+                log.warn("session restore: OOM appending workspace name", .{});
+                continue;
+            };
+            priv.workspace_dirs.append(alloc, dir_str) catch {
+                _ = priv.workspace_names.pop();
+                alloc.free(name);
+                alloc.free(dir_str);
+                tab_view.as(gobject.Object).unref();
+                log.warn("session restore: OOM appending workspace dir", .{});
+                continue;
+            };
+            priv.workspace_tab_views.append(alloc, tab_view) catch {
+                _ = priv.workspace_dirs.pop();
+                _ = priv.workspace_names.pop();
+                alloc.free(name);
+                alloc.free(dir_str);
+                tab_view.as(gobject.Object).unref();
+                log.warn("session restore: OOM appending workspace tab_view", .{});
+                continue;
+            };
+            priv.next_workspace_number += 1;
         }
 
         // If we ended up with zero workspaces (e.g., all failed), add a default.
         if (priv.workspace_names.items.len == 0) {
-            const fallback: [:0]const u8 = alloc.dupeZ(u8, "Workspace 1") catch return;
-            priv.workspace_names.append(alloc, fallback) catch {
-                alloc.free(fallback);
+            _ = self.addWorkspaceWithDir(null) orelse {
+                log.warn("session restore: OOM creating fallback workspace", .{});
                 return;
             };
         }
