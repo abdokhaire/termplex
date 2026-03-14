@@ -316,6 +316,12 @@ pub const Sidebar = extern struct {
         priv.workspace_list.append(tab.as(gtk.Widget));
     }
 
+    /// Return the ListBoxRow for the workspace at the given index, or null
+    /// if the index is out of range.
+    pub fn getWorkspaceRow(self: *Self, index: u32) ?*gtk.ListBoxRow {
+        return self.private().workspace_list.getRowAtIndex(@intCast(index));
+    }
+
     /// Remove the workspace tab at the given index.
     ///
     /// Does nothing if the index is out of range.

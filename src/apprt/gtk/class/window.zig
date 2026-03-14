@@ -29,6 +29,7 @@ const Tab = @import("tab.zig").Tab;
 const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const CommandPalette = @import("command_palette.zig").CommandPalette;
 const Sidebar = @import("sidebar.zig").Sidebar;
+const WorkspaceTab = @import("workspace_tab.zig").WorkspaceTab;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
 const log = std.log.scoped(.gtk_ghostty_window);
@@ -342,6 +343,12 @@ pub const Window = extern struct {
                 &termplexOnWorkspaceSelected,
                 &termplexOnNewWorkspace,
                 @ptrCast(self),
+            );
+
+            // Wire context-menu management callbacks (rename, delete).
+            sidebar.setManagementCallbacks(
+                &termplexOnRenameWorkspace,
+                &termplexOnDeleteWorkspace,
             );
 
             // 2. Create a horizontal Gtk.Paned to hold sidebar + content.
@@ -1455,6 +1462,58 @@ pub const Window = extern struct {
             win.switchToTabView(tv);
             win.newTab(null);
         }
+    }
+
+    /// Called when the user selects "Rename" from the workspace context menu.
+    /// Delegates inline rename to the WorkspaceTab widget.
+    fn termplexOnRenameWorkspace(index: u32, userdata: ?*anyopaque) void {
+        const win: *Self = @ptrCast(@alignCast(userdata orelse return));
+        const priv = win.private();
+        const row = priv.sidebar.getWorkspaceRow(index) orelse return;
+        const child_widget = row.getChild() orelse return;
+        const tab: *WorkspaceTab = @ptrCast(@alignCast(child_widget));
+        tab.startRename(index, &termplexOnRenameComplete, userdata);
+    }
+
+    fn termplexOnRenameComplete(index: u32, new_name: [:0]const u8, userdata: ?*anyopaque) void {
+        _ = userdata;
+        const app = Application.default();
+        app.renameWorkspace(index, new_name);
+    }
+
+    /// Called when the user selects "Delete" from the workspace context menu.
+    /// Prevents deleting the last workspace. If the active workspace is
+    /// deleted, switches to an adjacent one first.
+    fn termplexOnDeleteWorkspace(index: u32, userdata: ?*anyopaque) void {
+        const win: *Self = @ptrCast(@alignCast(userdata orelse return));
+        const app = Application.default();
+
+        // Cannot delete the last workspace.
+        if (app.workspaceCount() <= 1) {
+            const toast = adw.Toast.new("Cannot delete the last workspace");
+            win.private().toast_overlay.addToast(toast);
+            return;
+        }
+
+        // If we're deleting the active workspace, switch to an adjacent one first.
+        if (app.activeWorkspaceIndex() == index) {
+            const new_idx: u32 = if (index > 0) index - 1 else 1;
+            if (app.workspaceTabView(new_idx)) |tv| {
+                app.setActiveWorkspaceIndex(new_idx);
+                win.switchToTabView(tv);
+                // Update sidebar highlights.
+                const sidebar = win.private().sidebar;
+                sidebar.updateWorkspace(index, app.workspaceName(index), null, null, false, false);
+                sidebar.updateWorkspace(new_idx, app.workspaceName(new_idx), null, null, true, false);
+                sidebar.setActiveIndex(new_idx);
+            }
+        }
+
+        // Remove from sidebar UI.
+        win.private().sidebar.removeWorkspace(index);
+
+        // Remove from application (closes tabs, frees resources).
+        app.removeWorkspace(index);
     }
 
     //---------------------------------------------------------------
