@@ -659,7 +659,10 @@ pub const Application = extern struct {
     fn pollSocketCallback(ud: ?*anyopaque) callconv(.c) c_int {
         const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_CONTINUE)));
         const priv = self.private();
-        const listen_fd = priv.socket_fd orelse return @intFromBool(glib.SOURCE_REMOVE);
+        const listen_fd = priv.socket_fd orelse {
+            priv.socket_poll_timer = null;
+            return @intFromBool(glib.SOURCE_REMOVE);
+        };
 
         // Accept all pending connections; each is served synchronously (one
         // request → one response → close), which is safe because the client
@@ -679,15 +682,9 @@ pub const Application = extern struct {
                 },
             };
 
-            // Set client fd to non-blocking (the listening socket is NONBLOCK
-            // but accepted fds do not always inherit it without SOCK_NONBLOCK
-            // in accept4 flags).
-            ipcSetNonBlocking(client_fd) catch |err| {
-                log.warn("IPC setNonBlocking failed: {}", .{err});
-                std.posix.close(client_fd);
-                continue;
-            };
-
+            // Accepted fd is blocking by default (we pass CLOEXEC only,
+            // not SOCK_NONBLOCK).  This is correct for the synchronous
+            // serve pattern: read complete request → dispatch → write response.
             ipcServeClient(self, client_fd);
             std.posix.close(client_fd);
         }
@@ -696,7 +693,8 @@ pub const Application = extern struct {
     }
 
     /// Read a single newline-terminated JSON request from the client, dispatch
-    /// it, and write the response.  All I/O is best-effort (non-blocking).
+    /// it, and write the response.  The client fd is blocking, so reads will
+    /// wait for data (appropriate for the one-request-per-connection pattern).
     fn ipcServeClient(self: *Self, client_fd: std.posix.socket_t) void {
         var buf: [65536]u8 = undefined;
         var len: usize = 0;
@@ -794,10 +792,41 @@ pub const Application = extern struct {
             return ipcWorkspaceCreate(self, alloc, id);
         }
 
-        // Default stub: ok with null result.
+        if (std.mem.eql(u8, method, "notification.create")) {
+            return ipcNotificationCreate(self, alloc, id, root.object);
+        }
+
+        // Stubs for other known methods — return ok with null result.
+        const known_stubs = [_][]const u8{
+            "system.tree",
+            "workspace.select",
+            "workspace.close",
+            "workspace.rename",
+            "surface.list",
+            "surface.create",
+            "surface.split",
+            "surface.close",
+            "surface.focus",
+            "notification.list",
+            "notification.clear",
+            "status.report_git",
+            "status.report_ports",
+            "status.report_pwd",
+        };
+        for (known_stubs) |stub| {
+            if (std.mem.eql(u8, method, stub)) {
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":true,\"result\":null,\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            }
+        }
+
+        // Unknown method.
         return std.fmt.allocPrint(
             alloc,
-            "{{\"ok\":true,\"result\":null,\"id\":{d}}}",
+            "{{\"ok\":false,\"error\":{{\"code\":\"method_not_found\",\"message\":\"unknown method\"}},\"id\":{d}}}",
             .{id},
         ) catch null;
     }
@@ -848,6 +877,48 @@ pub const Application = extern struct {
             alloc,
             "{{\"ok\":true,\"result\":{{\"index\":{d}}},\"id\":{d}}}",
             .{ new_idx, id },
+        ) catch null;
+    }
+
+    /// Handle notification.create — fires a desktop notification via GIO and
+    /// adds the termplex-attention CSS class to the active surface.
+    fn ipcNotificationCreate(self: *Self, alloc: std.mem.Allocator, id: i64, params: std.json.ObjectMap) ?[]u8 {
+        // Extract title and body from params.
+        const title_slice: []const u8 = if (params.get("title")) |v| switch (v) {
+            .string => |s| s,
+            else => "Termplex Notification",
+        } else "Termplex Notification";
+
+        const body_slice: []const u8 = if (params.get("body")) |v| switch (v) {
+            .string => |s| s,
+            else => "",
+        } else "";
+
+        // Duplicate as null-terminated strings for GIO API.
+        const title_z = alloc.dupeZ(u8, title_slice) catch return null;
+        defer alloc.free(title_z);
+        const body_z = alloc.dupeZ(u8, body_slice) catch return null;
+        defer alloc.free(body_z);
+
+        // Fire a GIO desktop notification.
+        const notification = gio.Notification.new(title_z);
+        defer notification.unref();
+        if (body_slice.len > 0) {
+            notification.setBody(body_z);
+        }
+        self.as(gio.Application).sendNotification(null, notification);
+
+        // Add attention CSS class to the active window's focused surface.
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            active_win.as(gtk.Widget).addCssClass("termplex-attention");
+        }
+
+        log.info("IPC notification: title=\"{s}\" body=\"{s}\"", .{ title_slice, body_slice });
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"notified\":true}},\"id\":{d}}}",
+            .{id},
         ) catch null;
     }
 
