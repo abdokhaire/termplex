@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Termplex
+Comment=Workspace-centric terminal multiplexer
+Exec=termplex-app
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
