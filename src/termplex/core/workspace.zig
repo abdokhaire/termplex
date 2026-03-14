@@ -249,7 +249,7 @@ pub const SurfaceState = struct {
 /// Strings are owned; the SplitLayout's split nodes are also owned.
 pub const TabState = struct {
     id: Uuid,
-    title: []const u8,
+    title: ?[]const u8,
     split_layout: SplitLayout,
 
     /// Create a TabState, copying the title string. The split_layout is
@@ -257,10 +257,10 @@ pub const TabState = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         id: Uuid,
-        title: []const u8,
+        title: ?[]const u8,
         split_layout: SplitLayout,
     ) !TabState {
-        const t = try allocator.dupe(u8, title);
+        const t = if (title) |tt| try allocator.dupe(u8, tt) else null;
         return TabState{
             .id = id,
             .title = t,
@@ -270,7 +270,7 @@ pub const TabState = struct {
 
     /// Free all owned memory including the split layout tree.
     pub fn deinit(self: *TabState, allocator: std.mem.Allocator) void {
-        allocator.free(self.title);
+        if (self.title) |t| allocator.free(t);
         self.split_layout.deinit(allocator);
     }
 };
@@ -435,7 +435,7 @@ test "TabState init and deinit with leaf layout" {
     defer tab.deinit(allocator);
 
     try std.testing.expect(uuid_util.eql(tab.id, tab_id));
-    try std.testing.expectEqualStrings("Terminal 1", tab.title);
+    try std.testing.expectEqualStrings("Terminal 1", tab.title.?);
     try std.testing.expect(tab.split_layout == .leaf);
     try std.testing.expect(uuid_util.eql(tab.split_layout.leaf.surface_id, surf_id));
 }
@@ -611,8 +611,8 @@ test "WorkspaceState init and deinit with tabs" {
     defer ws.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 2), ws.tabs.len);
-    try std.testing.expectEqualStrings("Tab A", ws.tabs[0].title);
-    try std.testing.expectEqualStrings("Tab B", ws.tabs[1].title);
+    try std.testing.expectEqualStrings("Tab A", ws.tabs[0].title.?);
+    try std.testing.expectEqualStrings("Tab B", ws.tabs[1].title.?);
     try std.testing.expectEqual(@as(u32, 2), ws.unread_count);
     try std.testing.expectEqual(true, ws.git_dirty);
 }
