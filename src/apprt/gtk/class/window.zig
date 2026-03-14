@@ -28,6 +28,7 @@ const Surface = @import("surface.zig").Surface;
 const Tab = @import("tab.zig").Tab;
 const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const CommandPalette = @import("command_palette.zig").CommandPalette;
+const Sidebar = @import("sidebar.zig").Sidebar;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
 const log = std.log.scoped(.gtk_ghostty_window);
@@ -256,6 +257,10 @@ pub const Window = extern struct {
         /// setup by `setup-menu`.
         context_menu_page: ?*adw.TabPage = null,
 
+        // Termplex sidebar and paned container
+        sidebar: *Sidebar = undefined,
+        sidebar_paned: *gtk.Paned = undefined,
+
         // Template bindings
         tab_overview: *adw.TabOverview,
         tab_bar: *adw.TabBar,
@@ -291,6 +296,40 @@ pub const Window = extern struct {
 
     fn init(self: *Self, _: *Class) callconv(.c) void {
         gtk.Widget.initTemplate(self.as(gtk.Widget));
+
+        // --- Termplex: wrap existing content in a sidebar paned ---
+        {
+            const priv_ = self.private();
+
+            // 1. Create the sidebar widget.
+            const sidebar = Sidebar.new();
+            priv_.sidebar = sidebar;
+
+            // Add a default workspace tab so the sidebar is not empty.
+            sidebar.addWorkspace("Workspace 1", null, null);
+            sidebar.setActiveIndex(0);
+
+            // 2. Create a horizontal Gtk.Paned to hold sidebar + content.
+            const paned = gtk.Paned.new(.horizontal);
+            priv_.sidebar_paned = paned;
+
+            // 3. Grab the current window content (the tab_overview) and
+            //    reparent it into the paned's end child.
+            const adw_win = self.as(adw.ApplicationWindow);
+            const current_content = adw_win.getContent();
+            adw_win.setContent(null);
+
+            paned.setStartChild(sidebar.as(gtk.Widget));
+            if (current_content) |content| {
+                paned.setEndChild(content);
+            }
+
+            // 4. Set the initial sidebar width.
+            paned.setPosition(180);
+
+            // 5. Set the paned as the new window content.
+            adw_win.setContent(paned.as(gtk.Widget));
+        }
 
         // If our configuration is null then we get the configuration
         // from the application.
