@@ -413,6 +413,21 @@ pub fn add(
         step.root_module.addImport("z2d", dep.module("z2d"));
     }
     self.addUucode(b, step.root_module, target, optimize);
+
+    // Termplex — the termplex-specific module tree (workspace management,
+    // IPC, notifications, etc.). This is a local source module rooted at
+    // src/termplex/main.zig.  Because the sub-files it @imports are created
+    // incrementally across Tasks 3-12, the module is registered here but its
+    // namespaces must not be referenced until the underlying files exist.
+    {
+        const termplex_mod = b.createModule(.{
+            .root_source_file = b.path("src/termplex/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        step.root_module.addImport("termplex", termplex_mod);
+    }
+
     if (b.lazyDependency("zf", .{
         .target = target,
         .optimize = optimize,
