@@ -1043,7 +1043,15 @@ pub const Application = extern struct {
         }
 
         if (std.mem.eql(u8, method, "workspace.create")) {
-            return ipcWorkspaceCreate(self, alloc, id);
+            return ipcWorkspaceCreate(self, alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "workspace.find_by_dir")) {
+            return ipcWorkspaceFindByDir(self, alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "workspace.select")) {
+            return ipcWorkspaceSelect(self, alloc, id, root.object);
         }
 
         if (std.mem.eql(u8, method, "notification.create")) {
@@ -1078,7 +1086,6 @@ pub const Application = extern struct {
         // Stubs for other known methods — return ok with null result.
         const known_stubs = [_][]const u8{
             "system.tree",
-            "workspace.select",
             "workspace.close",
             "workspace.rename",
             "surface.list",
@@ -1142,9 +1149,27 @@ pub const Application = extern struct {
         ) catch null;
     }
 
-    /// Handle workspace.create — calls addWorkspace() and returns the new index.
-    fn ipcWorkspaceCreate(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
-        const new_idx = self.addWorkspace() orelse {
+    /// Handle workspace.create — calls addWorkspaceWithDir() and returns the new index.
+    /// Accepts an optional "dir" field in "params".
+    fn ipcWorkspaceCreate(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        // Extract optional "dir" from params
+        const dir: ?[:0]const u8 = blk: {
+            const params_val = obj.get("params") orelse break :blk null;
+            if (params_val != .object) break :blk null;
+            const dv = params_val.object.get("dir") orelse break :blk null;
+            switch (dv) {
+                .string => |s| {
+                    if (s.len > 0) {
+                        break :blk alloc.dupeZ(u8, s) catch break :blk null;
+                    }
+                    break :blk null;
+                },
+                else => break :blk null,
+            }
+        };
+        defer if (dir) |d| alloc.free(d);
+
+        const new_idx = self.addWorkspaceWithDir(dir) orelse {
             return std.fmt.allocPrint(
                 alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"oom\",\"message\":\"out of memory\"}},\"id\":{d}}}",
@@ -1155,6 +1180,158 @@ pub const Application = extern struct {
             alloc,
             "{{\"ok\":true,\"result\":{{\"index\":{d}}},\"id\":{d}}}",
             .{ new_idx, id },
+        ) catch null;
+    }
+
+    /// Handle workspace.find_by_dir — returns all workspaces matching the given dir.
+    fn ipcWorkspaceFindByDir(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const priv = self.private();
+
+        // Extract "dir" from params or root
+        const params_val = obj.get("params") orelse .null;
+        const dir: []const u8 = blk: {
+            if (params_val == .object) {
+                if (params_val.object.get("dir")) |dv| {
+                    switch (dv) {
+                        .string => |s| break :blk s,
+                        else => {},
+                    }
+                }
+            }
+            // Also try root-level "dir"
+            if (obj.get("dir")) |dv| {
+                switch (dv) {
+                    .string => |s| break :blk s,
+                    else => {},
+                }
+            }
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"missing_param\",\"message\":\"dir is required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        var arr_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer arr_buf.deinit(alloc);
+
+        arr_buf.appendSlice(alloc, "[") catch return null;
+        var first = true;
+        for (priv.workspace_dirs.items, 0..) |ws_dir, idx| {
+            if (std.mem.eql(u8, ws_dir, dir)) {
+                if (!first) arr_buf.appendSlice(alloc, ",") catch return null;
+                const name = priv.workspace_names.items[idx];
+                const tab_count: c_int = if (idx < priv.workspace_tab_views.items.len)
+                    priv.workspace_tab_views.items[idx].getNPages()
+                else
+                    0;
+                // Build entry JSON manually
+                arr_buf.appendSlice(alloc, "{\"index\":") catch return null;
+                var idx_buf: [16]u8 = undefined;
+                const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{idx}) catch return null;
+                arr_buf.appendSlice(alloc, idx_str) catch return null;
+                arr_buf.appendSlice(alloc, ",\"name\":\"") catch return null;
+                for (name) |c| {
+                    if (c == '"' or c == '\\') arr_buf.append(alloc, '\\') catch return null;
+                    arr_buf.append(alloc, c) catch return null;
+                }
+                arr_buf.appendSlice(alloc, "\",\"dir\":\"") catch return null;
+                for (ws_dir) |c| {
+                    if (c == '"' or c == '\\') arr_buf.append(alloc, '\\') catch return null;
+                    arr_buf.append(alloc, c) catch return null;
+                }
+                arr_buf.appendSlice(alloc, "\",\"tab_count\":") catch return null;
+                var tc_buf: [16]u8 = undefined;
+                const tc_str = std.fmt.bufPrint(&tc_buf, "{d}", .{tab_count}) catch return null;
+                arr_buf.appendSlice(alloc, tc_str) catch return null;
+                arr_buf.appendSlice(alloc, "}") catch return null;
+                first = false;
+            }
+        }
+        arr_buf.appendSlice(alloc, "]") catch return null;
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":true,\"result\":{{\"workspaces\":{s}}},\"id\":{d}}}",
+            .{ arr_buf.items, id },
+        ) catch null;
+    }
+
+    /// Handle workspace.select — switches the active workspace by index or name ref.
+    fn ipcWorkspaceSelect(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const priv = self.private();
+        const params_val = obj.get("params") orelse .null;
+
+        var target_idx: ?u32 = null;
+
+        if (params_val == .object) {
+            // Try index first
+            if (params_val.object.get("index")) |iv| {
+                switch (iv) {
+                    .integer => |n| {
+                        if (n >= 0 and n < @as(i64, @intCast(priv.workspace_names.items.len))) {
+                            target_idx = @intCast(n);
+                        }
+                    },
+                    else => {},
+                }
+            }
+            // Try ref (name lookup)
+            if (target_idx == null) {
+                if (params_val.object.get("ref")) |rv| {
+                    switch (rv) {
+                        .string => |name_ref| {
+                            for (priv.workspace_names.items, 0..) |name, idx| {
+                                if (std.mem.eql(u8, name, name_ref)) {
+                                    target_idx = @intCast(idx);
+                                    break;
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+            }
+        }
+
+        if (target_idx) |idx| {
+            const old_idx = priv.active_workspace_idx;
+            self.setActiveWorkspaceIndex(idx);
+
+            // Get the active window, cast to our Window type, update sidebar and switch TabView.
+            if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+                if (gobject.ext.cast(Window, active_win)) |win| {
+                    const sidebar = win.getSidebar();
+                    // Deactivate old workspace in sidebar
+                    if (old_idx != idx) {
+                        sidebar.updateWorkspace(
+                            old_idx,
+                            self.workspaceName(old_idx),
+                            null,
+                            null,
+                            false,
+                            false,
+                        );
+                    }
+                    // Activate new workspace in sidebar
+                    sidebar.updateWorkspace(
+                        idx,
+                        self.workspaceName(idx),
+                        null,
+                        null,
+                        true,
+                        false,
+                    );
+                    sidebar.setActiveIndex(idx);
+                    // Switch the displayed TabView
+                    if (self.workspaceTabView(idx)) |tv| {
+                        win.switchToTabView(tv);
+                    }
+                }
+            }
+        }
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":true,\"result\":null,\"id\":{d}}}",
+            .{id},
         ) catch null;
     }
 
