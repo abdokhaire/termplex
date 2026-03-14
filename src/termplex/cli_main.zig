@@ -254,6 +254,9 @@ const usage_text =
     \\  surface close [REF]
     \\  surface focus REF
     \\
+    \\  open [DIR]
+    \\      Find or create a workspace for the given directory (default: $PWD).
+    \\
     \\  notify --title "TITLE" [--body "BODY"]
     \\
     \\  notification list
@@ -521,6 +524,122 @@ fn cmdNotification(allocator: std.mem.Allocator, args: []const []const u8) !void
     posix.exit(1);
 }
 
+fn cmdOpen(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    // Resolve directory: explicit arg or $PWD
+    const dir_arg = if (args.len > 0) args[0] else (std.posix.getenv("PWD") orelse ".");
+
+    // Make absolute
+    const abs_dir = std.fs.cwd().realpathAlloc(allocator, dir_arg) catch |err| {
+        var err_buf: [io_buf_size]u8 = undefined;
+        var stderr_writer = std.fs.File.stderr().writer(&err_buf);
+        const stderr = &stderr_writer.interface;
+        try stderr.print("error: cannot resolve path '{s}': {}\n", .{ dir_arg, err });
+        try stderr.flush();
+        posix.exit(1);
+    };
+    defer allocator.free(abs_dir);
+
+    // Query for existing workspace with this directory
+    const find_params = try std.fmt.allocPrint(allocator, "{{\"dir\":\"{s}\"}}", .{abs_dir});
+    defer allocator.free(find_params);
+
+    const socket_path = try getSocketPath(allocator);
+    defer allocator.free(socket_path);
+
+    const find_request = try buildRequest(allocator, "workspace.find_by_dir", find_params);
+    defer allocator.free(find_request);
+
+    const find_response = sendRequest(allocator, socket_path, find_request) catch |err| {
+        var err_buf: [io_buf_size]u8 = undefined;
+        var stderr_writer = std.fs.File.stderr().writer(&err_buf);
+        const stderr = &stderr_writer.interface;
+        switch (err) {
+            error.ConnectionRefused, error.FileNotFound => {
+                try stderr.print(
+                    "error: cannot connect to termplex-app on {s}\n" ++
+                        "  Is termplex-app running?\n",
+                    .{socket_path},
+                );
+            },
+            else => {
+                try stderr.print("error: {}\n", .{err});
+            },
+        }
+        try stderr.flush();
+        posix.exit(1);
+    };
+    defer allocator.free(find_response);
+
+    // Parse response to check if any workspaces matched
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, find_response, .{}) catch {
+        // Can't parse — fall through to create
+        try createAndSelectWorkspace(allocator, socket_path, abs_dir);
+        return;
+    };
+    defer parsed.deinit();
+
+    if (parsed.value == .object) {
+        if (parsed.value.object.get("result")) |result| {
+            if (result == .object) {
+                if (result.object.get("workspaces")) |ws_arr| {
+                    if (ws_arr == .array and ws_arr.array.items.len > 0) {
+                        // Workspace exists — select it
+                        const first = ws_arr.array.items[0];
+                        if (first == .object) {
+                            if (first.object.get("index")) |idx_val| {
+                                if (idx_val == .integer) {
+                                    const select_params = try std.fmt.allocPrint(
+                                        allocator,
+                                        "{{\"index\":{d}}}",
+                                        .{idx_val.integer},
+                                    );
+                                    defer allocator.free(select_params);
+                                    const select_request = try buildRequest(allocator, "workspace.select", select_params);
+                                    defer allocator.free(select_request);
+                                    const select_response = sendRequest(allocator, socket_path, select_request) catch |err| {
+                                        var err_buf: [io_buf_size]u8 = undefined;
+                                        var stderr_writer = std.fs.File.stderr().writer(&err_buf);
+                                        const stderr = &stderr_writer.interface;
+                                        try stderr.print("error: {}\n", .{err});
+                                        try stderr.flush();
+                                        posix.exit(1);
+                                    };
+                                    defer allocator.free(select_response);
+                                    try printResponse(allocator, select_response);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // No matching workspace — create one
+    try createAndSelectWorkspace(allocator, socket_path, abs_dir);
+}
+
+fn createAndSelectWorkspace(allocator: std.mem.Allocator, socket_path: []const u8, abs_dir: []const u8) !void {
+    const create_params = try std.fmt.allocPrint(allocator, "{{\"dir\":\"{s}\"}}", .{abs_dir});
+    defer allocator.free(create_params);
+
+    const create_request = try buildRequest(allocator, "workspace.create", create_params);
+    defer allocator.free(create_request);
+
+    const create_response = sendRequest(allocator, socket_path, create_request) catch |err| {
+        var err_buf: [io_buf_size]u8 = undefined;
+        var stderr_writer = std.fs.File.stderr().writer(&err_buf);
+        const stderr = &stderr_writer.interface;
+        try stderr.print("error: {}\n", .{err});
+        try stderr.flush();
+        posix.exit(1);
+    };
+    defer allocator.free(create_response);
+
+    try printResponse(allocator, create_response);
+}
+
 fn cmdReport(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var err_buf: [io_buf_size]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&err_buf);
@@ -623,6 +742,11 @@ pub fn main() !void {
 
     if (std.mem.eql(u8, cmd, "notification")) {
         try cmdNotification(allocator, args[2..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, cmd, "open")) {
+        try cmdOpen(allocator, args[2..]);
         return;
     }
 
