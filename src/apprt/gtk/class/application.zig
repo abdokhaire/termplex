@@ -41,6 +41,9 @@ const CloseConfirmationDialog = @import("close_confirmation_dialog.zig").CloseCo
 const ConfigErrorsDialog = @import("config_errors_dialog.zig").ConfigErrorsDialog;
 const GlobalShortcuts = @import("global_shortcuts.zig").GlobalShortcuts;
 
+const git_probe = @import("../../../termplex/core/git_probe.zig");
+const port_scanner = @import("../../../termplex/core/port_scanner.zig");
+
 const log = std.log.scoped(.gtk_ghostty_application);
 
 /// Function used to funnel GLib/GObject/GTK log messages into Zig's logging
@@ -242,6 +245,33 @@ pub const Application = extern struct {
         /// GLib source id returned by glib.timeoutAdd for the poll timer.
         /// Null when no timer is active.
         socket_poll_timer: ?c_uint = null,
+
+        // ----- Termplex git state for the active workspace -----
+
+        /// Current branch name (null-terminated, owned). Null if not in a git repo.
+        git_branch: ?[:0]const u8 = null,
+
+        /// True when `git status --porcelain` produces non-empty output.
+        git_dirty: bool = false,
+
+        /// GLib source id for the debounce timer before the next git probe.
+        git_debounce_timer: ?c_uint = null,
+
+        // ----- Termplex port scanner state -----
+
+        /// GLib source id for the 30-second recurring port scan timer.
+        port_scan_timer: ?c_uint = null,
+
+        /// GLib source ids for the burst of 6 extra scans after a pwd change.
+        port_scan_burst_timers: [6]?c_uint = .{null} ** 6,
+
+        /// Formatted listening-ports string for display (null-terminated, owned).
+        listening_ports_str: ?[:0]const u8 = null,
+
+        // ----- Termplex pwd tracking -----
+
+        /// Current working directory of the active workspace (for git probing).
+        current_pwd: ?[:0]const u8 = null,
 
         pub var offset: c_int = 0;
     };
@@ -496,6 +526,40 @@ pub const Application = extern struct {
             priv.socket_path_buf = null;
         }
 
+        // Termplex: cancel git debounce timer.
+        if (priv.git_debounce_timer) |source| {
+            _ = glib.Source.remove(source);
+            priv.git_debounce_timer = null;
+        }
+
+        // Termplex: cancel port scan timer.
+        if (priv.port_scan_timer) |source| {
+            _ = glib.Source.remove(source);
+            priv.port_scan_timer = null;
+        }
+
+        // Termplex: cancel all burst scan timers.
+        for (&priv.port_scan_burst_timers) |*slot| {
+            if (slot.*) |source| {
+                _ = glib.Source.remove(source);
+                slot.* = null;
+            }
+        }
+
+        // Termplex: free git/port/pwd strings.
+        if (priv.git_branch) |b| {
+            alloc.free(b);
+            priv.git_branch = null;
+        }
+        if (priv.listening_ports_str) |s| {
+            alloc.free(s);
+            priv.listening_ports_str = null;
+        }
+        if (priv.current_pwd) |p| {
+            alloc.free(p);
+            priv.current_pwd = null;
+        }
+
         priv.config.unref();
         priv.winproto.deinit(alloc);
         priv.global_shortcuts.unref();
@@ -652,6 +716,9 @@ pub const Application = extern struct {
         priv.socket_fd = fd;
         priv.socket_path_buf = path;
         priv.socket_poll_timer = glib.timeoutAdd(100, pollSocketCallback, self);
+
+        // Termplex: start the 30-second recurring port scan.
+        priv.port_scan_timer = glib.timeoutAdd(30000, portScanCallback, self);
     }
 
     /// GLib timer callback: called every 100 ms to accept and service IPC
@@ -796,6 +863,31 @@ pub const Application = extern struct {
             return ipcNotificationCreate(self, alloc, id, root.object);
         }
 
+        if (std.mem.eql(u8, method, "status.report_pwd")) {
+            // Extract pwd from params.
+            const params_val = root.object.get("params") orelse .null;
+            const pwd_slice: []const u8 = if (params_val == .object)
+                if (params_val.object.get("pwd")) |pv| switch (pv) {
+                    .string => |s| s,
+                    else => "",
+                } else ""
+            else "";
+
+            if (pwd_slice.len > 0) {
+                const pwd_z = alloc.dupeZ(u8, pwd_slice) catch null;
+                if (pwd_z) |pz| {
+                    self.updateWorkspacePwd(pz);
+                    alloc.free(pz);
+                }
+            }
+
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":true,\"result\":null,\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
         // Stubs for other known methods — return ok with null result.
         const known_stubs = [_][]const u8{
             "system.tree",
@@ -811,7 +903,6 @@ pub const Application = extern struct {
             "notification.clear",
             "status.report_git",
             "status.report_ports",
-            "status.report_pwd",
         };
         for (known_stubs) |stub| {
             if (std.mem.eql(u8, method, stub)) {
@@ -939,6 +1030,255 @@ pub const Application = extern struct {
             };
             written += n;
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Termplex: git probe and port scanner
+    // -----------------------------------------------------------------
+
+    /// Update the current working directory for the active workspace.
+    ///
+    /// 1. Stores a copy of `pwd` in `current_pwd` (freeing any previous value).
+    /// 2. Triggers a debounced git probe (2 s delay).
+    /// 3. Triggers a burst port scan (6 additional scans at short intervals).
+    ///
+    /// The caller passes a temporary slice; this function duplicates it.
+    pub fn updateWorkspacePwd(self: *Self, pwd: [:0]const u8) void {
+        const alloc = self.allocator();
+        const priv = self.private();
+
+        // Update stored pwd.
+        if (priv.current_pwd) |old| alloc.free(old);
+        priv.current_pwd = alloc.dupeZ(u8, pwd) catch null;
+
+        // Trigger debounced git probe.
+        self.triggerGitProbe();
+
+        // Trigger burst port scans.
+        self.triggerBurstPortScan();
+    }
+
+    /// Schedule a git probe after a 2-second debounce.
+    ///
+    /// Cancels any in-flight debounce timer before scheduling a new one.
+    fn triggerGitProbe(self: *Self) void {
+        const priv = self.private();
+
+        // Cancel previous debounce timer.
+        if (priv.git_debounce_timer) |source| {
+            _ = glib.Source.remove(source);
+            priv.git_debounce_timer = null;
+        }
+
+        // Schedule new debounce timer (2 s).
+        priv.git_debounce_timer = glib.timeoutAdd(2000, gitProbeCallback, self);
+    }
+
+    /// GLib timer callback: runs the git probe and updates the sidebar.
+    ///
+    /// This fires once (SOURCE_REMOVE) after the 2 s debounce.
+    fn gitProbeCallback(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        const alloc = self.allocator();
+        const priv = self.private();
+
+        // Clear the stored timer id.
+        priv.git_debounce_timer = null;
+
+        // Run the probe only if we have a pwd.
+        const pwd = priv.current_pwd orelse return @intFromBool(glib.SOURCE_REMOVE);
+
+        var result = git_probe.probe(alloc, pwd);
+        defer result.deinit(alloc);
+
+        // Update stored git state.
+        if (priv.git_branch) |old| alloc.free(old);
+        priv.git_branch = if (result.branch) |b|
+            alloc.dupeZ(u8, b) catch null
+        else
+            null;
+        priv.git_dirty = result.dirty;
+
+        log.debug(
+            "git probe: branch={s} dirty={}",
+            .{ priv.git_branch orelse "<none>", priv.git_dirty },
+        );
+
+        // Update sidebar for the active workspace.
+        self.updateSidebarGitState();
+
+        return @intFromBool(glib.SOURCE_REMOVE);
+    }
+
+    /// Schedule a burst of 6 port scans at 500/1500/3000/5000/7500/10000 ms.
+    ///
+    /// Cancels any previously scheduled burst timers first.
+    /// Note: After burst timers fire (returning SOURCE_REMOVE), the slot IDs
+    /// become stale but remain set.  glib.Source.remove on a stale ID is safe
+    /// because GLib source IDs are monotonically increasing and reuse is
+    /// practically impossible within a single burst cycle.
+    fn triggerBurstPortScan(self: *Self) void {
+        const priv = self.private();
+        const delays = [6]c_uint{ 500, 1500, 3000, 5000, 7500, 10000 };
+
+        for (&priv.port_scan_burst_timers, delays) |*slot, delay| {
+            if (slot.*) |source| {
+                _ = glib.Source.remove(source);
+                slot.* = null;
+            }
+            slot.* = glib.timeoutAdd(delay, burstPortScanCallback, self);
+        }
+    }
+
+    /// GLib timer callback: runs a single port scan (burst variant, fires once).
+    fn burstPortScanCallback(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+
+        // This timer auto-removes (SOURCE_REMOVE). We can't identify which
+        // slot it corresponds to without extra context, but
+        // triggerBurstPortScan and deinit both handle stale IDs gracefully.
+        runPortScan(self);
+        return @intFromBool(glib.SOURCE_REMOVE);
+    }
+
+    /// GLib timer callback: runs the recurring 30-second port scan.
+    fn portScanCallback(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        const priv = self.private();
+
+        // If the timer has been cleared, stop recurring.
+        if (priv.port_scan_timer == null) return @intFromBool(glib.SOURCE_REMOVE);
+
+        runPortScan(self);
+        return @intFromBool(glib.SOURCE_CONTINUE);
+    }
+
+    /// Execute a port scan and update state + sidebar.
+    ///
+    /// Uses the current process PID as a placeholder since shell PIDs are not
+    /// yet wired up.
+    fn runPortScan(self: *Self) void {
+        const alloc = self.allocator();
+        const priv = self.private();
+
+        // TODO: Scan shell PIDs from each workspace's surfaces instead of the
+        // app's own PID.  Requires wiring surface child-process PIDs into
+        // workspace state (blocked until per-surface PID tracking is added).
+        const my_pid: std.posix.pid_t = @intCast(std.os.linux.getpid());
+        const pids = [_]std.posix.pid_t{my_pid};
+
+        const results = port_scanner.scan(alloc, &pids) catch |err| {
+            log.debug("port scan failed: {}", .{err});
+            return;
+        };
+        defer port_scanner.deinitResults(alloc, results);
+
+        // Build a formatted string of ports (e.g. ":3000 :8080").
+        var ports_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer ports_buf.deinit(alloc);
+
+        for (results) |r| {
+            for (r.ports) |port| {
+                if (ports_buf.items.len > 0) {
+                    ports_buf.appendSlice(alloc, " ") catch break;
+                }
+                var tmp: [8]u8 = undefined;
+                const s = std.fmt.bufPrint(&tmp, ":{d}", .{port}) catch continue;
+                ports_buf.appendSlice(alloc, s) catch break;
+            }
+        }
+
+        // Replace listening_ports_str.
+        if (priv.listening_ports_str) |old| alloc.free(old);
+        if (ports_buf.items.len > 0) {
+            priv.listening_ports_str = alloc.dupeZ(u8, ports_buf.items) catch null;
+        } else {
+            priv.listening_ports_str = null;
+        }
+
+        log.debug("port scan: ports={s}", .{priv.listening_ports_str orelse "<none>"});
+
+        // Update sidebar for the active workspace.
+        self.updateSidebarPortState();
+    }
+
+    /// Push the current git state to the active workspace tab in the sidebar.
+    fn updateSidebarGitState(self: *Self) void {
+        const priv = self.private();
+        const active_idx = priv.active_workspace_idx;
+        const name = if (active_idx < priv.workspace_names.items.len)
+            priv.workspace_names.items[active_idx]
+        else
+            return;
+
+        // Build branch label: "main*" if dirty, "main" if clean, null if no branch.
+        var branch_buf: [256]u8 = undefined;
+        const branch_z: ?[:0]const u8 = blk: {
+            const b = priv.git_branch orelse break :blk null;
+            const label = std.fmt.bufPrintZ(
+                &branch_buf,
+                "{s}{s}",
+                .{ b, if (priv.git_dirty) "*" else "" },
+            ) catch break :blk null;
+            break :blk label;
+        };
+
+        // Update the sidebar in every open window.
+        updateSidebarForAllWindows(self, active_idx, name, priv.listening_ports_str, branch_z);
+    }
+
+    /// Push the current port state to the active workspace tab in the sidebar.
+    fn updateSidebarPortState(self: *Self) void {
+        const priv = self.private();
+        const active_idx = priv.active_workspace_idx;
+        const name = if (active_idx < priv.workspace_names.items.len)
+            priv.workspace_names.items[active_idx]
+        else
+            return;
+
+        var branch_buf: [256]u8 = undefined;
+        const branch_z: ?[:0]const u8 = blk: {
+            const b = priv.git_branch orelse break :blk null;
+            const label = std.fmt.bufPrintZ(
+                &branch_buf,
+                "{s}{s}",
+                .{ b, if (priv.git_dirty) "*" else "" },
+            ) catch break :blk null;
+            break :blk label;
+        };
+
+        updateSidebarForAllWindows(self, active_idx, name, priv.listening_ports_str, branch_z);
+    }
+
+    /// Update the active workspace tab in the sidebar of every open window.
+    fn updateSidebarForAllWindows(
+        self: *Self,
+        active_idx: u32,
+        name: ?[:0]const u8,
+        port_text: ?[:0]const u8,
+        branch_text: ?[:0]const u8,
+    ) void {
+        const Ctx = struct {
+            active_idx: u32,
+            name: ?[:0]const u8,
+            port_text: ?[:0]const u8,
+            branch_text: ?[:0]const u8,
+        };
+        var ctx = Ctx{
+            .active_idx = active_idx,
+            .name = name,
+            .port_text = port_text,
+            .branch_text = branch_text,
+        };
+        const list = self.as(gtk.Application).getWindows();
+        list.foreach(struct {
+            fn cb(data: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
+                const c: *Ctx = @ptrCast(@alignCast(userdata orelse return));
+                const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
+                const win = gobject.ext.cast(Window, ptr) orelse return;
+                win.getSidebar().updateWorkspace(c.active_idx, c.name, c.port_text, c.branch_text, true, false);
+            }
+        }.cb, @ptrCast(&ctx));
     }
 
     /// Run the application. This is a replacement for `gio.Application.run`
@@ -1193,7 +1533,11 @@ pub const Application = extern struct {
 
             .open_url => Action.openUrl(self, value),
 
-            .pwd => Action.pwd(target, value),
+            .pwd => {
+                Action.pwd(target, value);
+                // Termplex: trigger git probe and port scan on pwd change.
+                self.updateWorkspacePwd(value.pwd);
+            },
 
             .present_terminal => return Action.presentTerminal(target),
 

@@ -948,6 +948,11 @@ pub const Window = extern struct {
         return self.private().tab_view;
     }
 
+    /// Get the Termplex sidebar widget for this window.
+    pub fn getSidebar(self: *Self) *Sidebar {
+        return self.private().sidebar;
+    }
+
     /// Get the current window decoration value for this window.
     pub fn getWindowDecoration(self: *Self) configpkg.WindowDecoration {
         const priv = self.private();
