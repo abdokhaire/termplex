@@ -38,7 +38,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
       Adw.HeaderBar {
         visible: bind template.headerbar-visible;
 
-        title-widget: Adw.WindowTitle {
+        title-widget: Adw.WindowTitle window_title {
           title: bind template.title;
           subtitle: "";
         };

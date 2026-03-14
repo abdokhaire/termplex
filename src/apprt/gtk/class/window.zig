@@ -275,6 +275,7 @@ pub const Window = extern struct {
         active_tab_view: *adw.TabView = undefined, // set programmatically in init
         toolbar: *adw.ToolbarView,
         toast_overlay: *adw.ToastOverlay,
+        window_title: *adw.WindowTitle,
 
         pub var offset: c_int = 0;
     };
@@ -426,6 +427,13 @@ pub const Window = extern struct {
                 priv_.tab_bar.setView(priv_.active_tab_view);
                 priv_.tab_overview.setView(priv_.active_tab_view);
             }
+        }
+
+        // Set initial workspace name in header
+        {
+            const app = Application.default();
+            const ws_idx = app.activeWorkspaceIndex();
+            self.updateHeaderTitle(app.workspaceName(ws_idx), app.workspaceDir(ws_idx));
         }
 
         // If our configuration is null then we get the configuration
@@ -1612,10 +1620,9 @@ pub const Window = extern struct {
 
     /// Update the header bar title and subtitle for the active workspace.
     fn updateHeaderTitle(self: *Self, name: ?[:0]const u8, dir: ?[:0]const u8) void {
-        _ = self;
-        _ = name;
-        _ = dir;
-        // Will be implemented in Task 12 when window_title template child is added
+        const priv = self.private();
+        priv.window_title.setTitle(name orelse "Termplex");
+        priv.window_title.setSubtitle(dir orelse "");
     }
 
     //---------------------------------------------------------------
@@ -2760,6 +2767,7 @@ pub const Window = extern struct {
             class.bindTemplateChildPrivate("tab_view", .{});
             class.bindTemplateChildPrivate("toolbar", .{});
             class.bindTemplateChildPrivate("toast_overlay", .{});
+            class.bindTemplateChildPrivate("window_title", .{});
 
             // Template Callbacks
             class.bindTemplateCallback("realize", &windowRealize);
