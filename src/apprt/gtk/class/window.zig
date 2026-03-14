@@ -441,6 +441,12 @@ pub const Window = extern struct {
             // TODO: accept the surface that toggled the command palette
             .init("toggle-command-palette", actionToggleCommandPalette, null),
             .init("toggle-inspector", actionToggleInspector, null),
+            // Termplex workspace actions
+            .init("termplex-new-workspace", actionTermplexNewWorkspace, null),
+            .init("termplex-close-workspace", actionTermplexCloseWorkspace, null),
+            .init("termplex-next-workspace", actionTermplexNextWorkspace, null),
+            .init("termplex-prev-workspace", actionTermplexPrevWorkspace, null),
+            .init("termplex-toggle-sidebar", actionTermplexToggleSidebar, null),
         };
 
         ext.actions.add(Self, self, &actions);
@@ -2187,6 +2193,103 @@ pub const Window = extern struct {
         // TODO: accept the surface that toggled the command palette as a
         // parameter
         self.toggleInspector();
+    }
+
+    //---------------------------------------------------------------
+    // Termplex workspace keyboard actions
+
+    /// Create a new workspace via keyboard shortcut.
+    fn actionTermplexNewWorkspace(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const app = Application.default();
+        const sidebar = self.private().sidebar;
+
+        const new_idx = app.addWorkspace() orelse {
+            log.warn("termplex-new-workspace: out of memory", .{});
+            return;
+        };
+        const name = app.workspaceName(new_idx);
+
+        // Deactivate the old workspace visually.
+        const old_idx = app.activeWorkspaceIndex();
+        sidebar.updateWorkspace(
+            old_idx,
+            app.workspaceName(old_idx),
+            null,
+            null,
+            false,
+            false,
+        );
+
+        // Add to sidebar and activate the new workspace.
+        sidebar.addWorkspace(name, null, null);
+        app.setActiveWorkspaceIndex(new_idx);
+        sidebar.updateWorkspace(new_idx, name, null, null, true, false);
+        sidebar.setActiveIndex(new_idx);
+    }
+
+    /// Stub: close the active workspace (full implementation in Task 23).
+    fn actionTermplexCloseWorkspace(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        _: *Self,
+    ) callconv(.c) void {
+        log.info("termplex-close-workspace: stub (confirmation dialog in Task 23)", .{});
+    }
+
+    /// Switch to the next workspace (wraps around only if not at the end).
+    fn actionTermplexNextWorkspace(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const app = Application.default();
+        const count = app.workspaceCount();
+        if (count == 0) return;
+        const current = app.activeWorkspaceIndex();
+        if (current + 1 >= count) return;
+        const next = current + 1;
+
+        const sidebar = self.private().sidebar;
+        sidebar.updateWorkspace(current, app.workspaceName(current), null, null, false, false);
+        app.setActiveWorkspaceIndex(next);
+        sidebar.updateWorkspace(next, app.workspaceName(next), null, null, true, false);
+        sidebar.setActiveIndex(next);
+    }
+
+    /// Switch to the previous workspace.
+    fn actionTermplexPrevWorkspace(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const app = Application.default();
+        const count = app.workspaceCount();
+        if (count == 0) return;
+        const current = app.activeWorkspaceIndex();
+        if (current == 0) return;
+        const prev = current - 1;
+
+        const sidebar = self.private().sidebar;
+        sidebar.updateWorkspace(current, app.workspaceName(current), null, null, false, false);
+        app.setActiveWorkspaceIndex(prev);
+        sidebar.updateWorkspace(prev, app.workspaceName(prev), null, null, true, false);
+        sidebar.setActiveIndex(prev);
+    }
+
+    /// Toggle sidebar visibility.
+    fn actionTermplexToggleSidebar(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const sidebar_widget = priv.sidebar.as(gtk.Widget);
+        const visible = sidebar_widget.getVisible();
+        sidebar_widget.setVisible(if (visible != 0) 0 else 1);
     }
 
     const C = Common(Self, Private);

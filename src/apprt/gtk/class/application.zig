@@ -1970,6 +1970,43 @@ pub const Application = extern struct {
         self.syncActionAccelerator("split-tree.new-split::right", .{ .new_split = .right });
         self.syncActionAccelerator("split-tree.new-split::up", .{ .new_split = .up });
         self.syncActionAccelerator("split-tree.new-split::down", .{ .new_split = .down });
+
+        // Register Termplex-specific accelerators.
+        self.setupTermplexAccels();
+    }
+
+    /// Register hardcoded Termplex keyboard shortcuts.
+    ///
+    /// These use Ctrl+Shift as the default modifier prefix.  In a future
+    /// task the prefix will be made configurable via the Termplex config
+    /// file, but for now the bindings are wired directly.
+    fn setupTermplexAccels(self: *Self) void {
+        const gtk_app = self.as(gtk.Application);
+
+        // Ctrl+Q → quit (ensures the shortcut always works regardless of
+        // whether it is also bound via the Ghostty keybind system).
+        const accels_quit = [_:null]?[*:0]const u8{"<Control>q"};
+        gtk_app.setAccelsForAction("app.quit", &accels_quit);
+
+        // Ctrl+Shift+N → new workspace
+        const accels_new_ws = [_:null]?[*:0]const u8{"<Control><Shift>n"};
+        gtk_app.setAccelsForAction("win.termplex-new-workspace", &accels_new_ws);
+
+        // Ctrl+Shift+W → close workspace (stub, confirmation in Task 23)
+        const accels_close = [_:null]?[*:0]const u8{"<Control><Shift>w"};
+        gtk_app.setAccelsForAction("win.termplex-close-workspace", &accels_close);
+
+        // Ctrl+Shift+] → next workspace
+        const accels_next = [_:null]?[*:0]const u8{"<Control><Shift>bracketright"};
+        gtk_app.setAccelsForAction("win.termplex-next-workspace", &accels_next);
+
+        // Ctrl+Shift+[ → previous workspace
+        const accels_prev = [_:null]?[*:0]const u8{"<Control><Shift>bracketleft"};
+        gtk_app.setAccelsForAction("win.termplex-prev-workspace", &accels_prev);
+
+        // Ctrl+Shift+B → toggle sidebar
+        const accels_sidebar = [_:null]?[*:0]const u8{"<Control><Shift>b"};
+        gtk_app.setAccelsForAction("win.termplex-toggle-sidebar", &accels_sidebar);
     }
 
     fn syncActionAccelerator(
