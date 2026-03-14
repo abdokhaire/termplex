@@ -23,8 +23,8 @@ pub const must_draw_from_app_thread = true;
 
 /// GTK application ID
 pub const application_id = switch (builtin.mode) {
-    .Debug, .ReleaseSafe => "com.mitchellh.ghostty-debug",
-    .ReleaseFast, .ReleaseSmall => "com.mitchellh.ghostty",
+    .Debug, .ReleaseSafe => "com.termplex.app-debug",
+    .ReleaseFast, .ReleaseSmall => "com.termplex.app",
 };
 
 /// GTK object path
