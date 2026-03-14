@@ -230,6 +230,19 @@ pub const Application = extern struct {
         /// because the initial workspace is "Workspace 1".
         next_workspace_number: u32 = 2,
 
+        // ----- Termplex IPC socket state -----
+
+        /// The listening Unix domain socket fd, or null if not yet started.
+        socket_fd: ?std.posix.socket_t = null,
+
+        /// Heap-allocated copy of the socket filesystem path (for unlink on
+        /// cleanup).  Null when socket_fd is null.
+        socket_path_buf: ?[]u8 = null,
+
+        /// GLib source id returned by glib.timeoutAdd for the poll timer.
+        /// Null when no timer is active.
+        socket_poll_timer: ?c_uint = null,
+
         pub var offset: c_int = 0;
     };
 
@@ -423,6 +436,11 @@ pub const Application = extern struct {
                 @panic("OOM: cannot append initial workspace");
         }
 
+        // Termplex: start the IPC socket server.
+        startIpcSocket(self) catch |err| {
+            log.warn("failed to start IPC socket server: {}", .{err});
+        };
+
         // Signals
         _ = gobject.Object.signals.notify.connect(
             self,
@@ -460,6 +478,23 @@ pub const Application = extern struct {
             alloc.free(name);
         }
         priv.workspace_names.deinit(alloc);
+
+        // Termplex: shut down the IPC socket server.
+        if (priv.socket_poll_timer) |source| {
+            if (glib.Source.remove(source) == 0) {
+                log.warn("unable to remove IPC socket poll timer source={d}", .{source});
+            }
+            priv.socket_poll_timer = null;
+        }
+        if (priv.socket_fd) |fd| {
+            std.posix.close(fd);
+            priv.socket_fd = null;
+        }
+        if (priv.socket_path_buf) |path| {
+            std.posix.unlink(path) catch {};
+            alloc.free(path);
+            priv.socket_path_buf = null;
+        }
 
         priv.config.unref();
         priv.winproto.deinit(alloc);
@@ -545,6 +580,294 @@ pub const Application = extern struct {
         const priv = self.private();
         if (index >= priv.workspace_names.items.len) return null;
         return priv.workspace_names.items[index];
+    }
+
+    // -----------------------------------------------------------------
+    // Termplex IPC socket server (inline, no termplex module import)
+    // -----------------------------------------------------------------
+
+    /// Resolve the Unix socket path using the same priority as socket_server.zig:
+    ///   1. $TERMPLEX_SOCKET
+    ///   2. $XDG_RUNTIME_DIR/termplex.sock
+    ///   3. /tmp/termplex-{uid}.sock
+    ///
+    /// Caller owns the returned slice.
+    fn ipcSocketPath(alloc: std.mem.Allocator) ![]u8 {
+        // 1. Explicit override.
+        if (std.process.getEnvVarOwned(alloc, "TERMPLEX_SOCKET")) |p| {
+            if (p.len > 0) return p;
+            alloc.free(p);
+        } else |_| {}
+
+        // 2. $XDG_RUNTIME_DIR/termplex.sock
+        if (std.process.getEnvVarOwned(alloc, "XDG_RUNTIME_DIR")) |dir| {
+            defer alloc.free(dir);
+            if (dir.len > 0) {
+                return std.fs.path.join(alloc, &[_][]const u8{ dir, "termplex.sock" });
+            }
+        } else |_| {}
+
+        // 3. /tmp/termplex-{uid}.sock
+        const uid = std.posix.getuid();
+        return std.fmt.allocPrint(alloc, "/tmp/termplex-{d}.sock", .{uid});
+    }
+
+    /// Create, bind, and listen on the Unix domain socket, then register
+    /// a GLib timer to poll it every 100 ms.
+    fn startIpcSocket(self: *Self) !void {
+        const alloc = self.allocator();
+        const priv = self.private();
+
+        const path = try ipcSocketPath(alloc);
+        errdefer alloc.free(path);
+
+        // Remove any leftover socket file from a previous run.
+        std.posix.unlink(path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+
+        // Create a non-blocking, close-on-exec Unix stream socket.
+        const fd = try std.posix.socket(
+            std.posix.AF.UNIX,
+            std.posix.SOCK.STREAM | std.posix.SOCK.NONBLOCK | std.posix.SOCK.CLOEXEC,
+            0,
+        );
+        errdefer std.posix.close(fd);
+
+        // Build sockaddr_un and bind.
+        var addr: std.posix.sockaddr.un = .{
+            .family = std.posix.AF.UNIX,
+            .path = undefined,
+        };
+        @memset(&addr.path, 0);
+        if (path.len >= addr.path.len) return error.SocketPathTooLong;
+        @memcpy(addr.path[0..path.len], path);
+
+        try std.posix.bind(fd, @ptrCast(&addr), @sizeOf(std.posix.sockaddr.un));
+        try std.posix.listen(fd, 16);
+
+        log.debug("IPC socket listening on {s}", .{path});
+
+        priv.socket_fd = fd;
+        priv.socket_path_buf = path;
+        priv.socket_poll_timer = glib.timeoutAdd(100, pollSocketCallback, self);
+    }
+
+    /// GLib timer callback: called every 100 ms to accept and service IPC
+    /// client connections in a non-blocking manner.
+    fn pollSocketCallback(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_CONTINUE)));
+        const priv = self.private();
+        const listen_fd = priv.socket_fd orelse return @intFromBool(glib.SOURCE_REMOVE);
+
+        // Accept all pending connections; each is served synchronously (one
+        // request → one response → close), which is safe because the client
+        // fd is also set to non-blocking.
+        while (true) {
+            const client_fd = std.posix.accept(
+                listen_fd,
+                null,
+                null,
+                std.posix.SOCK.CLOEXEC,
+            ) catch |err| switch (err) {
+                error.WouldBlock => break, // no more pending connections
+                error.ConnectionAborted => continue,
+                else => {
+                    log.warn("IPC accept error: {}", .{err});
+                    break;
+                },
+            };
+
+            // Set client fd to non-blocking (the listening socket is NONBLOCK
+            // but accepted fds do not always inherit it without SOCK_NONBLOCK
+            // in accept4 flags).
+            ipcSetNonBlocking(client_fd) catch |err| {
+                log.warn("IPC setNonBlocking failed: {}", .{err});
+                std.posix.close(client_fd);
+                continue;
+            };
+
+            ipcServeClient(self, client_fd);
+            std.posix.close(client_fd);
+        }
+
+        return @intFromBool(glib.SOURCE_CONTINUE);
+    }
+
+    /// Read a single newline-terminated JSON request from the client, dispatch
+    /// it, and write the response.  All I/O is best-effort (non-blocking).
+    fn ipcServeClient(self: *Self, client_fd: std.posix.socket_t) void {
+        var buf: [65536]u8 = undefined;
+        var len: usize = 0;
+
+        // Read until we find a newline or exhaust the buffer.
+        while (len < buf.len) {
+            const n = std.posix.read(client_fd, buf[len..]) catch |err| switch (err) {
+                error.WouldBlock => break,
+                else => return,
+            };
+            if (n == 0) break; // EOF
+            len += n;
+            if (std.mem.indexOfScalar(u8, buf[0..len], '\n') != null) break;
+        }
+
+        const nl = std.mem.indexOfScalar(u8, buf[0..len], '\n') orelse return;
+        const request = buf[0..nl];
+
+        const alloc = self.allocator();
+        const response = ipcDispatch(self, alloc, request) orelse return;
+        defer alloc.free(response);
+
+        ipcWriteAll(client_fd, response) catch {};
+        ipcWriteAll(client_fd, "\n") catch {};
+    }
+
+    /// Parse a minimal JSON-RPC request and dispatch to the right handler.
+    /// Returns an allocated response string (caller frees), or null on error.
+    fn ipcDispatch(self: *Self, alloc: std.mem.Allocator, request: []const u8) ?[]u8 {
+        // We do a minimal parse: extract "method" and "id" from the JSON.
+        // Using std.json for correctness.
+        const parsed = std.json.parseFromSlice(
+            std.json.Value,
+            alloc,
+            request,
+            .{},
+        ) catch |err| {
+            log.warn("IPC: failed to parse JSON request: {}", .{err});
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_request\",\"message\":\"malformed JSON\"}},\"id\":0}}",
+                .{},
+            ) catch null;
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value;
+        if (root != .object) {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_request\",\"message\":\"expected object\"}},\"id\":0}}",
+                .{},
+            ) catch null;
+        }
+
+        // Extract id (integer, default 0).
+        const id: i64 = blk: {
+            if (root.object.get("id")) |v| {
+                break :blk switch (v) {
+                    .integer => |n| n,
+                    else => 0,
+                };
+            }
+            break :blk 0;
+        };
+
+        // Extract method string.
+        const method: []const u8 = blk: {
+            if (root.object.get("method")) |v| {
+                break :blk switch (v) {
+                    .string => |s| s,
+                    else => "",
+                };
+            }
+            break :blk "";
+        };
+
+        log.debug("IPC dispatch method={s} id={d}", .{ method, id });
+
+        // --- Dispatch ---
+
+        if (std.mem.eql(u8, method, "system.ping")) {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":true,\"result\":\"pong\",\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        if (std.mem.eql(u8, method, "workspace.list")) {
+            return ipcWorkspaceList(self, alloc, id);
+        }
+
+        if (std.mem.eql(u8, method, "workspace.create")) {
+            return ipcWorkspaceCreate(self, alloc, id);
+        }
+
+        // Default stub: ok with null result.
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":null,\"id\":{d}}}",
+            .{id},
+        ) catch null;
+    }
+
+    /// Handle workspace.list — returns the real workspace names array.
+    fn ipcWorkspaceList(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        const priv = self.private();
+        const names = priv.workspace_names.items;
+
+        // Build a JSON array of quoted strings.
+        var arr_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer arr_buf.deinit(alloc);
+
+        arr_buf.appendSlice(alloc, "[") catch return null;
+        for (names, 0..) |name, i| {
+            if (i > 0) arr_buf.appendSlice(alloc, ",") catch return null;
+            // Append a JSON-escaped string.
+            arr_buf.appendSlice(alloc, "\"") catch return null;
+            for (name) |c| {
+                if (c == '"' or c == '\\') {
+                    arr_buf.append(alloc, '\\') catch return null;
+                }
+                arr_buf.append(alloc, c) catch return null;
+            }
+            arr_buf.appendSlice(alloc, "\"") catch return null;
+        }
+        arr_buf.appendSlice(alloc, "]") catch return null;
+
+        const arr_str = arr_buf.items;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"workspaces\":{s},\"active\":{d}}},\"id\":{d}}}",
+            .{ arr_str, priv.active_workspace_idx, id },
+        ) catch null;
+    }
+
+    /// Handle workspace.create — calls addWorkspace() and returns the new index.
+    fn ipcWorkspaceCreate(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        const new_idx = self.addWorkspace() orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"oom\",\"message\":\"out of memory\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"index\":{d}}},\"id\":{d}}}",
+            .{ new_idx, id },
+        ) catch null;
+    }
+
+    /// Set a socket fd to non-blocking mode.
+    fn ipcSetNonBlocking(fd: std.posix.fd_t) !void {
+        const flags = try std.posix.fcntl(fd, std.posix.F.GETFL, 0);
+        const new_flags = flags | @as(usize, 1 << @bitOffsetOf(std.posix.O, "NONBLOCK"));
+        _ = try std.posix.fcntl(fd, std.posix.F.SETFL, new_flags);
+    }
+
+    /// Write all bytes to a (possibly non-blocking) fd; best-effort.
+    fn ipcWriteAll(fd: std.posix.fd_t, data: []const u8) !void {
+        var written: usize = 0;
+        while (written < data.len) {
+            const n = std.posix.write(fd, data[written..]) catch |err| switch (err) {
+                error.WouldBlock => return,
+                else => return err,
+            };
+            written += n;
+        }
     }
 
     /// Run the application. This is a replacement for `gio.Application.run`
