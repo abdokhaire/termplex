@@ -562,6 +562,34 @@ pub const Window = extern struct {
         );
     }
 
+    /// Create a tab in a specific TabView (for background workspace restore).
+    /// Does not use priv.active_tab_view so it is safe to call for workspaces
+    /// other than the currently active one.
+    pub fn createTabInView(self: *Self, tab_view: *adw.TabView, working_dir: ?[:0]const u8) void {
+        const priv = self.private();
+        const tab = Tab.new(
+            priv.config,
+            .{
+                .working_directory = working_dir,
+            },
+        );
+        const page = tab_view.append(tab.as(gtk.Widget));
+
+        // Property bindings so the TabPage title/tooltip stay in sync with the Tab.
+        _ = tab.as(gobject.Object).bindProperty(
+            "title",
+            page.as(gobject.Object),
+            "title",
+            .{ .sync_create = true },
+        );
+        _ = tab.as(gobject.Object).bindProperty(
+            "tooltip",
+            page.as(gobject.Object),
+            "tooltip",
+            .{ .sync_create = true },
+        );
+    }
+
     fn newTabPage(
         self: *Self,
         parent_: ?*CoreSurface,

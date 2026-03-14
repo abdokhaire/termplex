@@ -242,6 +242,10 @@ pub const Application = extern struct {
         /// incremented by addWorkspaceWithDir after each workspace is created.
         next_workspace_number: u32 = 1,
 
+        /// Per-workspace tab counts from session restore, consumed during
+        /// initAndShowWindow(). null when no restore is pending.
+        restore_tab_counts: ?[]u32 = null,
+
         // ----- Termplex IPC socket state -----
 
         /// The listening Unix domain socket fd, or null if not yet started.
@@ -749,6 +753,23 @@ pub const Application = extern struct {
     /// Get the active workspace's AdwTabView, or null if there are no workspaces.
     pub fn activeTabView(self: *Self) ?*adw.TabView {
         return self.workspaceTabView(self.private().active_workspace_idx);
+    }
+
+    /// Return the per-workspace tab counts stored during session restore,
+    /// or null if no restore data is pending. The returned slice is valid
+    /// until clearRestoreTabCounts() is called.
+    pub fn getRestoreTabCounts(self: *Self) ?[]const u32 {
+        return self.private().restore_tab_counts;
+    }
+
+    /// Free the restore_tab_counts slice and set it to null.
+    /// Should be called by the window after consuming the restore data.
+    pub fn clearRestoreTabCounts(self: *Self) void {
+        const alloc = self.allocator();
+        if (self.private().restore_tab_counts) |counts| {
+            alloc.free(counts);
+            self.private().restore_tab_counts = null;
+        }
     }
 
     /// Remove the workspace at `index` from the application state.
@@ -1382,6 +1403,16 @@ pub const Application = extern struct {
         const ws_arr = ws_val.array.items;
         if (ws_arr.len == 0) return;
 
+        // Detect format version. Absent or 1 → v1 (flat string array).
+        // Explicit 2 → v2 (array of objects with name/dir/tab_count).
+        const format_version: u32 = if (root.object.get("version")) |vv|
+            switch (vv) {
+                .integer => |n| if (n >= 2) 2 else 1,
+                else => 1,
+            }
+        else
+            1;
+
         // Clear the default "Workspace 1" — free names, dirs, and TabViews.
         for (priv.workspace_names.items) |name| alloc.free(name);
         priv.workspace_names.clearRetainingCapacity();
@@ -1392,18 +1423,75 @@ pub const Application = extern struct {
         // Reset counter so addWorkspaceWithDir assigns correct numbers below.
         priv.next_workspace_number = 1;
 
-        // Re-populate from saved names, creating a dir and TabView for each.
+        // Accumulate tab counts to pass to the window during Phase 2 tab creation.
+        // This list is transferred to restore_tab_counts (via toOwnedSlice) at the
+        // end of the function so no defer-free is needed here.
+        var tab_counts = std.ArrayListUnmanaged(u32){};
+
+        // Re-populate from saved data.
         for (ws_arr) |item| {
-            const name_str: []const u8 = switch (item) {
-                .string => |s| s,
-                else => continue,
+            // Extract name, dir, and tab_count depending on format version.
+            const name_str: []const u8 = blk: {
+                if (format_version == 2) {
+                    switch (item) {
+                        .object => |obj| {
+                            const nv = obj.get("name") orelse continue;
+                            switch (nv) {
+                                .string => |s| break :blk s,
+                                else => continue,
+                            }
+                        },
+                        else => continue,
+                    }
+                } else {
+                    switch (item) {
+                        .string => |s| break :blk s,
+                        else => continue,
+                    }
+                }
             };
+
+            const home_fallback: []const u8 = std.posix.getenv("HOME") orelse "/tmp";
+
+            const dir_str_raw: []const u8 = blk: {
+                if (format_version == 2) {
+                    switch (item) {
+                        .object => |obj| {
+                            if (obj.get("dir")) |dv| {
+                                switch (dv) {
+                                    .string => |s| if (s.len > 0) break :blk s,
+                                    else => {},
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+                break :blk home_fallback;
+            };
+
+            const tab_count: u32 = blk: {
+                if (format_version == 2) {
+                    switch (item) {
+                        .object => |obj| {
+                            if (obj.get("tab_count")) |tcv| {
+                                switch (tcv) {
+                                    .integer => |n| if (n > 0) break :blk @as(u32, @intCast(n)),
+                                    else => {},
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+                break :blk 1;
+            };
+
             const name: [:0]const u8 = alloc.dupeZ(u8, name_str) catch {
                 log.warn("session restore: OOM allocating workspace name", .{});
                 continue;
             };
-            const home = std.posix.getenv("HOME") orelse "/tmp";
-            const dir_str: [:0]const u8 = alloc.dupeZ(u8, home) catch {
+            const dir: [:0]const u8 = alloc.dupeZ(u8, dir_str_raw) catch {
                 alloc.free(name);
                 log.warn("session restore: OOM allocating workspace dir", .{});
                 continue;
@@ -1412,15 +1500,15 @@ pub const Application = extern struct {
             _ = tab_view.as(gobject.Object).ref();
             priv.workspace_names.append(alloc, name) catch {
                 alloc.free(name);
-                alloc.free(dir_str);
+                alloc.free(dir);
                 tab_view.as(gobject.Object).unref();
                 log.warn("session restore: OOM appending workspace name", .{});
                 continue;
             };
-            priv.workspace_dirs.append(alloc, dir_str) catch {
+            priv.workspace_dirs.append(alloc, dir) catch {
                 _ = priv.workspace_names.pop();
                 alloc.free(name);
-                alloc.free(dir_str);
+                alloc.free(dir);
                 tab_view.as(gobject.Object).unref();
                 log.warn("session restore: OOM appending workspace dir", .{});
                 continue;
@@ -1429,11 +1517,13 @@ pub const Application = extern struct {
                 _ = priv.workspace_dirs.pop();
                 _ = priv.workspace_names.pop();
                 alloc.free(name);
-                alloc.free(dir_str);
+                alloc.free(dir);
                 tab_view.as(gobject.Object).unref();
                 log.warn("session restore: OOM appending workspace tab_view", .{});
                 continue;
             };
+            // Non-fatal if tab_count tracking fails; window will fall back to 1 tab.
+            tab_counts.append(alloc, tab_count) catch {};
             priv.next_workspace_number += 1;
         }
 
@@ -1447,6 +1537,10 @@ pub const Application = extern struct {
 
         // Update next_workspace_number to avoid collisions.
         priv.next_workspace_number = @as(u32, @intCast(priv.workspace_names.items.len)) + 1;
+
+        // Store tab counts for Phase 2 (consumed in initAndShowWindow).
+        if (priv.restore_tab_counts) |old| alloc.free(old);
+        priv.restore_tab_counts = tab_counts.toOwnedSlice(alloc) catch null;
 
         // Restore active workspace index.
         if (root.object.get("active_workspace_index")) |av| {
@@ -1468,8 +1562,9 @@ pub const Application = extern struct {
             }
         }
 
-        log.info("session restore: loaded {d} workspace(s), active={d}", .{
+        log.info("session restore: loaded {d} workspace(s) (v{d}), active={d}", .{
             priv.workspace_names.items.len,
+            format_version,
             priv.active_workspace_idx,
         });
     }
@@ -3580,12 +3675,41 @@ const Action = struct {
             .{},
         );
 
-        // Create a new tab with window context (first tab in new window)
-        win.newTabForWindow(parent, .{
-            .command = overrides.command,
-            .working_directory = overrides.working_directory,
-            .title = overrides.title,
-        });
+        // Phase 2 session restore: if tab counts are pending, create tabs for
+        // all workspaces now and skip the default single-tab creation.
+        if (self.getRestoreTabCounts()) |tab_counts| {
+            const active_ws = self.activeWorkspaceIndex();
+            for (tab_counts, 0..) |count, ws_idx| {
+                const ws_index: u32 = @intCast(ws_idx);
+                const ws_dir = self.workspaceDir(ws_index);
+                const n: u32 = if (count > 0) count else 1;
+                if (ws_idx == active_ws) {
+                    // Active workspace: create tabs via the window's newTab path.
+                    var i: u32 = 0;
+                    while (i < n) : (i += 1) {
+                        win.newTabForWindow(null, .{
+                            .working_directory = ws_dir,
+                        });
+                    }
+                } else {
+                    // Background workspace: create tabs directly in that TabView.
+                    if (self.workspaceTabView(ws_index)) |tv| {
+                        var i: u32 = 0;
+                        while (i < n) : (i += 1) {
+                            win.createTabInView(tv, ws_dir);
+                        }
+                    }
+                }
+            }
+            self.clearRestoreTabCounts();
+        } else {
+            // Normal startup: create a single initial tab.
+            win.newTabForWindow(parent, .{
+                .command = overrides.command,
+                .working_directory = overrides.working_directory,
+                .title = overrides.title,
+            });
+        }
 
         // Estimate the initial window size before presenting so the window
         // manager can position it correctly.
