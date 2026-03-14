@@ -271,6 +271,7 @@ pub const Window = extern struct {
         tab_overview: *adw.TabOverview,
         tab_bar: *adw.TabBar,
         tab_view: *adw.TabView,
+        active_tab_view: *adw.TabView = undefined, // set programmatically in init
         toolbar: *adw.ToolbarView,
         toast_overlay: *adw.ToastOverlay,
 
@@ -398,11 +399,12 @@ pub const Window = extern struct {
         // Programmatically connect TabView signals (moved from Blueprint template).
         {
             const priv_ = self.private();
-            self.connectTabViewHandlers(priv_.tab_view);
+            priv_.active_tab_view = priv_.tab_view;
+            self.connectTabViewHandlers(priv_.active_tab_view);
 
             // Programmatically bind tab_bar and tab_overview to the TabView.
-            priv_.tab_bar.setView(priv_.tab_view);
-            priv_.tab_overview.setView(priv_.tab_view);
+            priv_.tab_bar.setView(priv_.active_tab_view);
+            priv_.tab_overview.setView(priv_.active_tab_view);
         }
 
         // If our configuration is null then we get the configuration
@@ -544,7 +546,7 @@ pub const Window = extern struct {
         },
     ) *adw.TabPage {
         const priv: *Private = self.private();
-        const tab_view = priv.tab_view;
+        const tab_view = priv.active_tab_view;
 
         // Create our new tab object
         const tab = Tab.new(
@@ -632,7 +634,7 @@ pub const Window = extern struct {
     /// changed.
     pub fn selectTab(self: *Self, n: SelectTab) bool {
         const priv = self.private();
-        const tab_view = priv.tab_view;
+        const tab_view = priv.active_tab_view;
 
         // Get our current tab numeric position
         const selected = tab_view.getSelectedPage() orelse return false;
@@ -686,7 +688,7 @@ pub const Window = extern struct {
         amount: isize,
     ) bool {
         const priv = self.private();
-        const tab_view = priv.tab_view;
+        const tab_view = priv.active_tab_view;
 
         // If we have one tab we never move.
         const total = tab_view.getNPages();
@@ -1051,7 +1053,7 @@ pub const Window = extern struct {
     /// Get the currently selected tab as a Tab object.
     fn getSelectedTab(self: *Self) ?*Tab {
         const priv = self.private();
-        const page = priv.tab_view.getSelectedPage() orelse return null;
+        const page = priv.active_tab_view.getSelectedPage() orelse return null;
         const child = page.getChild();
         assert(gobject.ext.isA(child, Tab));
         return gobject.ext.cast(Tab, child);
@@ -1060,11 +1062,11 @@ pub const Window = extern struct {
     /// Returns true if this window needs confirmation before quitting.
     fn getNeedsConfirmQuit(self: *Self) bool {
         const priv = self.private();
-        const n = priv.tab_view.getNPages();
+        const n = priv.active_tab_view.getNPages();
         assert(n >= 0);
 
         for (0..@intCast(n)) |i| {
-            const page = priv.tab_view.getNthPage(@intCast(i));
+            const page = priv.active_tab_view.getNthPage(@intCast(i));
             const child = page.getChild();
             const tab = gobject.ext.cast(Tab, child) orelse {
                 log.warn("unexpected non-Tab child in tab view", .{});
@@ -1620,11 +1622,11 @@ pub const Window = extern struct {
     }
 
     fn tabViewClosePage(
-        _: *adw.TabView,
+        tab_view: *adw.TabView,
         page: *adw.TabPage,
         self: *Self,
     ) callconv(.c) c_int {
-        const priv = self.private();
+        _ = self;
         const child = page.getChild();
         const tab = gobject.ext.cast(Tab, child) orelse
             return @intFromBool(false);
@@ -1632,7 +1634,7 @@ pub const Window = extern struct {
         // If the tab says it doesn't need confirmation then we go ahead
         // and close immediately.
         if (!tab.getNeedsConfirmQuit()) {
-            priv.tab_view.closePageFinish(page, @intFromBool(true));
+            tab_view.closePageFinish(page, @intFromBool(true));
             return @intFromBool(true);
         }
 
@@ -1659,7 +1661,7 @@ pub const Window = extern struct {
     }
 
     fn tabViewSelectedPage(
-        _: *adw.TabView,
+        tab_view: *adw.TabView,
         _: *gobject.ParamSpec,
         self: *Self,
     ) callconv(.c) void {
@@ -1669,7 +1671,7 @@ pub const Window = extern struct {
         priv.tab_bindings.setSource(null);
 
         // Get our current page which MUST be a Tab object.
-        const page = priv.tab_view.getSelectedPage() orelse return;
+        const page = tab_view.getSelectedPage() orelse return;
         const child = page.getChild();
         assert(gobject.ext.isA(child, Tab));
 
@@ -1753,20 +1755,9 @@ pub const Window = extern struct {
     fn tabViewCreateWindow(
         _: *adw.TabView,
         _: *Self,
-    ) callconv(.c) *adw.TabView {
-        // Create a new window without creating a new tab.
-        const win = gobject.ext.newInstance(
-            Self,
-            .{
-                .application = Application.default(),
-            },
-        );
-
-        // We have to show it otherwise it'll just be hidden.
-        gtk.Window.present(win.as(gtk.Window));
-
-        // Get our tab view
-        return win.private().tab_view;
+    ) callconv(.c) ?*adw.TabView {
+        // Disabled: Termplex is single-window. Tab drag-out is not supported.
+        return null;
     }
 
     fn tabCloseRequest(
@@ -1774,18 +1765,18 @@ pub const Window = extern struct {
         self: *Self,
     ) callconv(.c) void {
         const priv = self.private();
-        const page = priv.tab_view.getPage(tab.as(gtk.Widget));
+        const page = priv.active_tab_view.getPage(tab.as(gtk.Widget));
         // TODO: connect close page handler to tab to check for confirmation
-        priv.tab_view.closePage(page);
+        priv.active_tab_view.closePage(page);
     }
 
     fn tabViewNPages(
-        _: *adw.TabView,
+        tab_view: *adw.TabView,
         _: *gobject.ParamSpec,
         self: *Self,
     ) callconv(.c) void {
         const priv = self.private();
-        if (priv.tab_view.getNPages() == 0) {
+        if (tab_view.getNPages() == 0) {
             // If we have no pages left then we want to close window.
 
             // If the tab overview is open, then we don't close the window
@@ -1871,7 +1862,7 @@ pub const Window = extern struct {
 
         // Get the page that contains this tab
         const priv = self.private();
-        const tab_view = priv.tab_view;
+        const tab_view = priv.active_tab_view;
         const page = tab_view.getPage(tab.as(gtk.Widget));
         tab_view.setSelectedPage(page);
 
