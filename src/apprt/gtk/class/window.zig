@@ -1970,18 +1970,53 @@ pub const Window = extern struct {
         _: *gobject.ParamSpec,
         self: *Self,
     ) callconv(.c) void {
-        const priv = self.private();
         if (tab_view.getNPages() == 0) {
-            // If we have no pages left then we want to close window.
+            const app = Application.default();
 
-            // If the tab overview is open, then we don't close the window
-            // because its a rather abrupt experience. This also fixes an
-            // issue where dragging out the last tab in the tab overview
-            // won't cause Ghostty to exit.
+            // If other workspaces exist, defer workspace removal to avoid
+            // disconnecting signals during emission.
+            if (app.workspaceCount() > 1) {
+                _ = glib.idleAdd(deferredRemoveEmptyWorkspace, self);
+                return;
+            }
+
+            // Last workspace — close window (original behavior)
+            const priv = self.private();
             if (priv.tab_overview.getOpen() != 0) return;
-
             self.as(gtk.Window).close();
         }
+    }
+
+    fn deferredRemoveEmptyWorkspace(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return 0));
+        const app = Application.default();
+
+        // Find the empty workspace by scanning for a TabView with 0 pages.
+        // We cannot rely on activeWorkspaceIndex() because it may have
+        // changed between the signal and the idle callback.
+        const current_idx = blk: {
+            var idx: u32 = 0;
+            while (idx < app.workspaceCount()) : (idx += 1) {
+                if (app.workspaceTabView(idx)) |tv| {
+                    if (tv.getNPages() == 0) break :blk idx;
+                }
+            }
+            return 0; // G_SOURCE_REMOVE — no empty workspace found
+        };
+
+        const new_idx: u32 = if (current_idx > 0) current_idx - 1 else 0;
+
+        // Switch to adjacent workspace
+        if (app.workspaceTabView(new_idx)) |tv| {
+            app.setActiveWorkspaceIndex(new_idx);
+            self.switchToTabView(tv);
+        }
+
+        // Remove the empty workspace from sidebar and application
+        self.private().sidebar.removeWorkspace(current_idx);
+        app.removeWorkspace(current_idx);
+
+        return 0; // G_SOURCE_REMOVE — run only once
     }
     fn setupTabMenu(
         _: *adw.TabView,
