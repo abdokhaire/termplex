@@ -158,6 +158,59 @@ label.resize-overlay {
 }
 
 /*
+ * Termplex Sidebar
+ */
+
+.termplex-sidebar {
+  background-color: #1e2430;
+  border-right: 1px solid #2d3548;
+}
+
+.termplex-sidebar-active {
+  background-color: #e94560;
+  min-width: 3px;
+}
+
+.termplex-sidebar-unread {
+  background-color: #4da6ff;
+  min-width: 3px;
+}
+
+.termplex-header {
+  font-weight: bold;
+  color: #e94560;
+  padding: 10px 12px;
+}
+
+.termplex-workspace-tab {
+  padding: 4px 8px;
+}
+
+.termplex-tab-name {
+  font-weight: bold;
+  font-size: 11px;
+}
+
+.termplex-tab-port {
+  color: #53d769;
+  font-size: 9px;
+}
+
+.termplex-tab-branch {
+  color: #7ec8e3;
+  font-size: 9px;
+}
+
+/*
+ * Termplex Attention Ring
+ */
+
+.termplex-attention {
+  border: 2px solid #4da6ff;
+  box-shadow: 0 0 12px rgba(77, 166, 255, 0.3);
+}
+
+/*
  * Splits
  */
 

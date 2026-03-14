@@ -6,3 +6,45 @@
   background-color: rgba(36, 36, 36, 1);
   background-clip: content-box;
 }
+
+/*
+ * Termplex Sidebar (dark mode overrides)
+ */
+
+.termplex-sidebar {
+  background-color: #16213e;
+  border-right: 1px solid #0f3460;
+}
+
+.termplex-sidebar-active {
+  background-color: #e94560;
+  min-width: 3px;
+}
+
+.termplex-sidebar-unread {
+  background-color: #4da6ff;
+  min-width: 3px;
+}
+
+.termplex-header {
+  font-weight: bold;
+  color: #e94560;
+  padding: 10px 12px;
+}
+
+.termplex-tab-port {
+  color: #53d769;
+}
+
+.termplex-tab-branch {
+  color: #7ec8e3;
+}
+
+/*
+ * Termplex Attention Ring (dark mode overrides)
+ */
+
+.termplex-attention {
+  border: 2px solid #4da6ff;
+  box-shadow: 0 0 12px rgba(77, 166, 255, 0.3);
+}
