@@ -305,9 +305,37 @@ pub const Window = extern struct {
             const sidebar = Sidebar.new();
             priv_.sidebar = sidebar;
 
-            // Add a default workspace tab so the sidebar is not empty.
-            sidebar.addWorkspace("Workspace 1", null, null);
-            sidebar.setActiveIndex(0);
+            // Populate the sidebar from the Application's workspace list.
+            // On first launch this will contain "Workspace 1".
+            {
+                const app = Application.default();
+                const count = app.workspaceCount();
+                var i: u32 = 0;
+                while (i < count) : (i += 1) {
+                    const name = app.workspaceName(i);
+                    sidebar.addWorkspace(name, null, null);
+                }
+                if (count > 0) {
+                    sidebar.setActiveIndex(app.activeWorkspaceIndex());
+                    // Mark the active workspace tab visually.
+                    sidebar.updateWorkspace(
+                        app.activeWorkspaceIndex(),
+                        app.workspaceName(app.activeWorkspaceIndex()),
+                        null,
+                        null,
+                        true,
+                        false,
+                    );
+                }
+            }
+
+            // Wire sidebar callbacks so user interactions reach the
+            // Application's workspace state.
+            sidebar.setCallbacks(
+                &termplexOnWorkspaceSelected,
+                &termplexOnNewWorkspace,
+                @ptrCast(self),
+            );
 
             // 2. Create a horizontal Gtk.Paned to hold sidebar + content.
             const paned = gtk.Paned.new(.horizontal);
@@ -1258,6 +1286,78 @@ pub const Window = extern struct {
                 break :pwd glib.ext.dupeZ(u8, std.mem.span(pwd));
             },
         };
+    }
+
+    //---------------------------------------------------------------
+    // Termplex sidebar callbacks
+
+    /// Called when the user clicks a workspace row in the sidebar.
+    fn termplexOnWorkspaceSelected(index: u32, userdata: ?*anyopaque) void {
+        const win: *Self = @ptrCast(@alignCast(userdata orelse return));
+        const app = Application.default();
+        const sidebar = win.private().sidebar;
+
+        const old_idx = app.activeWorkspaceIndex();
+
+        // Update active state in the Application.
+        app.setActiveWorkspaceIndex(index);
+
+        // Update the old workspace tab to inactive.
+        if (old_idx != index) {
+            sidebar.updateWorkspace(
+                old_idx,
+                app.workspaceName(old_idx),
+                null,
+                null,
+                false,
+                false,
+            );
+        }
+
+        // Update the new workspace tab to active.
+        sidebar.updateWorkspace(
+            index,
+            app.workspaceName(index),
+            null,
+            null,
+            true,
+            false,
+        );
+        sidebar.setActiveIndex(index);
+    }
+
+    /// Called when the user clicks "+ New Workspace" in the sidebar.
+    fn termplexOnNewWorkspace(userdata: ?*anyopaque) void {
+        const win: *Self = @ptrCast(@alignCast(userdata orelse return));
+        const app = Application.default();
+        const sidebar = win.private().sidebar;
+
+        const new_idx = app.addWorkspace() orelse {
+            log.warn("failed to create new workspace (out of memory)", .{});
+            return;
+        };
+
+        // Get the name that was just created.
+        const name = app.workspaceName(new_idx);
+
+        // Add the workspace tab to the sidebar.
+        sidebar.addWorkspace(name, null, null);
+
+        // Deactivate the old workspace tab visually.
+        const old_idx = app.activeWorkspaceIndex();
+        sidebar.updateWorkspace(
+            old_idx,
+            app.workspaceName(old_idx),
+            null,
+            null,
+            false,
+            false,
+        );
+
+        // Activate the new workspace.
+        app.setActiveWorkspaceIndex(new_idx);
+        sidebar.updateWorkspace(new_idx, name, null, null, true, false);
+        sidebar.setActiveIndex(new_idx);
     }
 
     //---------------------------------------------------------------

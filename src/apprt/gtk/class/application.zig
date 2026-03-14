@@ -214,6 +214,22 @@ pub const Application = extern struct {
         /// not exist in Ghostty's environment variable.
         saved_language: ?[:0]const u8 = null,
 
+        // ----- Termplex workspace state -----
+
+        /// Ordered list of workspace display names. Each name is owned
+        /// (allocated via the Application allocator). The Application
+        /// is responsible for freeing them in `deinit`.
+        workspace_names: std.ArrayListUnmanaged([:0]const u8) = .empty,
+
+        /// Index of the currently active workspace (0-based). Only
+        /// meaningful when workspace_names is non-empty.
+        active_workspace_idx: u32 = 0,
+
+        /// Auto-incrementing counter used to generate default workspace
+        /// names ("Workspace 1", "Workspace 2", ...).  Starts at 2
+        /// because the initial workspace is "Workspace 1".
+        next_workspace_number: u32 = 2,
+
         pub var offset: c_int = 0;
     };
 
@@ -399,6 +415,14 @@ pub const Application = extern struct {
             .saved_language = saved_language,
         };
 
+        // Termplex: create the default "Workspace 1".
+        {
+            const ws_name: [:0]const u8 = alloc.dupeZ(u8, "Workspace 1") catch
+                @panic("OOM: cannot allocate initial workspace name");
+            priv.workspace_names.append(alloc, ws_name) catch
+                @panic("OOM: cannot append initial workspace");
+        }
+
         // Signals
         _ = gobject.Object.signals.notify.connect(
             self,
@@ -430,6 +454,13 @@ pub const Application = extern struct {
     pub fn deinit(self: *Self) void {
         const alloc = self.allocator();
         const priv: *Private = self.private();
+
+        // Termplex: free workspace names.
+        for (priv.workspace_names.items) |name| {
+            alloc.free(name);
+        }
+        priv.workspace_names.deinit(alloc);
+
         priv.config.unref();
         priv.winproto.deinit(alloc);
         priv.global_shortcuts.unref();
@@ -463,6 +494,57 @@ pub const Application = extern struct {
     /// pointer to internal memory so it must be copied by callers.
     pub fn savedLanguage(self: *Self) ?[:0]const u8 {
         return self.private().saved_language;
+    }
+
+    // -----------------------------------------------------------------
+    // Termplex workspace helpers
+    // -----------------------------------------------------------------
+
+    /// Return the number of workspaces.
+    pub fn workspaceCount(self: *Self) u32 {
+        return @intCast(self.private().workspace_names.items.len);
+    }
+
+    /// Return the index of the currently active workspace.
+    pub fn activeWorkspaceIndex(self: *Self) u32 {
+        return self.private().active_workspace_idx;
+    }
+
+    /// Set the active workspace index. Caller is responsible for keeping
+    /// the sidebar in sync after calling this.
+    pub fn setActiveWorkspaceIndex(self: *Self, index: u32) void {
+        const priv = self.private();
+        if (index < priv.workspace_names.items.len) {
+            priv.active_workspace_idx = index;
+        }
+    }
+
+    /// Create a new workspace with an auto-generated name.  Returns the
+    /// 0-based index of the newly created workspace, or null on OOM.
+    pub fn addWorkspace(self: *Self) ?u32 {
+        const alloc = self.allocator();
+        const priv = self.private();
+
+        // Build name: "Workspace N"
+        var buf: [64]u8 = undefined;
+        const name_slice = std.fmt.bufPrint(&buf, "Workspace {d}", .{priv.next_workspace_number}) catch return null;
+        const name: [:0]const u8 = alloc.dupeZ(u8, name_slice) catch return null;
+
+        priv.workspace_names.append(alloc, name) catch {
+            alloc.free(name);
+            return null;
+        };
+        priv.next_workspace_number += 1;
+
+        return @intCast(priv.workspace_names.items.len - 1);
+    }
+
+    /// Return the name of the workspace at the given index, or null if
+    /// out of range.
+    pub fn workspaceName(self: *Self, index: u32) ?[:0]const u8 {
+        const priv = self.private();
+        if (index >= priv.workspace_names.items.len) return null;
+        return priv.workspace_names.items[index];
     }
 
     /// Run the application. This is a replacement for `gio.Application.run`
