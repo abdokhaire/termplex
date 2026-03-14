@@ -1387,6 +1387,11 @@ pub const Window = extern struct {
             false,
         );
         sidebar.setActiveIndex(index);
+
+        // Switch TabView
+        if (app.workspaceTabView(index)) |tv| {
+            win.switchToTabView(tv);
+        }
     }
 
     /// Called when the user clicks "+ New Workspace" in the sidebar.
@@ -1421,6 +1426,114 @@ pub const Window = extern struct {
         app.setActiveWorkspaceIndex(new_idx);
         sidebar.updateWorkspace(new_idx, name, null, null, true, false);
         sidebar.setActiveIndex(new_idx);
+
+        // Switch to the new workspace's TabView and create an initial tab.
+        if (app.workspaceTabView(new_idx)) |tv| {
+            win.switchToTabView(tv);
+            win.newTab(null);
+        }
+    }
+
+    //---------------------------------------------------------------
+    // Workspace TabView switching
+
+    /// Switch the displayed TabView to a different workspace's TabView.
+    /// Disconnects signals from old, swaps widget, reconnects to new.
+    pub fn switchToTabView(self: *Self, new_tab_view: *adw.TabView) void {
+        const priv = self.private();
+        const old_tab_view = priv.active_tab_view;
+
+        // Skip if already displaying this TabView
+        if (old_tab_view == new_tab_view) return;
+
+        // --- Disconnect phase ---
+
+        // 1. Disconnect surface handlers for all tabs in old TabView
+        const old_n = old_tab_view.getNPages();
+        var i: c_int = 0;
+        while (i < old_n) : (i += 1) {
+            const page = old_tab_view.getNthPage(i);
+            const tab_widget = page.getChild();
+            if (gobject.ext.cast(Tab, tab_widget)) |tab| {
+                if (tab.getSurfaceTree()) |tree| {
+                    self.disconnectSurfaceHandlers(tree);
+                }
+            }
+        }
+
+        // 2. Unbind tab_bindings
+        priv.tab_bindings.setSource(null);
+
+        // 3. Disconnect all 7 signal handlers from old TabView
+        self.disconnectTabViewHandlers(old_tab_view);
+
+        // 4. Unbind TabBar and TabOverview
+        priv.tab_bar.setView(null);
+        priv.tab_overview.setView(null);
+
+        // --- Swap phase ---
+
+        // 5. Unparent old TabView (Application ref keeps it alive)
+        priv.toast_overlay.setChild(null);
+
+        // 6. Insert new TabView
+        priv.toast_overlay.setChild(new_tab_view.as(gtk.Widget));
+
+        // --- Reconnect phase ---
+
+        // 7. Connect all 7 signal handlers to new TabView
+        self.connectTabViewHandlers(new_tab_view);
+
+        // 8. Rebind TabBar and TabOverview
+        priv.tab_bar.setView(new_tab_view);
+        priv.tab_overview.setView(new_tab_view);
+
+        // 9. Reconnect surface handlers for all tabs in new TabView
+        const new_n = new_tab_view.getNPages();
+        i = 0;
+        while (i < new_n) : (i += 1) {
+            const page = new_tab_view.getNthPage(i);
+            const tab_widget = page.getChild();
+            if (gobject.ext.cast(Tab, tab_widget)) |tab| {
+                if (tab.getSurfaceTree()) |tree| {
+                    self.connectSurfaceHandlers(tree);
+                }
+            }
+        }
+
+        // 10. Rebind tab_bindings to selected page
+        if (new_tab_view.getSelectedPage()) |page| {
+            const child = page.getChild();
+            priv.tab_bindings.setSource(child.as(gobject.Object));
+        }
+
+        // 11. Focus active surface
+        if (new_tab_view.getSelectedPage()) |page| {
+            const tab_widget = page.getChild();
+            if (gobject.ext.cast(Tab, tab_widget)) |tab| {
+                if (tab.getActiveSurface()) |surface| {
+                    _ = surface.as(gtk.Widget).grabFocus();
+                }
+            }
+        }
+
+        // 12. Update active_tab_view reference
+        priv.active_tab_view = new_tab_view;
+
+        // 13. Update header title to workspace name
+        const app = Application.default();
+        const ws_idx = app.activeWorkspaceIndex();
+        const ws_name = app.workspaceName(ws_idx);
+        const ws_dir = app.workspaceDir(ws_idx);
+        self.updateHeaderTitle(ws_name, ws_dir);
+    }
+
+    /// Update the header bar title and subtitle for the active workspace.
+    fn updateHeaderTitle(self: *Self, name: ?[:0]const u8, dir: ?[:0]const u8) void {
+        _ = self;
+        _ = name;
+        _ = dir;
+        // Will be implemented in Task 12 when window_title template child is added
     }
 
     //---------------------------------------------------------------
@@ -2329,6 +2442,10 @@ pub const Window = extern struct {
         app.setActiveWorkspaceIndex(next);
         sidebar.updateWorkspace(next, app.workspaceName(next), null, null, true, false);
         sidebar.setActiveIndex(next);
+
+        if (app.workspaceTabView(next)) |tv| {
+            self.switchToTabView(tv);
+        }
     }
 
     /// Switch to the previous workspace.
@@ -2349,6 +2466,10 @@ pub const Window = extern struct {
         app.setActiveWorkspaceIndex(prev);
         sidebar.updateWorkspace(prev, app.workspaceName(prev), null, null, true, false);
         sidebar.setActiveIndex(prev);
+
+        if (app.workspaceTabView(prev)) |tv| {
+            self.switchToTabView(tv);
+        }
     }
 
     /// Toggle sidebar visibility.
