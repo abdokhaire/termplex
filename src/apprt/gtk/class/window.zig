@@ -260,6 +260,12 @@ pub const Window = extern struct {
         // Termplex sidebar and paned container
         sidebar: *Sidebar = undefined,
         sidebar_paned: *gtk.Paned = undefined,
+        sidebar_saved_width: c_int = 180,
+        sidebar_toggle_btn: *gtk.Button = undefined,
+        sidebar_programmatic: bool = false,
+
+        /// Signal handler IDs for the active TabView (for disconnect/reconnect).
+        tab_view_handler_ids: [7]c_ulong = .{0} ** 7,
 
         // Template bindings
         tab_overview: *adw.TabOverview,
@@ -355,8 +361,48 @@ pub const Window = extern struct {
             // 4. Set the initial sidebar width.
             paned.setPosition(180);
 
-            // 5. Set the paned as the new window content.
-            adw_win.setContent(paned.as(gtk.Widget));
+            // 5. Create a toggle button that appears when sidebar is hidden.
+            const toggle_btn = gtk.Button.newWithLabel("\u{2630}"); // ☰
+            toggle_btn.as(gtk.Widget).setHalign(.start);
+            toggle_btn.as(gtk.Widget).setValign(.center);
+            toggle_btn.as(gtk.Widget).addCssClass("termplex-sidebar-toggle");
+            toggle_btn.as(gtk.Widget).setVisible(0); // hidden by default (sidebar starts visible)
+            priv_.sidebar_toggle_btn = toggle_btn;
+
+            _ = gtk.Button.signals.clicked.connect(
+                toggle_btn,
+                *Self,
+                &onSidebarToggleClicked,
+                self,
+                .{},
+            );
+
+            // 6. Watch paned position — auto-hide sidebar when dragged ≤ 2px.
+            _ = gobject.Object.signals.notify.connect(
+                paned,
+                *Self,
+                &onPanedPositionChanged,
+                self,
+                .{ .detail = "position" },
+            );
+
+            // 7. Wrap paned + toggle button in an overlay.
+            const overlay = gtk.Overlay.new();
+            overlay.setChild(paned.as(gtk.Widget));
+            overlay.addOverlay(toggle_btn.as(gtk.Widget));
+
+            // 8. Set the overlay as the new window content.
+            adw_win.setContent(overlay.as(gtk.Widget));
+        }
+
+        // Programmatically connect TabView signals (moved from Blueprint template).
+        {
+            const priv_ = self.private();
+            self.connectTabViewHandlers(priv_.tab_view);
+
+            // Programmatically bind tab_bar and tab_overview to the TabView.
+            priv_.tab_bar.setView(priv_.tab_view);
+            priv_.tab_overview.setView(priv_.tab_view);
         }
 
         // If our configuration is null then we get the configuration
@@ -383,7 +429,6 @@ pub const Window = extern struct {
         // Setup our tab binding group. This ensures certain properties
         // are only synced from the currently active tab.
         priv.tab_bindings = gobject.BindingGroup.new();
-        priv.tab_bindings.bind("title", self.as(gobject.Object), "title", .{});
 
         // Set our window icon. We can't set this in the blueprint file
         // because its dependent on the build config.
@@ -2321,10 +2366,124 @@ pub const Window = extern struct {
         _: ?*glib.Variant,
         self: *Self,
     ) callconv(.c) void {
+        self.toggleSidebar();
+    }
+
+    fn onSidebarToggleClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
+        self.toggleSidebar();
+    }
+
+    fn onPanedPositionChanged(_: *gtk.Paned, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        if (priv.sidebar_programmatic) return;
+
+        const pos = priv.sidebar_paned.getPosition();
+        const sidebar_visible = priv.sidebar.as(gtk.Widget).getVisible() != 0;
+
+        if (sidebar_visible and pos <= 2) {
+            // User dragged the divider to collapse — fully hide sidebar.
+            if (pos > 0) {
+                // Save the last meaningful width (before this drag).
+                // sidebar_saved_width is already set from previous state.
+            }
+            priv.sidebar.as(gtk.Widget).setVisible(0);
+            priv.sidebar_programmatic = true;
+            priv.sidebar_paned.setPosition(0);
+            priv.sidebar_programmatic = false;
+            priv.sidebar_toggle_btn.as(gtk.Widget).setVisible(1);
+        }
+    }
+
+    fn toggleSidebar(self: *Self) void {
         const priv = self.private();
         const sidebar_widget = priv.sidebar.as(gtk.Widget);
+        const paned = priv.sidebar_paned;
         const visible = sidebar_widget.getVisible();
-        sidebar_widget.setVisible(if (visible != 0) 0 else 1);
+        const pos = paned.getPosition();
+
+        priv.sidebar_programmatic = true;
+        defer priv.sidebar_programmatic = false;
+
+        if (visible != 0 and pos > 0) {
+            // Sidebar is showing — save width and hide.
+            priv.sidebar_saved_width = pos;
+            sidebar_widget.setVisible(0);
+            paned.setPosition(0);
+            priv.sidebar_toggle_btn.as(gtk.Widget).setVisible(1);
+        } else {
+            // Sidebar is hidden — restore.
+            const restore_width = if (priv.sidebar_saved_width > 10) priv.sidebar_saved_width else 180;
+            sidebar_widget.setVisible(1);
+            paned.setPosition(restore_width);
+            priv.sidebar_toggle_btn.as(gtk.Widget).setVisible(0);
+        }
+    }
+
+    /// Connect all 7 signal handlers to a TabView and store handler IDs.
+    fn connectTabViewHandlers(self: *Self, tab_view: *adw.TabView) void {
+        const priv = self.private();
+
+        priv.tab_view_handler_ids[0] = gobject.Object.signals.notify.connect(
+            tab_view,
+            *Self,
+            &tabViewNPages,
+            self,
+            .{ .detail = "n-pages" },
+        );
+        priv.tab_view_handler_ids[1] = gobject.Object.signals.notify.connect(
+            tab_view,
+            *Self,
+            &tabViewSelectedPage,
+            self,
+            .{ .detail = "selected-page" },
+        );
+        priv.tab_view_handler_ids[2] = adw.TabView.signals.close_page.connect(
+            tab_view,
+            *Self,
+            &tabViewClosePage,
+            self,
+            .{},
+        );
+        priv.tab_view_handler_ids[3] = adw.TabView.signals.page_attached.connect(
+            tab_view,
+            *Self,
+            &tabViewPageAttached,
+            self,
+            .{},
+        );
+        priv.tab_view_handler_ids[4] = adw.TabView.signals.page_detached.connect(
+            tab_view,
+            *Self,
+            &tabViewPageDetached,
+            self,
+            .{},
+        );
+        priv.tab_view_handler_ids[5] = adw.TabView.signals.create_window.connect(
+            tab_view,
+            *Self,
+            &tabViewCreateWindow,
+            self,
+            .{},
+        );
+        priv.tab_view_handler_ids[6] = adw.TabView.signals.setup_menu.connect(
+            tab_view,
+            *Self,
+            &setupTabMenu,
+            self,
+            .{},
+        );
+    }
+
+    /// Disconnect all 7 signal handlers from a TabView.
+    fn disconnectTabViewHandlers(self: *Self, tab_view: *adw.TabView) void {
+        const priv = self.private();
+        const obj = tab_view.as(gobject.Object);
+        for (&priv.tab_view_handler_ids) |*id| {
+            if (id.* != 0) {
+                gobject.signalHandlerDisconnect(obj, id.*);
+                id.* = 0;
+            }
+        }
     }
 
     const C = Common(Self, Private);
@@ -2379,13 +2538,6 @@ pub const Window = extern struct {
             class.bindTemplateCallback("overview_create_tab", &tabOverviewCreateTab);
             class.bindTemplateCallback("overview_notify_open", &tabOverviewOpen);
             class.bindTemplateCallback("close_request", &windowCloseRequest);
-            class.bindTemplateCallback("close_page", &tabViewClosePage);
-            class.bindTemplateCallback("page_attached", &tabViewPageAttached);
-            class.bindTemplateCallback("page_detached", &tabViewPageDetached);
-            class.bindTemplateCallback("setup_tab_menu", &setupTabMenu);
-            class.bindTemplateCallback("tab_create_window", &tabViewCreateWindow);
-            class.bindTemplateCallback("notify_n_pages", &tabViewNPages);
-            class.bindTemplateCallback("notify_selected_page", &tabViewSelectedPage);
             class.bindTemplateCallback("notify_config", &propConfig);
             class.bindTemplateCallback("notify_fullscreened", &propFullscreened);
             class.bindTemplateCallback("notify_is_active", &propIsActive);
@@ -2394,7 +2546,6 @@ pub const Window = extern struct {
             class.bindTemplateCallback("notify_quick_terminal", &propQuickTerminal);
             class.bindTemplateCallback("notify_scale_factor", &propScaleFactor);
             class.bindTemplateCallback("titlebar_style_is_tabs", &closureTitlebarStyleIsTab);
-            class.bindTemplateCallback("computed_subtitle", &closureSubtitle);
 
             // Virtual methods
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);

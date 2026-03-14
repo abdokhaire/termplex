@@ -23,7 +23,6 @@ template $GhosttyWindow: Adw.ApplicationWindow {
   content: Adw.TabOverview tab_overview {
     create-tab => $overview_create_tab();
     notify::open => $overview_notify_open();
-    view: tab_view;
     enable-new-tab: true;
     // Disable the title buttons (close, maximize, minimize, ...)
     // *inside* the tab overview if CSDs are disabled.
@@ -41,13 +40,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
 
         title-widget: Adw.WindowTitle {
           title: bind template.title;
-          // Blueprint auto-formatter won't let me split this into multiple
-          // lines. Let me explain myself. All parameters to a closure are used
-          // as notifications to recompute the value of the closure. All
-          // elements of a property chain are also subscribed to for changes.
-          // This one long, ugly line saves us from manually building up this
-          // massive notify chain in code.
-          subtitle: bind $computed_subtitle(template.config, tab_view.selected-page.child as <$GhosttyTab>.active-surface as <$GhosttySurface>.pwd) as <string>;
+          subtitle: "";
         };
 
         [start]
@@ -85,7 +78,6 @@ template $GhosttyWindow: Adw.ApplicationWindow {
       Adw.TabBar tab_bar {
         autohide: bind template.tabs-autohide;
         expand-tabs: bind template.tabs-wide;
-        view: tab_view;
         visible: bind template.tabs-visible;
 
         [start]
@@ -156,13 +148,6 @@ template $GhosttyWindow: Adw.ApplicationWindow {
 
         Adw.ToastOverlay toast_overlay {
           Adw.TabView tab_view {
-            notify::n-pages => $notify_n_pages();
-            notify::selected-page => $notify_selected_page();
-            close-page => $close_page();
-            page-attached => $page_attached();
-            page-detached => $page_detached();
-            create-window => $tab_create_window();
-            setup-menu => $setup_tab_menu();
             menu-model: tab_context_menu;
             shortcuts: none;
           }
