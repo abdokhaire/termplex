@@ -1241,20 +1241,37 @@ pub const Application = extern struct {
             }
         }
 
-        // Build JSON workspace names array.
-        var names_buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer names_buf.deinit(alloc);
-        names_buf.appendSlice(alloc, "[") catch return;
+        // Build JSON workspaces array (v2: objects with name, dir, tab_count).
+        var ws_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer ws_buf.deinit(alloc);
+        ws_buf.appendSlice(alloc, "[") catch return;
         for (priv.workspace_names.items, 0..) |name, i| {
-            if (i > 0) names_buf.appendSlice(alloc, ",") catch return;
-            names_buf.append(alloc, '"') catch return;
+            if (i > 0) ws_buf.appendSlice(alloc, ",") catch return;
+            ws_buf.appendSlice(alloc, "{\"name\":\"") catch return;
+            // Escape name
             for (name) |c| {
-                if (c == '"' or c == '\\') names_buf.append(alloc, '\\') catch return;
-                names_buf.append(alloc, c) catch return;
+                if (c == '"' or c == '\\') ws_buf.append(alloc, '\\') catch return;
+                ws_buf.append(alloc, c) catch return;
             }
-            names_buf.append(alloc, '"') catch return;
+            ws_buf.appendSlice(alloc, "\",\"dir\":\"") catch return;
+            // Escape dir
+            const dir = if (i < priv.workspace_dirs.items.len) priv.workspace_dirs.items[i] else "";
+            for (dir) |c| {
+                if (c == '"' or c == '\\') ws_buf.append(alloc, '\\') catch return;
+                ws_buf.append(alloc, c) catch return;
+            }
+            ws_buf.appendSlice(alloc, "\",\"tab_count\":") catch return;
+            // Get tab count from TabView
+            const tab_count: c_int = if (i < priv.workspace_tab_views.items.len)
+                priv.workspace_tab_views.items[i].getNPages()
+            else
+                0;
+            var count_buf: [16]u8 = undefined;
+            const count_str = std.fmt.bufPrint(&count_buf, "{d}", .{tab_count}) catch "0";
+            ws_buf.appendSlice(alloc, count_str) catch return;
+            ws_buf.appendSlice(alloc, "}") catch return;
         }
-        names_buf.appendSlice(alloc, "]") catch return;
+        ws_buf.appendSlice(alloc, "]") catch return;
 
         // Build JSON for pwd (may be null).
         const pwd_str: []const u8 = if (priv.current_pwd) |p| p else "";
@@ -1273,7 +1290,7 @@ pub const Application = extern struct {
 
         const json = std.fmt.allocPrint(alloc,
             \\{{
-            \\  "version": 1,
+            \\  "version": 2,
             \\  "window_width": {d},
             \\  "window_height": {d},
             \\  "sidebar_width": {d},
@@ -1287,7 +1304,7 @@ pub const Application = extern struct {
             window_height,
             sidebar_width,
             priv.active_workspace_idx,
-            names_buf.items,
+            ws_buf.items,
             pwd_buf.items,
         }) catch return;
         defer alloc.free(json);
