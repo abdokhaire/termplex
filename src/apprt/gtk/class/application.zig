@@ -791,6 +791,18 @@ pub const Application = extern struct {
         }
     }
 
+    /// Rename the workspace at the given index.
+    ///
+    /// Frees the old name string and replaces it with a duplicate of `new_name`.
+    /// Does nothing if the index is out of range.
+    pub fn renameWorkspace(self: *Self, index: u32, new_name: [:0]const u8) void {
+        const alloc = self.allocator();
+        const priv = self.private();
+        if (index >= priv.workspace_names.items.len) return;
+        alloc.free(priv.workspace_names.items[index]);
+        priv.workspace_names.items[index] = alloc.dupeZ(u8, new_name) catch return;
+    }
+
     // -----------------------------------------------------------------
     // Termplex IPC socket server (inline, no termplex module import)
     // -----------------------------------------------------------------

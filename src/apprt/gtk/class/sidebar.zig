@@ -26,8 +26,8 @@ const log = std.log.scoped(.gtk_termplex_sidebar);
 /// The sidebar communicates user interactions to its owner via callback
 /// function pointers set with `setCallbacks`.
 ///
-/// NOTE: Context menu (right-click rename/close) and drag-to-reorder
-/// are not yet implemented; they can be added in a follow-up task.
+/// Right-clicking a workspace row shows a context menu with Rename and
+/// Delete options. Drag-to-reorder is not yet implemented.
 pub const Sidebar = extern struct {
     const Self = @This();
     parent_instance: Parent,
@@ -55,6 +55,18 @@ pub const Sidebar = extern struct {
 
         /// Opaque pointer passed to all callbacks.
         userdata: ?*anyopaque = null,
+
+        /// Callback invoked when the user selects "Rename" from the context menu.
+        on_rename: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
+        /// Callback invoked when the user selects "Delete" from the context menu.
+        on_delete: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
+        /// The index of the workspace currently targeted by the context menu.
+        context_menu_index: u32 = 0,
+
+        /// Popover widget for the context menu (reused/cleaned up across invocations).
+        context_popover: ?*gtk.Popover = null,
 
         pub var offset: c_int = 0;
     };
@@ -107,6 +119,18 @@ pub const Sidebar = extern struct {
             .{},
         );
 
+        // Right-click gesture for context menu.
+        const gesture = gtk.GestureClick.new();
+        gesture.as(gtk.GestureSingle).setButton(3); // right-click
+        _ = gtk.GestureClick.signals.pressed.connect(
+            gesture,
+            *Self,
+            &onRightClick,
+            self,
+            .{},
+        );
+        workspace_list.as(gtk.Widget).addController(gesture.as(gtk.EventController));
+
         scrolled.setChild(workspace_list.as(gtk.Widget));
         outer.append(scrolled.as(gtk.Widget));
 
@@ -153,6 +177,88 @@ pub const Sidebar = extern struct {
         }
     }
 
+    fn onRightClick(
+        _: *gtk.GestureClick,
+        _: c_int, // n_press
+        _: f64, // x
+        y: f64, // y
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+
+        // Dismiss and clean up any existing popover.
+        if (priv.context_popover) |old| {
+            old.popdown();
+            old.as(gtk.Widget).unparent();
+            priv.context_popover = null;
+        }
+
+        const row = priv.workspace_list.getRowAtY(@as(c_int, @intFromFloat(y))) orelse return;
+        const index: u32 = @intCast(row.getIndex());
+        priv.context_menu_index = index;
+
+        // Build a vertical box with Rename and Delete buttons.
+        const box = gtk.Box.new(.vertical, 4);
+        box.as(gtk.Widget).setMarginTop(8);
+        box.as(gtk.Widget).setMarginBottom(8);
+        box.as(gtk.Widget).setMarginStart(8);
+        box.as(gtk.Widget).setMarginEnd(8);
+
+        const rename_btn = gtk.Button.newWithLabel("Rename");
+        rename_btn.as(gtk.Widget).addCssClass("flat");
+        _ = gtk.Button.signals.clicked.connect(
+            rename_btn,
+            *Self,
+            &onContextRename,
+            self,
+            .{},
+        );
+        box.append(rename_btn.as(gtk.Widget));
+
+        const delete_btn = gtk.Button.newWithLabel("Delete");
+        delete_btn.as(gtk.Widget).addCssClass("flat");
+        delete_btn.as(gtk.Widget).addCssClass("destructive-action");
+        _ = gtk.Button.signals.clicked.connect(
+            delete_btn,
+            *Self,
+            &onContextDelete,
+            self,
+            .{},
+        );
+        box.append(delete_btn.as(gtk.Widget));
+
+        // Create a popover, parent it to the clicked row, and show it.
+        const popover = gtk.Popover.new();
+        popover.setChild(box.as(gtk.Widget));
+        popover.as(gtk.Widget).setParent(row.as(gtk.Widget));
+        popover.setAutohide(1);
+        popover.popup();
+
+        priv.context_popover = popover;
+    }
+
+    fn onContextRename(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        // Dismiss the popover first.
+        if (priv.context_popover) |p| {
+            p.popdown();
+        }
+        if (priv.on_rename) |cb| {
+            cb(priv.context_menu_index, priv.userdata);
+        }
+    }
+
+    fn onContextDelete(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        // Dismiss the popover first.
+        if (priv.context_popover) |p| {
+            p.popdown();
+        }
+        if (priv.on_delete) |cb| {
+            cb(priv.context_menu_index, priv.userdata);
+        }
+    }
+
     // ---------------------------------------------------------------
     // Public API
 
@@ -177,6 +283,22 @@ pub const Sidebar = extern struct {
         priv.on_workspace_selected = on_selected;
         priv.on_new_workspace = on_new;
         priv.userdata = userdata;
+    }
+
+    /// Set callback functions for context menu actions (rename/delete).
+    ///
+    /// - `on_rename`: called when the user picks "Rename" from the right-click
+    ///   menu; receives the 0-based workspace index.
+    /// - `on_delete`: called when the user picks "Delete" from the right-click
+    ///   menu; receives the 0-based workspace index.
+    pub fn setManagementCallbacks(
+        self: *Self,
+        on_rename: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        on_delete: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+    ) void {
+        const priv = self.private();
+        priv.on_rename = on_rename;
+        priv.on_delete = on_delete;
     }
 
     /// Add a new workspace tab at the end of the list.
@@ -267,6 +389,13 @@ pub const Sidebar = extern struct {
     // Virtual methods
 
     fn dispose(self: *Self) callconv(.c) void {
+        // Clean up the context popover if it's still parented.
+        const priv = self.private();
+        if (priv.context_popover) |popover| {
+            popover.as(gtk.Widget).unparent();
+            priv.context_popover = null;
+        }
+
         // Unparent all direct children so GTK can finalize them.
         const widget = self.as(gtk.Widget);
         while (widget.getFirstChild()) |child| {
