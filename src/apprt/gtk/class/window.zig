@@ -2055,7 +2055,8 @@ pub const Window = extern struct {
             return 0; // G_SOURCE_REMOVE — no empty workspace found
         };
 
-        const new_idx: u32 = if (current_idx > 0) current_idx - 1 else 0;
+        const ws_count = app.workspaceCount();
+        const new_idx: u32 = if (current_idx > 0) current_idx - 1 else if (ws_count > 1) 1 else 0;
 
         // Switch to adjacent workspace
         if (app.workspaceTabView(new_idx)) |tv| {

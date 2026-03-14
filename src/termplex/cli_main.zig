@@ -637,6 +637,39 @@ fn createAndSelectWorkspace(allocator: std.mem.Allocator, socket_path: []const u
     };
     defer allocator.free(create_response);
 
+    // Parse the create response to get the new workspace index, then select it.
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, create_response, .{}) catch {
+        try printResponse(allocator, create_response);
+        return;
+    };
+    defer parsed.deinit();
+
+    if (parsed.value == .object) {
+        if (parsed.value.object.get("result")) |result| {
+            if (result == .object) {
+                if (result.object.get("index")) |idx_val| {
+                    if (idx_val == .integer) {
+                        const select_params = try std.fmt.allocPrint(
+                            allocator,
+                            "{{\"index\":{d}}}",
+                            .{idx_val.integer},
+                        );
+                        defer allocator.free(select_params);
+                        const select_request = try buildRequest(allocator, "workspace.select", select_params);
+                        defer allocator.free(select_request);
+                        const select_response = sendRequest(allocator, socket_path, select_request) catch {
+                            try printResponse(allocator, create_response);
+                            return;
+                        };
+                        defer allocator.free(select_response);
+                        try printResponse(allocator, create_response);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     try printResponse(allocator, create_response);
 }
 
@@ -670,7 +703,7 @@ fn cmdReport(allocator: std.mem.Allocator, args: []const []const u8) !void {
             try stderr.flush();
             posix.exit(1);
         };
-        const params = try std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\"}}", .{path});
+        const params = try std.fmt.allocPrint(allocator, "{{\"pwd\":\"{s}\"}}", .{path});
         defer allocator.free(params);
         try runRequest(allocator, "status.report_pwd", params);
         return;

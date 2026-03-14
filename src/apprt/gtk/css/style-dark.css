@@ -40,6 +40,16 @@
   color: #7ec8e3;
 }
 
+.termplex-sidebar-toggle {
+  background-color: #1e2430;
+  color: #e94560;
+  border-color: #2d3548;
+}
+
+.termplex-sidebar-toggle:hover {
+  background-color: #2d3548;
+}
+
 /*
  * Termplex Attention Ring (dark mode overrides)
  */
