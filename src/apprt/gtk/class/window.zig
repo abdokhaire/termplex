@@ -2236,13 +2236,43 @@ pub const Window = extern struct {
         sidebar.setActiveIndex(new_idx);
     }
 
-    /// Stub: close the active workspace (full implementation in Task 23).
+    /// Close the active workspace.
+    ///
+    /// If this is the last workspace, the action is a no-op: the app stays
+    /// open and the user must create a new workspace (Ctrl+Shift+N) or quit
+    /// explicitly (Ctrl+Q).  This implements the "empty state" requirement
+    /// from Task 23 Step 3.
     fn actionTermplexCloseWorkspace(
         _: *gio.SimpleAction,
         _: ?*glib.Variant,
-        _: *Self,
+        self: *Self,
     ) callconv(.c) void {
-        log.info("termplex-close-workspace: stub (confirmation dialog in Task 23)", .{});
+        const app = Application.default();
+        const count = app.workspaceCount();
+
+        if (count <= 1) {
+            // Last workspace — keep the app open, do not close.
+            log.info("termplex-close-workspace: last workspace, not closing (empty state)", .{});
+            return;
+        }
+
+        const active_idx = app.activeWorkspaceIndex();
+
+        // Remove from app state.
+        app.removeWorkspace(active_idx);
+
+        // Update the sidebar list.
+        const sidebar = self.getSidebar();
+        sidebar.removeWorkspace(active_idx);
+
+        // Select the new active workspace: prefer the one before the removed
+        // one, otherwise stay at the same index (which is now the next one).
+        const new_active: u32 = if (active_idx > 0) active_idx - 1 else 0;
+        app.setActiveWorkspaceIndex(new_active);
+        sidebar.updateWorkspace(new_active, app.workspaceName(new_active), null, null, true, false);
+        sidebar.setActiveIndex(new_active);
+
+        log.info("termplex-close-workspace: removed workspace {d}, now active={d}", .{ active_idx, new_active });
     }
 
     /// Switch to the next workspace (wraps around only if not at the end).

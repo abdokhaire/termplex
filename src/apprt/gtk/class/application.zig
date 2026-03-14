@@ -661,6 +661,31 @@ pub const Application = extern struct {
         return priv.workspace_names.items[index];
     }
 
+    /// Remove the workspace at `index` from the application state.
+    ///
+    /// Frees the name string and removes the entry from `workspace_names`.
+    /// If the active workspace index is at or beyond the end of the new list
+    /// it is clamped to the last valid index.  The caller is responsible for
+    /// keeping the sidebar widget in sync after this call.
+    pub fn removeWorkspace(self: *Self, index: u32) void {
+        const alloc = self.allocator();
+        const priv = self.private();
+
+        if (index >= priv.workspace_names.items.len) return;
+
+        // Free the owned name string before removing the slot.
+        alloc.free(priv.workspace_names.items[index]);
+
+        // Shift remaining entries down (preserves insertion order).
+        _ = priv.workspace_names.orderedRemove(index);
+
+        // Clamp active_workspace_idx so it stays valid.
+        const new_len = priv.workspace_names.items.len;
+        if (new_len > 0 and priv.active_workspace_idx >= @as(u32, @intCast(new_len))) {
+            priv.active_workspace_idx = @intCast(new_len - 1);
+        }
+    }
+
     // -----------------------------------------------------------------
     // Termplex IPC socket server (inline, no termplex module import)
     // -----------------------------------------------------------------
