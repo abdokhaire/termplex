@@ -201,6 +201,25 @@ label.resize-overlay {
   font-size: 9px;
 }
 
+.termplex-sidebar-toggle {
+  min-width: 24px;
+  min-height: 32px;
+  padding: 2px 4px;
+  margin-left: 2px;
+  opacity: 0.5;
+  font-size: 14px;
+  border-radius: 0 6px 6px 0;
+  background-color: #1e2430;
+  color: #e94560;
+  border: 1px solid #2d3548;
+  border-left: none;
+}
+
+.termplex-sidebar-toggle:hover {
+  opacity: 1.0;
+  background-color: #2d3548;
+}
+
 /*
  * Termplex Attention Ring
  */
@@ -208,6 +227,30 @@ label.resize-overlay {
 .termplex-attention {
   border: 2px solid #4da6ff;
   box-shadow: 0 0 12px rgba(77, 166, 255, 0.3);
+}
+
+/*
+ * Termplex Compact Tab Bar
+ */
+
+.tab-bar {
+  min-height: 28px;
+}
+
+.tab-bar tab {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  min-height: 24px;
+}
+
+/*
+ * Termplex Slim Header Bar
+ */
+
+headerbar {
+  min-height: 32px;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 /*
