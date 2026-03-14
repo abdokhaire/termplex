@@ -959,6 +959,11 @@ pub const Window = extern struct {
         return self.private().sidebar;
     }
 
+    /// Return the current sidebar paned position (sidebar width in pixels).
+    pub fn getSidebarWidth(self: *Self) c_int {
+        return self.private().sidebar_paned.getPosition();
+    }
+
     /// Get the current window decoration value for this window.
     pub fn getWindowDecoration(self: *Self) configpkg.WindowDecoration {
         const priv = self.private();

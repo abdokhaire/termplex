@@ -257,6 +257,11 @@ pub const Application = extern struct {
         /// GLib source id for the debounce timer before the next git probe.
         git_debounce_timer: ?c_uint = null,
 
+        // ----- Termplex autosave state -----
+
+        /// GLib source id for the 5-second recurring autosave timer.
+        autosave_timer: ?c_uint = null,
+
         // ----- Termplex port scanner state -----
 
         /// GLib source id for the 30-second recurring port scan timer.
@@ -471,6 +476,9 @@ pub const Application = extern struct {
             log.warn("failed to start IPC socket server: {}", .{err});
         };
 
+        // Termplex: restore session from disk (best-effort).
+        restoreSession(self);
+
         // Signals
         _ = gobject.Object.signals.notify.connect(
             self,
@@ -525,6 +533,13 @@ pub const Application = extern struct {
             alloc.free(path);
             priv.socket_path_buf = null;
         }
+
+        // Termplex: cancel autosave timer and do a final save.
+        if (priv.autosave_timer) |source| {
+            _ = glib.Source.remove(source);
+            priv.autosave_timer = null;
+        }
+        autosaveSession(self);
 
         // Termplex: cancel git debounce timer.
         if (priv.git_debounce_timer) |source| {
@@ -719,6 +734,9 @@ pub const Application = extern struct {
 
         // Termplex: start the 30-second recurring port scan.
         priv.port_scan_timer = glib.timeoutAdd(30000, portScanCallback, self);
+
+        // Termplex: start the 5-second autosave timer.
+        priv.autosave_timer = glib.timeoutAdd(5000, autosaveCallback, self);
     }
 
     /// GLib timer callback: called every 100 ms to accept and service IPC
@@ -1030,6 +1048,238 @@ pub const Application = extern struct {
             };
             written += n;
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Termplex: session autosave and restore
+    // -----------------------------------------------------------------
+
+    /// Resolve the path to the session JSON file.
+    /// Priority: $XDG_STATE_HOME/termplex/session.json
+    ///           $HOME/.local/state/termplex/session.json
+    /// Caller owns the returned slice.
+    fn getSessionPath(alloc: std.mem.Allocator) ?[]u8 {
+        if (std.process.getEnvVarOwned(alloc, "XDG_STATE_HOME")) |state_home| {
+            defer alloc.free(state_home);
+            return std.fs.path.join(alloc, &.{ state_home, "termplex", "session.json" }) catch null;
+        } else |_| {}
+
+        if (std.process.getEnvVarOwned(alloc, "HOME")) |home| {
+            defer alloc.free(home);
+            return std.fs.path.join(alloc, &.{ home, ".local", "state", "termplex", "session.json" }) catch null;
+        } else |_| {}
+
+        return null;
+    }
+
+    /// GLib timer callback: called every 5 seconds to autosave the session.
+    fn autosaveCallback(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_CONTINUE)));
+        autosaveSession(self);
+        return @intFromBool(glib.SOURCE_CONTINUE);
+    }
+
+    /// Collect current state and atomically write it to the session JSON file.
+    fn autosaveSession(self: *Self) void {
+        const alloc = self.allocator();
+        const priv = self.private();
+
+        const session_path = getSessionPath(alloc) orelse return;
+        defer alloc.free(session_path);
+
+        // Get window geometry from the active GTK window.
+        var window_width: c_int = 800;
+        var window_height: c_int = 600;
+        var sidebar_width: c_int = 180;
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            active_win.getDefaultSize(&window_width, &window_height);
+            // Try to read the sidebar paned position from the active termplex Window.
+            if (gobject.ext.cast(Window, active_win)) |tp_win| {
+                sidebar_width = tp_win.getSidebarWidth();
+            }
+        }
+
+        // Build JSON workspace names array.
+        var names_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer names_buf.deinit(alloc);
+        names_buf.appendSlice(alloc, "[") catch return;
+        for (priv.workspace_names.items, 0..) |name, i| {
+            if (i > 0) names_buf.appendSlice(alloc, ",") catch return;
+            names_buf.append(alloc, '"') catch return;
+            for (name) |c| {
+                if (c == '"' or c == '\\') names_buf.append(alloc, '\\') catch return;
+                names_buf.append(alloc, c) catch return;
+            }
+            names_buf.append(alloc, '"') catch return;
+        }
+        names_buf.appendSlice(alloc, "]") catch return;
+
+        // Build JSON for pwd (may be null).
+        const pwd_str: []const u8 = if (priv.current_pwd) |p| p else "";
+        var pwd_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer pwd_buf.deinit(alloc);
+        if (pwd_str.len > 0) {
+            pwd_buf.append(alloc, '"') catch return;
+            for (pwd_str) |c| {
+                if (c == '"' or c == '\\') pwd_buf.append(alloc, '\\') catch return;
+                pwd_buf.append(alloc, c) catch return;
+            }
+            pwd_buf.append(alloc, '"') catch return;
+        } else {
+            pwd_buf.appendSlice(alloc, "null") catch return;
+        }
+
+        const json = std.fmt.allocPrint(alloc,
+            \\{{
+            \\  "version": 1,
+            \\  "window_width": {d},
+            \\  "window_height": {d},
+            \\  "sidebar_width": {d},
+            \\  "active_workspace_index": {d},
+            \\  "workspaces": {s},
+            \\  "pwd": {s}
+            \\}}
+            \\
+        , .{
+            window_width,
+            window_height,
+            sidebar_width,
+            priv.active_workspace_idx,
+            names_buf.items,
+            pwd_buf.items,
+        }) catch return;
+        defer alloc.free(json);
+
+        // Ensure parent directory exists.
+        const parent_dir = std.fs.path.dirname(session_path) orelse return;
+        std.fs.cwd().makePath(parent_dir) catch |err| {
+            log.warn("autosave: failed to create session dir {s}: {}", .{ parent_dir, err });
+            return;
+        };
+
+        // Write atomically: write to .tmp then rename.
+        const tmp_path = std.fmt.allocPrint(alloc, "{s}.tmp", .{session_path}) catch return;
+        defer alloc.free(tmp_path);
+
+        std.fs.cwd().writeFile(.{
+            .sub_path = tmp_path,
+            .data = json,
+        }) catch |err| {
+            log.warn("autosave: failed to write tmp session file: {}", .{err});
+            return;
+        };
+
+        std.fs.cwd().rename(tmp_path, session_path) catch |err| {
+            log.warn("autosave: failed to rename session file: {}", .{err});
+            std.fs.cwd().deleteFile(tmp_path) catch {};
+            return;
+        };
+
+        log.debug("autosave: session written to {s}", .{session_path});
+    }
+
+    /// Restore workspace state from the session JSON file on startup.
+    /// Skipped if TERMPLEX_DISABLE_RESTORE is set. Best-effort; any parse
+    /// failure leaves defaults intact.
+    fn restoreSession(self: *Self) void {
+        // Honour the disable flag.
+        const disable_var = std.process.getEnvVarOwned(self.allocator(), "TERMPLEX_DISABLE_RESTORE") catch null;
+        if (disable_var) |v| {
+            self.allocator().free(v);
+            log.debug("session restore disabled via TERMPLEX_DISABLE_RESTORE", .{});
+            return;
+        }
+
+        const alloc = self.allocator();
+        const priv = self.private();
+
+        const session_path = getSessionPath(alloc) orelse return;
+        defer alloc.free(session_path);
+
+        const contents = std.fs.cwd().readFileAlloc(alloc, session_path, 1024 * 64) catch |err| {
+            switch (err) {
+                error.FileNotFound => log.debug("no session file found at {s}, using defaults", .{session_path}),
+                else => log.warn("session restore: failed to read {s}: {}", .{ session_path, err }),
+            }
+            return;
+        };
+        defer alloc.free(contents);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, alloc, contents, .{}) catch |err| {
+            log.warn("session restore: failed to parse JSON: {}", .{err});
+            return;
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value;
+        if (root != .object) {
+            log.warn("session restore: expected JSON object at root", .{});
+            return;
+        }
+
+        // Extract workspaces array.
+        const ws_val = root.object.get("workspaces") orelse return;
+        if (ws_val != .array) return;
+        const ws_arr = ws_val.array.items;
+        if (ws_arr.len == 0) return;
+
+        // Clear the default "Workspace 1".
+        for (priv.workspace_names.items) |name| alloc.free(name);
+        priv.workspace_names.clearRetainingCapacity();
+
+        // Re-populate from saved names.
+        for (ws_arr) |item| {
+            const name_str: []const u8 = switch (item) {
+                .string => |s| s,
+                else => continue,
+            };
+            const name: [:0]const u8 = alloc.dupeZ(u8, name_str) catch {
+                log.warn("session restore: OOM allocating workspace name", .{});
+                continue;
+            };
+            priv.workspace_names.append(alloc, name) catch {
+                alloc.free(name);
+                log.warn("session restore: OOM appending workspace", .{});
+                continue;
+            };
+        }
+
+        // If we ended up with zero workspaces (e.g., all failed), add a default.
+        if (priv.workspace_names.items.len == 0) {
+            const fallback: [:0]const u8 = alloc.dupeZ(u8, "Workspace 1") catch return;
+            priv.workspace_names.append(alloc, fallback) catch {
+                alloc.free(fallback);
+                return;
+            };
+        }
+
+        // Update next_workspace_number to avoid collisions.
+        priv.next_workspace_number = @as(u32, @intCast(priv.workspace_names.items.len)) + 1;
+
+        // Restore active workspace index.
+        if (root.object.get("active_workspace_index")) |av| {
+            const idx: u32 = switch (av) {
+                .integer => |n| if (n >= 0 and n < @as(i64, @intCast(priv.workspace_names.items.len)))
+                    @as(u32, @intCast(n))
+                else
+                    0,
+                else => 0,
+            };
+            priv.active_workspace_idx = idx;
+        }
+
+        // Restore pwd for git probing.
+        if (root.object.get("pwd")) |pv| {
+            if (pv == .string and pv.string.len > 0) {
+                if (priv.current_pwd) |old| alloc.free(old);
+                priv.current_pwd = alloc.dupeZ(u8, pv.string) catch null;
+            }
+        }
+
+        log.info("session restore: loaded {d} workspace(s), active={d}", .{
+            priv.workspace_names.items.len,
+            priv.active_workspace_idx,
+        });
     }
 
     // -----------------------------------------------------------------
