@@ -396,15 +396,29 @@ pub const Window = extern struct {
             adw_win.setContent(overlay.as(gtk.Widget));
         }
 
-        // Programmatically connect TabView signals (moved from Blueprint template).
+        // Replace the template's tab_view with the Application's active workspace TabView.
         {
             const priv_ = self.private();
-            priv_.active_tab_view = priv_.tab_view;
-            self.connectTabViewHandlers(priv_.active_tab_view);
+            const app = Application.default();
 
-            // Programmatically bind tab_bar and tab_overview to the TabView.
-            priv_.tab_bar.setView(priv_.active_tab_view);
-            priv_.tab_overview.setView(priv_.active_tab_view);
+            if (app.activeTabView()) |ws_tab_view| {
+                // Don't connect to template tab_view — go straight to workspace TabView.
+                priv_.active_tab_view = ws_tab_view;
+
+                // Swap: remove template tab_view from toast_overlay, insert workspace TabView.
+                priv_.toast_overlay.setChild(ws_tab_view.as(gtk.Widget));
+
+                // Connect handlers to workspace TabView.
+                self.connectTabViewHandlers(ws_tab_view);
+                priv_.tab_bar.setView(ws_tab_view);
+                priv_.tab_overview.setView(ws_tab_view);
+            } else {
+                // Fallback: use the template tab_view (shouldn't happen in normal startup).
+                priv_.active_tab_view = priv_.tab_view;
+                self.connectTabViewHandlers(priv_.active_tab_view);
+                priv_.tab_bar.setView(priv_.active_tab_view);
+                priv_.tab_overview.setView(priv_.active_tab_view);
+            }
         }
 
         // If our configuration is null then we get the configuration
