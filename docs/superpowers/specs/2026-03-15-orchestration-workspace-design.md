@@ -295,9 +295,9 @@ The `enabled` field uses `?bool` (optional bool) in the config struct so the par
 
 ```
 ~/.termplex/orchestration/
+├── AGENTS.md                # Codex-compatible instructions (root for auto-discovery)
 ├── skill/
-│   ├── termplex.md          # Claude Code skill file
-│   └── AGENTS.md            # Codex-compatible instructions
+│   └── termplex.md          # Claude Code skill file
 ├── logs/
 │   └── orchestration.log    # Log of orchestration actions
 └── state/
@@ -327,7 +327,7 @@ On application startup, if `orchestration.enabled` is `null` in the parsed confi
 ### On Enable
 
 1. Create the orchestration directory structure (subdirs: `skill/`, `logs/`, `state/`)
-2. Write the `termplex.md` skill file and `AGENTS.md` to `skill/`
+2. Write the `termplex.md` skill file to `skill/` and `AGENTS.md` to the orchestration directory root (for Codex auto-discovery)
 3. Write `orchestration.enabled = true`, `orchestration.dir`, and `orchestration.agent_command` to `~/.config/termplex/config.toml`
 4. Show a follow-up info dialog: "Orchestration enabled. Add the skill file at `<path>/skill/termplex.md` to your AI agent's configuration."
 5. Create the orchestration workspace in the sidebar
