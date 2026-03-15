@@ -359,10 +359,11 @@ pub const Window = extern struct {
                 @ptrCast(self),
             );
 
-            // Wire context-menu management callbacks (rename, delete).
+            // Wire context-menu management callbacks (rename, delete, change-dir).
             sidebar.setManagementCallbacks(
                 &termplexOnRenameWorkspace,
                 &termplexOnDeleteWorkspace,
+                null, // change-dir callback, wired in Task 8
             );
 
             // 2. Create a horizontal Gtk.Paned to hold sidebar + content.

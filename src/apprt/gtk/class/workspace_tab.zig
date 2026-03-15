@@ -73,6 +73,13 @@ pub const WorkspaceTab = extern struct {
         rename_userdata: ?*anyopaque = null,
         rename_index: u32 = 0,
 
+        /// Inline change-dir state.
+        chdir_entry: ?*gtk.Entry = null,
+        is_changing_dir: bool = false,
+        on_chdir_complete: ?*const fn (index: u32, new_dir: [:0]const u8, userdata: ?*anyopaque) void = null,
+        chdir_userdata: ?*anyopaque = null,
+        chdir_index: u32 = 0,
+
         pub var offset: c_int = 0;
     };
 
@@ -393,6 +400,104 @@ pub const WorkspaceTab = extern struct {
         priv.name_label.as(gtk.Widget).setVisible(1);
         priv.rename_entry = null;
         priv.is_renaming = false;
+    }
+
+    // ---------------------------------------------------------------
+    // Inline change-dir
+
+    /// Begin inline directory change: hide the dir label, show a GtkEntry.
+    pub fn startChangeDir(
+        self: *Self,
+        index: u32,
+        on_complete: ?*const fn (u32, [:0]const u8, ?*anyopaque) void,
+        userdata: ?*anyopaque,
+    ) void {
+        const priv = self.private();
+        if (priv.is_changing_dir) return;
+
+        priv.on_chdir_complete = on_complete;
+        priv.chdir_userdata = userdata;
+        priv.chdir_index = index;
+
+        const entry = gtk.Entry.new();
+        const current_dir = priv.dir_label.getLabel();
+        entry.as(gtk.Editable).setText(current_dir);
+
+        // Hide dir label, show entry in same position.
+        priv.dir_label.as(gtk.Widget).setVisible(0);
+
+        // Insert entry into row2 (parent of dir_label).
+        const parent = priv.dir_label.as(gtk.Widget).getParent();
+        if (parent) |p| {
+            const box: *gtk.Box = @ptrCast(@alignCast(p));
+            box.prepend(entry.as(gtk.Widget));
+        }
+
+        _ = entry.as(gtk.Widget).grabFocus();
+        priv.chdir_entry = entry;
+        priv.is_changing_dir = true;
+
+        // Connect Enter (activate).
+        _ = gtk.Entry.signals.activate.connect(entry, *Self, &onChdirActivate, self, .{});
+
+        // Connect Escape via EventControllerKey.
+        const key_controller = gtk.EventControllerKey.new();
+        _ = gtk.EventControllerKey.signals.key_pressed.connect(
+            key_controller,
+            *Self,
+            &onChdirKeyPress,
+            self,
+            .{},
+        );
+        entry.as(gtk.Widget).addController(key_controller.as(gtk.EventController));
+    }
+
+    fn onChdirActivate(_: *gtk.Entry, self: *Self) callconv(.c) void {
+        self.finishChangeDir(true);
+    }
+
+    fn onChdirKeyPress(
+        _: *gtk.EventControllerKey,
+        keyval: c_uint,
+        _: c_uint,
+        _: gdk.ModifierType,
+        self: *Self,
+    ) callconv(.c) c_int {
+        if (keyval == gdk.KEY_Escape) {
+            self.finishChangeDir(false);
+            return 1;
+        }
+        return 0;
+    }
+
+    pub fn finishChangeDir(self: *Self, confirm: bool) void {
+        const priv = self.private();
+        if (!priv.is_changing_dir) return;
+
+        if (confirm) {
+            if (priv.chdir_entry) |entry| {
+                const text = entry.as(gtk.Editable).getText();
+                const dir_slice = std.mem.span(text);
+                if (dir_slice.len > 0) {
+                    priv.dir_label.setLabel(text);
+                    if (priv.on_chdir_complete) |cb| {
+                        cb(priv.chdir_index, dir_slice, priv.chdir_userdata);
+                    }
+                }
+            }
+        }
+
+        // Remove entry, show label.
+        if (priv.chdir_entry) |entry| {
+            const parent = entry.as(gtk.Widget).getParent();
+            if (parent) |p| {
+                const box: *gtk.Box = @ptrCast(@alignCast(p));
+                box.remove(entry.as(gtk.Widget));
+            }
+        }
+        priv.dir_label.as(gtk.Widget).setVisible(1);
+        priv.chdir_entry = null;
+        priv.is_changing_dir = false;
     }
 
     // ---------------------------------------------------------------

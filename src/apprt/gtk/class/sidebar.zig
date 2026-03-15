@@ -62,6 +62,9 @@ pub const Sidebar = extern struct {
         /// Callback invoked when the user selects "Delete" from the context menu.
         on_delete: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
 
+        /// Callback invoked when the user selects "Change Directory..." from the context menu.
+        on_change_dir: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
         /// The index of the workspace currently targeted by the context menu.
         context_menu_index: u32 = 0,
 
@@ -237,9 +240,21 @@ pub const Sidebar = extern struct {
         );
         box.append(delete_btn.as(gtk.Widget));
 
+        const chdir_btn = gtk.Button.newWithLabel("Change Directory...");
+        chdir_btn.as(gtk.Widget).addCssClass("flat");
+        _ = gtk.Button.signals.clicked.connect(
+            chdir_btn,
+            *Self,
+            &onContextChangeDir,
+            self,
+            .{},
+        );
+        box.append(chdir_btn.as(gtk.Widget));
+
         // Ensure all children are visible.
         rename_btn.as(gtk.Widget).setVisible(1);
         delete_btn.as(gtk.Widget).setVisible(1);
+        chdir_btn.as(gtk.Widget).setVisible(1);
         box.as(gtk.Widget).setVisible(1);
 
         // Create a popover, parent it to the clicked row, and show it.
@@ -274,6 +289,16 @@ pub const Sidebar = extern struct {
         }
     }
 
+    fn onContextChangeDir(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        if (priv.context_popover) |p| {
+            p.popdown();
+        }
+        if (priv.on_change_dir) |cb| {
+            cb(priv.context_menu_index, priv.userdata);
+        }
+    }
+
     // ---------------------------------------------------------------
     // Public API
 
@@ -300,20 +325,24 @@ pub const Sidebar = extern struct {
         priv.userdata = userdata;
     }
 
-    /// Set callback functions for context menu actions (rename/delete).
+    /// Set callback functions for context menu actions (rename/delete/change-dir).
     ///
     /// - `on_rename`: called when the user picks "Rename" from the right-click
     ///   menu; receives the 0-based workspace index.
     /// - `on_delete`: called when the user picks "Delete" from the right-click
     ///   menu; receives the 0-based workspace index.
+    /// - `on_change_dir`: called when the user picks "Change Directory..." from
+    ///   the right-click menu; receives the 0-based workspace index.
     pub fn setManagementCallbacks(
         self: *Self,
         on_rename: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_delete: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        on_change_dir: ?*const fn (index: u32, userdata: ?*anyopaque) void,
     ) void {
         const priv = self.private();
         priv.on_rename = on_rename;
         priv.on_delete = on_delete;
+        priv.on_change_dir = on_change_dir;
     }
 
     /// Add a new workspace tab at the end of the list.
