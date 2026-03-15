@@ -1505,9 +1505,11 @@ pub const Application = extern struct {
 
         // Update sidebar UI.
         const name = self.workspaceName(new_idx) orelse "Workspace";
+        var ipc_dir_buf: [512]u8 = undefined;
+        const ipc_dir_text = self.formatDirDisplay(new_idx, &ipc_dir_buf);
         if (self.as(gtk.Application).getActiveWindow()) |active_win| {
             if (gobject.ext.cast(Window, active_win)) |win| {
-                win.getSidebar().addWorkspace(name, null, null, null);
+                win.getSidebar().addWorkspace(name, null, null, ipc_dir_text);
             }
         }
 

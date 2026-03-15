@@ -111,6 +111,7 @@ pub const WorkspaceTab = extern struct {
         dir_label.setEllipsize(.end);
         dir_label.setMaxWidthChars(25);
         dir_label.as(gtk.Widget).addCssClass("termplex-tab-dir");
+        dir_label.as(gtk.Widget).setVisible(0); // hidden until dir_text is provided
         priv.dir_label = dir_label;
         row2.append(dir_label.as(gtk.Widget));
 
