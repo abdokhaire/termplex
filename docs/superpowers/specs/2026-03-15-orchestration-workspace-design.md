@@ -32,6 +32,18 @@ This feature decomposes into 5 independent sub-projects, built in order:
 
 Each sub-project produces working, testable software independently.
 
+### Dependencies
+
+```
+1. IPC + CLI ──┬──→ 2. Workspace + Config ──→ 3. First-run Dialog
+               │
+               ├──→ 4. Skill file + Agent registration
+               │
+               └──→ 5. surface.send / surface.read
+```
+
+Sub-projects 2, 4, and 5 depend on 1 (IPC foundation) but are independent of each other. Sub-project 3 depends on 2 (needs config infrastructure).
+
 ---
 
 ## 1. IPC Protocol Extensions
@@ -46,7 +58,7 @@ Success:  {"ok": true, "result": ..., "id": 1}
 Error:    {"ok": false, "error": {"code": "...", "message": "..."}, "id": 1}
 ```
 
-Existing methods: `system.ping`, `system.tree`, `workspace.list`, `workspace.create`, `workspace.select`, `workspace.close`, `workspace.rename`, `surface.list`, `surface.create`, `surface.split`, `surface.close`, `surface.focus`, `notification.*`, `status.*`.
+Existing methods (non-exhaustive): `system.ping`, `system.tree`, `workspace.list`, `workspace.create`, `workspace.select`, `workspace.close`, `workspace.rename`, `workspace.find_by_dir`, `surface.list`, `surface.create`, `surface.split`, `surface.close`, `surface.focus`, `notification.*`, `status.*`. Note: some methods (e.g., `workspace.rename`, `workspace.close`) are currently stubs in `ipcDispatch` and may need full implementation.
 
 ### New Methods
 
@@ -91,7 +103,7 @@ Request:  {"method": "surface.send", "params": {
 Response: {"ok": true, "result": {}, "id": 3}
 ```
 
-The `text` field is written directly to the PTY. Include `\n` to simulate pressing Enter. `tab` is the tab index (0-based). If the tab has multiple surfaces (splits), sends to the focused surface.
+The `text` field is written directly to the PTY. Include `\n` to simulate pressing Enter. `tab` is the tab index (0-based). An optional `surface` parameter (0-based index within the tab) can target a specific split pane. If omitted and the tab has multiple surfaces, sends to the last-focused surface in that tab (tracked per-tab, not dependent on the workspace being active).
 
 **`surface.read`** — Read recent terminal output.
 
@@ -104,7 +116,7 @@ Request:  {"method": "surface.read", "params": {
 Response: {"ok": true, "result": {"output": "...(last 50 lines)..."}, "id": 4}
 ```
 
-Reads from the terminal's screen buffer. Default is 50 lines if `lines` is omitted. Maximum 1000 lines.
+Reads from the terminal's screen buffer. Default is 50 lines if `lines` is omitted. Maximum 1000 lines. ANSI escape sequences are stripped from the output — only plain text is returned. Non-UTF-8 bytes are replaced with the Unicode replacement character (U+FFFD). Lines are separated by `\n` in the returned string.
 
 #### Agent Tracking
 
@@ -148,15 +160,35 @@ Request:  {"method": "agent.terminate", "params": {"pid": 12345}, "id": 8}
 Response: {"ok": true, "result": {}, "id": 8}
 ```
 
-Sends SIGTERM to the process. If `agent_terminate_policy = "terminate"`, also closes the tab. If `agent_terminate_policy = "keep"`, the tab stays open.
+Sends SIGTERM to the process. An optional `policy` parameter (`"keep"` or `"terminate"`) overrides the global `agent_terminate_policy` config for this call. If omitted, falls back to the config value. `"terminate"` closes the tab after killing the process; `"keep"` leaves the tab open.
 
 ### Implementation Notes
 
-- New methods are added to `src/termplex/ipc/protocol.zig` dispatch table
+- New methods are added to the `ipcDispatch` function in `src/apprt/gtk/class/application.zig` (the live IPC dispatch — note: `src/termplex/ipc/protocol.zig` contains stubs and is not wired into the live application)
 - Tab operations require access to the Application's workspace state (TabView, tab pages)
 - `surface.send` uses `Termio.queueWrite()` to write to the PTY
 - `surface.read` reads from the terminal's screen buffer (page/pagelist)
+- Tab indices are positional (0-based) within the `AdwTabView` — they shift when tabs are closed. The skill file should instruct agents to re-query `tab.list` after closing tabs to get updated indices.
 - Agent registry is an in-memory `std.ArrayListUnmanaged` in Application, persisted to `<orchestration_dir>/state/agents.json`
+
+### Agent Registry Persistence Format (`agents.json`)
+
+```json
+{
+  "agents": [
+    {
+      "agent_id": "a1b2c3",
+      "workspace": "backend",
+      "tab": 0,
+      "type": "claude",
+      "pid": 12345,
+      "registered_at": "2026-03-15T10:30:00Z"
+    }
+  ]
+}
+```
+
+On startup, stale entries (where the PID is no longer running) are removed before loading. Writes use atomic rename (`write to .tmp`, then `rename`) to prevent corruption.
 
 ---
 
@@ -183,8 +215,8 @@ termplex-ctl workspace rename --name NAME --new-name NEWNAME
 termplex-ctl tab list --workspace WORKSPACE
 termplex-ctl tab create --workspace WORKSPACE [--title TITLE] [--dir DIR] [--command CMD]
 
-termplex-ctl send --workspace WORKSPACE --tab N TEXT
-termplex-ctl read --workspace WORKSPACE --tab N [--lines N]
+termplex-ctl surface send --workspace WORKSPACE --tab N TEXT
+termplex-ctl surface read --workspace WORKSPACE --tab N [--lines N]
 
 termplex-ctl agent register --workspace WORKSPACE --tab N --type TYPE --pid PID
 termplex-ctl agent list
@@ -247,7 +279,7 @@ termplex-ctl status
 
 ### New Config Options
 
-Added to `src/termplex/core/config.zig`:
+Added to `src/termplex/core/config.zig` and written to the Termplex-specific config at `~/.config/termplex/config.toml` (not the Ghostty-inherited `config.termplex`):
 
 ```toml
 [orchestration]
@@ -257,11 +289,12 @@ agent_command = "claude"                     # CLI command to launch in orchestr
 agent_terminate_policy = "keep"              # "keep" or "terminate"
 ```
 
+The `enabled` field uses `?bool` (optional bool) in the config struct so the parser can distinguish "key absent" (show first-run dialog) from "explicitly set to `false`" (don't show dialog). When the key is absent, `enabled` is `null`; the first-run dialog checks for `null`, not `false`.
+
 ### Orchestration Directory Structure
 
 ```
 ~/.termplex/orchestration/
-├── config.toml              # Orchestration-specific settings (agent preferences, etc.)
 ├── skill/
 │   ├── termplex.md          # Claude Code skill file
 │   └── AGENTS.md            # Codex-compatible instructions
@@ -278,7 +311,7 @@ agent_terminate_policy = "keep"              # "keep" or "terminate"
 
 ### Trigger
 
-On application startup, if `orchestration.enabled` is not set in config (key is absent, not `false`), show the dialog. If the user has explicitly set `orchestration.enabled = false`, do not show it again.
+On application startup, if `orchestration.enabled` is `null` in the parsed config (key absent from `config.toml`), show the dialog. If the user has explicitly set `orchestration.enabled = false`, do not show it again.
 
 ### Dialog Design
 
@@ -295,13 +328,13 @@ On application startup, if `orchestration.enabled` is not set in config (key is 
 
 1. Create the orchestration directory structure (subdirs: `skill/`, `logs/`, `state/`)
 2. Write the `termplex.md` skill file and `AGENTS.md` to `skill/`
-3. Write `orchestration.enabled = true`, `orchestration.dir`, and `orchestration.agent_command` to the Termplex config file
+3. Write `orchestration.enabled = true`, `orchestration.dir`, and `orchestration.agent_command` to `~/.config/termplex/config.toml`
 4. Show a follow-up info dialog: "Orchestration enabled. Add the skill file at `<path>/skill/termplex.md` to your AI agent's configuration."
 5. Create the orchestration workspace in the sidebar
 
 ### On Skip
 
-1. Write `orchestration.enabled = false` to the Termplex config file
+1. Write `orchestration.enabled = false` to `~/.config/termplex/config.toml`
 2. Dismiss the dialog, continue with normal startup
 
 ---
@@ -319,8 +352,8 @@ A markdown file that teaches AI agents how to control Termplex. Installed at `<o
 Brief description of Termplex and the orchestration model.
 
 ## Setup
-On startup, register yourself:
-  termplex-ctl agent register --workspace "orchestrator" --tab 0 --type claude --pid $$
+On startup, register yourself (use your own PID, not the shell's $$):
+  termplex-ctl agent register --workspace "orchestrator" --tab 0 --type claude --pid <your_pid>
 
 ## Commands Reference
 Full termplex-ctl command list with examples.
@@ -334,9 +367,9 @@ Full termplex-ctl command list with examples.
   termplex-ctl tab create --workspace "backend" --title "tests"
 
 ### Run a command and check output
-  termplex-ctl send --workspace "backend" --tab 2 "npm test"
+  termplex-ctl surface send --workspace "backend" --tab 2 "npm test"
   sleep 5
-  termplex-ctl read --workspace "backend" --tab 2 --lines 30
+  termplex-ctl surface read --workspace "backend" --tab 2 --lines 30
 
 ### Check all running agents
   termplex-ctl agent list
@@ -375,8 +408,8 @@ Same content adapted for Codex's conventions — placed in the orchestration dir
 
 ### Communication
 
-- The orchestration agent communicates with workspace agents via PTY injection: `termplex-ctl send --workspace X --tab Y "message"`
-- It reads responses via `termplex-ctl read --workspace X --tab Y --lines N`
+- The orchestration agent communicates with workspace agents via PTY injection: `termplex-ctl surface send --workspace X --tab Y "message"`
+- It reads responses via `termplex-ctl surface read --workspace X --tab Y --lines N`
 - This is intentionally simple — it types into the terminal and reads the screen, exactly as a user would
 
 ### Termination
@@ -421,7 +454,7 @@ User ↔ Orchestration Workspace (terminal running Claude Code)
 
 | Area | Files |
 |------|-------|
-| IPC protocol | `src/termplex/ipc/protocol.zig` (add methods) |
+| IPC dispatch | `src/apprt/gtk/class/application.zig` (add to `ipcDispatch`: tab.*, surface.send/read, agent.*) |
 | Tab IPC handlers | `src/apprt/gtk/class/application.zig` (add ipcTabList, ipcTabCreate) |
 | Surface IPC handlers | `src/apprt/gtk/class/application.zig` (add ipcSurfaceSend, ipcSurfaceRead) |
 | Agent registry | `src/termplex/ipc/agents.zig` (new file) |
