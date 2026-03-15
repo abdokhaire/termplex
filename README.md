@@ -19,14 +19,14 @@
 
 Termplex is a workspace-centric terminal multiplexer built on GTK4 and libadwaita. It lets you organize terminal sessions into named workspaces — each with its own tabs, splits, and working directory — and switch between them instantly from a persistent sidebar.
 
-Built on the Termplex terminal core, Termplex inherits a fast, standards-compliant terminal emulator with GPU-accelerated rendering and full modern terminal feature support, then adds workspace management on top.
+Built on the [Ghostty](https://github.com/ghostty-org/ghostty) terminal core, Termplex inherits a fast, standards-compliant terminal emulator with GPU-accelerated rendering and full modern terminal feature support, then adds workspace management on top.
 
 ## Features
 
 - **Workspaces** — Create, name, and switch between independent workspace groups. Each workspace maintains its own set of tabs and splits.
 - **Persistent sidebar** — Always-visible workspace list with active/unread indicators, toggle with a keyboard shortcut.
 - **Session persistence** — Workspaces, tabs, and tab names are saved and restored across restarts.
-- **Tab overview** — Grid view of all tabs in the current workspace (inherited from libadwaita's AdwTabOverview). Stays open across workspace switches.
+- **Tab overview** — Grid view of all tabs in the current workspace. Stays open across workspace switches.
 - **Electric Cyan brand** — Dark-native UI theme with `#00d4ff` accent, designed for focused terminal work.
 - **Splits** — Horizontal and vertical pane splitting within any tab.
 - **GPU rendering** — OpenGL-based renderer for smooth, high-performance output.
@@ -39,34 +39,67 @@ Built on the Termplex terminal core, Termplex inherits a fast, standards-complia
 
 ## Installation
 
+### Quick Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abdokhaire/termplex/main/install.sh | bash
+```
+
+### AppImage (no install needed)
+
+Download `Termplex-x86_64.AppImage` from [Releases](https://github.com/abdokhaire/termplex/releases), then:
+
+```bash
+chmod +x Termplex-x86_64.AppImage
+./Termplex-x86_64.AppImage
+```
+
+### Debian / Ubuntu (.deb)
+
+```bash
+# Install dependencies
+sudo apt install libgtk-4-1 libadwaita-1-0
+
+# Download and install
+wget https://github.com/abdokhaire/termplex/releases/download/v0.1.0/termplex_0.1.0_amd64.deb
+sudo dpkg -i termplex_0.1.0_amd64.deb
+
+# Run
+termplex-app
+```
+
+### Tarball
+
+```bash
+wget https://github.com/abdokhaire/termplex/releases/download/v0.1.0/termplex-0.1.0-linux-x86_64.tar.gz
+tar xzf termplex-0.1.0-linux-x86_64.tar.gz
+cd termplex-0.1.0-linux-x86_64
+./bin/termplex-app
+```
+
 ### Building from Source
 
 **Requirements:**
 - [Zig 0.15.2](https://ziglang.org/download/) (exact version required)
 - GTK4 4.14+
 - libadwaita 1.5+
-- Standard Linux development libraries
 
-**On Ubuntu/Debian:**
+**Install build dependencies:**
+
 ```bash
+# Ubuntu/Debian
 sudo apt install libgtk-4-dev libadwaita-1-dev
-```
 
-**On Fedora:**
-```bash
+# Fedora
 sudo dnf install gtk4-devel libadwaita-devel
-```
 
-**On Arch Linux:**
-```bash
+# Arch Linux
 sudo pacman -S gtk4 libadwaita
 ```
 
 **Build and run:**
-```bash
-# Debug build
-zig build -Dapp-runtime=gtk
 
+```bash
 # Release build (optimized)
 zig build -Dapp-runtime=gtk -Doptimize=ReleaseFast
 
@@ -76,23 +109,11 @@ zig build -Dapp-runtime=gtk -Doptimize=ReleaseFast
 
 > **Note:** If `gtk4-layer-shell` is not installed, add `-fno-sys=gtk4-layer-shell` to the build command.
 
-### Flatpak
-
-<!-- TODO: Flatpak instructions after rebranding is complete -->
-Coming soon.
-
-### Snap
-
-<!-- TODO: Snap instructions after rebranding is complete -->
-Coming soon.
-
 ## Configuration
 
-Termplex uses the same configuration system as Termplex. Configuration is read from `~/.config/termplex/config` (this path will change in a future release).
+Configuration is read from `~/.config/termplex/config.termplex`.
 
-See the [Termplex configuration documentation](https://termplex.org/docs/config) for available options.
-
-### Key Termplex Defaults
+### Key Defaults
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -101,8 +122,6 @@ See the [Termplex configuration documentation](https://termplex.org/docs/config)
 | `window-theme` | `dark` | Forces dark mode for brand consistency |
 
 ## Keyboard Shortcuts
-
-Default workspace shortcuts:
 
 | Shortcut | Action |
 |----------|--------|
@@ -114,7 +133,7 @@ Default workspace shortcuts:
 
 ## Architecture
 
-Termplex is a fork of [Termplex](https://github.com/termplex-org/termplex) with a workspace management layer. The core terminal emulation (VT parsing, rendering, IO) comes from Termplex's battle-tested implementation. Termplex adds:
+Termplex is a fork of [Ghostty](https://github.com/ghostty-org/ghostty) with a workspace management layer. The core terminal emulation (VT parsing, rendering, IO) comes from Ghostty's battle-tested implementation. Termplex adds:
 
 - Workspace data model and lifecycle management
 - Sidebar UI with workspace list and indicators
@@ -134,7 +153,7 @@ Contributions are welcome. Please open an issue first to discuss what you'd like
 
 ## Acknowledgments
 
-Termplex is built on top of [Termplex](https://github.com/termplex-org/termplex) by Mitchell Hashimoto. The terminal emulation core, rendering engine, and configuration system are inherited from Termplex's excellent work.
+Termplex is built on top of [Ghostty](https://github.com/ghostty-org/ghostty) by Mitchell Hashimoto. The terminal emulation core, rendering engine, and configuration system are inherited from Ghostty's excellent work.
 
 ## License
 
