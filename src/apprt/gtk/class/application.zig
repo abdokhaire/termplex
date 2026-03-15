@@ -298,6 +298,9 @@ pub const Application = extern struct {
         /// GLib source ids for the burst of 6 extra scans after a pwd change.
         port_scan_burst_timers: [6]?c_uint = .{null} ** 6,
 
+        /// GLib source id for the one-shot initial git probe timer (500ms after startup).
+        initial_probe_timer: ?c_uint = null,
+
         /// Formatted listening-ports string for display (null-terminated, owned).
         listening_ports_str: ?[:0]const u8 = null,
 
@@ -655,6 +658,12 @@ pub const Application = extern struct {
                 _ = glib.Source.remove(source);
                 slot.* = null;
             }
+        }
+
+        // Termplex: cancel initial probe timer if it hasn't fired yet.
+        if (priv.initial_probe_timer) |source| {
+            _ = glib.Source.remove(source);
+            priv.initial_probe_timer = null;
         }
 
         // Termplex: free git/port/pwd strings.
@@ -1087,7 +1096,7 @@ pub const Application = extern struct {
 
         // Schedule initial combined probe shortly after startup (one-shot)
         // so branch info appears quickly without waiting for the 10s timer.
-        _ = glib.timeoutAdd(500, initialProbeCallback, self);
+        priv.initial_probe_timer = glib.timeoutAdd(500, initialProbeCallback, self);
 
         // Termplex: start the 5-second autosave timer.
         priv.autosave_timer = glib.timeoutAdd(5000, autosaveCallback, self);
@@ -3137,6 +3146,9 @@ pub const Application = extern struct {
         const alloc = self_ptr.allocator();
         const priv = self_ptr.private();
 
+        // Mark as fired so the shutdown path doesn't try to cancel it.
+        priv.initial_probe_timer = null;
+
         for (priv.workspace_dirs.items, 0..) |dir, i| {
             if (priv.orchestration_workspace_idx) |orch_idx| {
                 if (i == orch_idx) continue;
@@ -3239,13 +3251,16 @@ pub const Application = extern struct {
         else
             return;
 
+        // Read branch from per-workspace arrays (source of truth).
         var branch_buf: [256]u8 = undefined;
         const branch_z: ?[:0]const u8 = blk: {
-            const b = priv.git_branch orelse break :blk null;
+            if (active_idx >= priv.workspace_git_branches.items.len) break :blk null;
+            const b = priv.workspace_git_branches.items[active_idx] orelse break :blk null;
+            const dirty = if (active_idx < priv.workspace_git_dirty.items.len) priv.workspace_git_dirty.items[active_idx] else false;
             const label = std.fmt.bufPrintZ(
                 &branch_buf,
                 "{s}{s}",
-                .{ b, if (priv.git_dirty) "*" else "" },
+                .{ b, if (dirty) "*" else "" },
             ) catch break :blk null;
             break :blk label;
         };
@@ -5424,7 +5439,6 @@ const Action = struct {
                     const sidebar = win.getSidebar();
                     sidebar.setOrchestrationIndex(idx);
                     sidebar.addWorkspace("ORCHESTRATOR", null, null, orch_dir_text);
-                    sidebar.updateWorkspace(idx, "ORCHESTRATOR", null, null, orch_dir_text, false, false);
                 }
             }
         }
