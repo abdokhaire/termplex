@@ -88,6 +88,18 @@ pub const Session = struct {
     restore_on_startup: bool,
 };
 
+/// Orchestration workspace configuration.
+pub const Orchestration = struct {
+    /// null = not set (show first-run dialog), true = enabled, false = disabled
+    enabled: ?bool,
+    /// Path to orchestration data directory.
+    dir: []const u8,
+    /// CLI command to launch in orchestration workspace.
+    agent_command: []const u8,
+    /// "keep" = leave tab open after agent exits, "terminate" = close tab.
+    agent_terminate_policy: []const u8,
+};
+
 /// Top-level Termplex configuration.
 ///
 /// All heap-allocated strings are owned by this struct. Call `deinit` to free.
@@ -109,6 +121,9 @@ pub const TermplexConfig = struct {
 
     // [session]
     session: Session,
+
+    // [orchestration]
+    orchestration: Orchestration,
 
     /// Internal flag: true when all string fields are heap-allocated (dups).
     _owned: bool,
@@ -154,6 +169,12 @@ pub const TermplexConfig = struct {
                 .autosave_interval = 5,
                 .restore_on_startup = true,
             },
+            .orchestration = .{
+                .enabled = null,
+                .dir = "~/.termplex/orchestration",
+                .agent_command = "claude",
+                .agent_terminate_policy = "keep",
+            },
             ._owned = false,
         };
     }
@@ -185,6 +206,9 @@ pub const TermplexConfig = struct {
             self.allocator.free(self.keybindings.rename_workspace);
             self.allocator.free(self.keybindings.find);
             self.allocator.free(self.notifications.attention_color);
+            self.allocator.free(self.orchestration.dir);
+            self.allocator.free(self.orchestration.agent_command);
+            self.allocator.free(self.orchestration.agent_terminate_policy);
         }
         self._owned = false;
     }
@@ -290,6 +314,12 @@ pub fn parseConfig(allocator: std.mem.Allocator, toml: []const u8) !TermplexConf
     errdefer allocator.free(find);
     var attention_color = try allocator.dupe(u8, cfg.notifications.attention_color);
     errdefer allocator.free(attention_color);
+    var orch_dir = try allocator.dupe(u8, cfg.orchestration.dir);
+    errdefer allocator.free(orch_dir);
+    var orch_agent_command = try allocator.dupe(u8, cfg.orchestration.agent_command);
+    errdefer allocator.free(orch_agent_command);
+    var orch_agent_terminate_policy = try allocator.dupe(u8, cfg.orchestration.agent_terminate_policy);
+    errdefer allocator.free(orch_agent_terminate_policy);
 
     // Current section name (empty string = before any section header).
     var current_section: []const u8 = "";
@@ -390,6 +420,19 @@ pub fn parseConfig(allocator: std.mem.Allocator, toml: []const u8) !TermplexConf
             } else if (std.mem.eql(u8, key, "restore_on_startup")) {
                 cfg.session.restore_on_startup = parseBool(value) orelse cfg.session.restore_on_startup;
             }
+        } else if (std.mem.eql(u8, current_section, "orchestration")) {
+            if (std.mem.eql(u8, key, "enabled")) {
+                cfg.orchestration.enabled = parseBool(value);
+            } else if (std.mem.eql(u8, key, "dir")) {
+                allocator.free(orch_dir);
+                orch_dir = try allocator.dupe(u8, unquote(value));
+            } else if (std.mem.eql(u8, key, "agent_command")) {
+                allocator.free(orch_agent_command);
+                orch_agent_command = try allocator.dupe(u8, unquote(value));
+            } else if (std.mem.eql(u8, key, "agent_terminate_policy")) {
+                allocator.free(orch_agent_terminate_policy);
+                orch_agent_terminate_policy = try allocator.dupe(u8, unquote(value));
+            }
         }
         // Unknown sections/keys are silently ignored.
     }
@@ -411,6 +454,9 @@ pub fn parseConfig(allocator: std.mem.Allocator, toml: []const u8) !TermplexConf
     cfg.keybindings.rename_workspace = rename_workspace;
     cfg.keybindings.find = find;
     cfg.notifications.attention_color = attention_color;
+    cfg.orchestration.dir = orch_dir;
+    cfg.orchestration.agent_command = orch_agent_command;
+    cfg.orchestration.agent_terminate_policy = orch_agent_terminate_policy;
     cfg._owned = true;
 
     return cfg;
@@ -749,4 +795,42 @@ test "getConfigPath uses XDG_CONFIG_HOME" {
     defer allocator.free(path);
 
     try std.testing.expect(std.mem.endsWith(u8, path, "termplex/config.toml"));
+}
+
+test "orchestration config defaults" {
+    const alloc = std.testing.allocator;
+    const cfg = TermplexConfig.default(alloc);
+    // default() doesn't allocate, so no deinit needed
+    try std.testing.expect(cfg.orchestration.enabled == null);
+    try std.testing.expectEqualStrings("~/.termplex/orchestration", cfg.orchestration.dir);
+    try std.testing.expectEqualStrings("claude", cfg.orchestration.agent_command);
+    try std.testing.expectEqualStrings("keep", cfg.orchestration.agent_terminate_policy);
+}
+
+test "orchestration config parse" {
+    const alloc = std.testing.allocator;
+    const toml =
+        \\[orchestration]
+        \\enabled = true
+        \\dir = "/custom/path"
+        \\agent_command = "codex"
+        \\agent_terminate_policy = "terminate"
+    ;
+    var cfg = try parseConfig(alloc, toml);
+    defer cfg.deinit();
+    try std.testing.expect(cfg.orchestration.enabled.? == true);
+    try std.testing.expectEqualStrings("/custom/path", cfg.orchestration.dir);
+    try std.testing.expectEqualStrings("codex", cfg.orchestration.agent_command);
+    try std.testing.expectEqualStrings("terminate", cfg.orchestration.agent_terminate_policy);
+}
+
+test "orchestration enabled null when absent" {
+    const alloc = std.testing.allocator;
+    const toml =
+        \\[session]
+        \\restore_on_startup = true
+    ;
+    var cfg = try parseConfig(alloc, toml);
+    defer cfg.deinit();
+    try std.testing.expect(cfg.orchestration.enabled == null);
 }
