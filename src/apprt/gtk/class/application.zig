@@ -45,6 +45,7 @@ const GlobalShortcuts = @import("global_shortcuts.zig").GlobalShortcuts;
 const git_probe = @import("../../../termplex/core/git_probe.zig");
 const port_scanner = @import("../../../termplex/core/port_scanner.zig");
 const termplex_config = @import("../../../termplex/core/config.zig");
+const agents = @import("../../../termplex/ipc/agents.zig");
 
 const log = std.log.scoped(.gtk_termplex_application);
 
@@ -313,6 +314,11 @@ pub const Application = extern struct {
         /// Whether the orchestration agent has been launched in this session.
         orchestration_launched: bool = false,
 
+        // ----- Termplex agent registry -----
+
+        /// Registry of AI agents that have registered via IPC.
+        agent_registry: agents.AgentRegistry,
+
         pub var offset: c_int = 0;
     };
 
@@ -496,6 +502,7 @@ pub const Application = extern struct {
             .custom_css_providers = .empty,
             .global_shortcuts = gobject.ext.newInstance(GlobalShortcuts, .{}),
             .saved_language = saved_language,
+            .agent_registry = agents.AgentRegistry.init(std.heap.c_allocator),
         };
 
         // Termplex: load Termplex config (falls back to defaults on any error).
@@ -652,6 +659,9 @@ pub const Application = extern struct {
 
         // Termplex: free the loaded Termplex config.
         priv.termplex_cfg.deinit();
+
+        // Termplex: free the agent registry.
+        priv.agent_registry.deinit();
 
         priv.config.unref();
         priv.winproto.deinit(alloc);
@@ -1170,6 +1180,19 @@ pub const Application = extern struct {
             return ipcTabCreate(self, alloc, id, root.object);
         }
 
+        if (std.mem.eql(u8, method, "agent.register")) {
+            return ipcAgentRegister(self, alloc, id, root.object);
+        }
+        if (std.mem.eql(u8, method, "agent.list")) {
+            return ipcAgentList(self, alloc, id);
+        }
+        if (std.mem.eql(u8, method, "agent.unregister")) {
+            return ipcAgentUnregister(self, alloc, id, root.object);
+        }
+        if (std.mem.eql(u8, method, "agent.terminate")) {
+            return ipcAgentTerminate(self, alloc, id, root.object);
+        }
+
         // Stubs for other known methods — return ok with null result.
         const known_stubs = [_][]const u8{
             "system.tree",
@@ -1199,6 +1222,176 @@ pub const Application = extern struct {
         return std.fmt.allocPrint(
             alloc,
             "{{\"ok\":false,\"error\":{{\"code\":\"method_not_found\",\"message\":\"unknown method\"}},\"id\":{d}}}",
+            .{id},
+        ) catch null;
+    }
+
+    /// Handle agent.register — registers a new AI agent and returns its agent_id.
+    fn ipcAgentRegister(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const priv = self.private();
+        const params_val = obj.get("params") orelse .null;
+        if (params_val != .object) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+        const params = params_val.object;
+
+        // Extract required fields
+        const workspace = blk: {
+            const v = params.get("workspace") orelse break :blk "";
+            break :blk switch (v) { .string => |s| s, else => "" };
+        };
+        const tab: u32 = blk: {
+            const v = params.get("tab") orelse break :blk 0;
+            break :blk switch (v) { .integer => |n| @intCast(@max(0, n)), else => 0 };
+        };
+        const agent_type = blk: {
+            const v = params.get("type") orelse break :blk agents.AgentType.custom;
+            break :blk switch (v) {
+                .string => |s| agents.AgentType.fromString(s) orelse .custom,
+                else => .custom,
+            };
+        };
+        const pid: i32 = blk: {
+            const v = params.get("pid") orelse break :blk 0;
+            break :blk switch (v) { .integer => |n| @intCast(n), else => 0 };
+        };
+        if (pid <= 0) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"valid pid required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        const agent_id = priv.agent_registry.register(workspace, tab, agent_type, pid) catch {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"oom\",\"message\":\"out of memory\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":true,\"result\":{{\"agent_id\":\"{s}\"}},\"id\":{d}}}",
+            .{ &agent_id, id },
+        ) catch null;
+    }
+
+    /// Handle agent.list — returns all live registered agents.
+    fn ipcAgentList(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        const priv = self.private();
+
+        // Clean up dead agents first
+        priv.agent_registry.cleanupDead();
+
+        var arr_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer arr_buf.deinit(alloc);
+
+        arr_buf.appendSlice(alloc, "[") catch return null;
+        for (priv.agent_registry.agents.items, 0..) |agent, idx| {
+            if (idx > 0) arr_buf.appendSlice(alloc, ",") catch return null;
+            var num_buf: [16]u8 = undefined;
+
+            arr_buf.appendSlice(alloc, "{\"agent_id\":\"") catch return null;
+            arr_buf.appendSlice(alloc, &agent.agent_id) catch return null;
+            arr_buf.appendSlice(alloc, "\",\"workspace\":\"") catch return null;
+            for (agent.workspace) |c| {
+                if (c == '"' or c == '\\') arr_buf.append(alloc, '\\') catch return null;
+                arr_buf.append(alloc, c) catch return null;
+            }
+            arr_buf.appendSlice(alloc, "\",\"tab\":") catch return null;
+            const tab_str = std.fmt.bufPrint(&num_buf, "{d}", .{agent.tab}) catch return null;
+            arr_buf.appendSlice(alloc, tab_str) catch return null;
+            arr_buf.appendSlice(alloc, ",\"type\":\"") catch return null;
+            arr_buf.appendSlice(alloc, agent.agent_type.toString()) catch return null;
+            arr_buf.appendSlice(alloc, "\",\"pid\":") catch return null;
+            const pid_str = std.fmt.bufPrint(&num_buf, "{d}", .{agent.pid}) catch return null;
+            arr_buf.appendSlice(alloc, pid_str) catch return null;
+            arr_buf.appendSlice(alloc, ",\"alive\":true}") catch return null;
+        }
+        arr_buf.appendSlice(alloc, "]") catch return null;
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":true,\"result\":{{\"agents\":{s}}},\"id\":{d}}}",
+            .{ arr_buf.items, id },
+        ) catch null;
+    }
+
+    /// Handle agent.unregister — removes an agent by PID.
+    fn ipcAgentUnregister(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const priv = self.private();
+        const params_val = obj.get("params") orelse .null;
+        if (params_val != .object) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+        const pid: i32 = blk: {
+            const v = params_val.object.get("pid") orelse break :blk 0;
+            break :blk switch (v) { .integer => |n| @intCast(n), else => 0 };
+        };
+        if (pid <= 0) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"valid pid required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        _ = priv.agent_registry.unregister(pid);
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
+            .{id},
+        ) catch null;
+    }
+
+    /// Handle agent.terminate — sends SIGTERM to agent process and unregisters it.
+    fn ipcAgentTerminate(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const priv = self.private();
+        const params_val = obj.get("params") orelse .null;
+        if (params_val != .object) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+        const pid: i32 = blk: {
+            const v = params_val.object.get("pid") orelse break :blk 0;
+            break :blk switch (v) { .integer => |n| @intCast(n), else => 0 };
+        };
+        if (pid <= 0) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"valid pid required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        // Determine policy: per-call override > global config
+        const policy: []const u8 = blk: {
+            if (params_val.object.get("policy")) |pv| {
+                switch (pv) {
+                    .string => |s| break :blk s,
+                    else => {},
+                }
+            }
+            break :blk priv.termplex_cfg.orchestration.agent_terminate_policy;
+        };
+
+        // Send SIGTERM
+        std.posix.kill(@intCast(pid), std.posix.SIG.TERM) catch {};
+
+        // Unregister
+        _ = priv.agent_registry.unregister(pid);
+
+        // If policy is "terminate", log for now (tab closing requires workspace/tab lookup)
+        if (std.mem.eql(u8, policy, "terminate")) {
+            log.info("IPC: agent terminate policy=terminate, tab close not yet implemented", .{});
+        }
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
             .{id},
         ) catch null;
     }
