@@ -282,9 +282,12 @@ pub const WorkspaceTab = extern struct {
         }
 
         // Update directory label. Preserve existing text when null.
+        // Skip if inline change-dir editing is active to avoid clobbering the entry.
         if (dir_text) |d| {
-            priv.dir_label.setLabel(d);
-            priv.dir_label.as(gtk.Widget).setVisible(1);
+            if (!priv.is_changing_dir) {
+                priv.dir_label.setLabel(d);
+                priv.dir_label.as(gtk.Widget).setVisible(1);
+            }
         }
         // When dir_text is null, keep current label text visible (no else branch).
 
