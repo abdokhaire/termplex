@@ -322,11 +322,12 @@ pub const Sidebar = extern struct {
         name: ?[:0]const u8,
         port_text: ?[:0]const u8,
         branch_text: ?[:0]const u8,
+        dir_text: ?[:0]const u8,
     ) void {
         const priv = self.private();
 
         const tab = WorkspaceTab.new();
-        tab.update(name, port_text, branch_text, false, false);
+        tab.update(name, port_text, branch_text, dir_text, false, false);
 
         priv.workspace_list.append(tab.as(gtk.Widget));
 
@@ -389,6 +390,7 @@ pub const Sidebar = extern struct {
         name: ?[:0]const u8,
         port_text: ?[:0]const u8,
         branch_text: ?[:0]const u8,
+        dir_text: ?[:0]const u8,
         is_active: bool,
         has_unread: bool,
     ) void {
@@ -399,7 +401,7 @@ pub const Sidebar = extern struct {
         // The child of the ListBoxRow is the WorkspaceTab (a Gtk.Box).
         // We need to cast the generic Widget pointer to a WorkspaceTab pointer.
         const tab: *WorkspaceTab = @ptrCast(@alignCast(child_widget));
-        tab.update(name, port_text, branch_text, is_active, has_unread);
+        tab.update(name, port_text, branch_text, dir_text, is_active, has_unread);
 
         // Apply orchestrator styling to the tab widget so the CSS descendant
         // selector `.termplex-orchestrator-label .termplex-tab-name` can reach

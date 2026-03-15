@@ -331,7 +331,7 @@ pub const Window = extern struct {
                 var i: u32 = 0;
                 while (i < count) : (i += 1) {
                     const name = app.workspaceName(i);
-                    sidebar.addWorkspace(name, null, null);
+                    sidebar.addWorkspace(name, null, null, null);
                 }
                 if (count > 0) {
                     sidebar.setActiveIndex(app.activeWorkspaceIndex());
@@ -339,6 +339,7 @@ pub const Window = extern struct {
                     sidebar.updateWorkspace(
                         app.activeWorkspaceIndex(),
                         app.workspaceName(app.activeWorkspaceIndex()),
+                        null,
                         null,
                         null,
                         true,
@@ -1485,6 +1486,7 @@ pub const Window = extern struct {
                 app.workspaceName(old_idx),
                 null,
                 null,
+                null,
                 false,
                 false,
             );
@@ -1494,6 +1496,7 @@ pub const Window = extern struct {
         sidebar.updateWorkspace(
             index,
             app.workspaceName(index),
+            null,
             null,
             null,
             true,
@@ -1522,7 +1525,7 @@ pub const Window = extern struct {
         const name = app.workspaceName(new_idx);
 
         // Add the workspace tab to the sidebar.
-        sidebar.addWorkspace(name, null, null);
+        sidebar.addWorkspace(name, null, null, null);
 
         // Deactivate the old workspace tab visually.
         const old_idx = app.activeWorkspaceIndex();
@@ -1531,13 +1534,14 @@ pub const Window = extern struct {
             app.workspaceName(old_idx),
             null,
             null,
+            null,
             false,
             false,
         );
 
         // Activate the new workspace.
         app.setActiveWorkspaceIndex(new_idx);
-        sidebar.updateWorkspace(new_idx, name, null, null, true, false);
+        sidebar.updateWorkspace(new_idx, name, null, null, null, true, false);
         sidebar.setActiveIndex(new_idx);
 
         // Switch to the new workspace's TabView and create an initial tab.
@@ -1586,8 +1590,8 @@ pub const Window = extern struct {
                 win.switchToTabView(tv);
                 // Update sidebar highlights.
                 const sidebar = win.private().sidebar;
-                sidebar.updateWorkspace(index, app.workspaceName(index), null, null, false, false);
-                sidebar.updateWorkspace(new_idx, app.workspaceName(new_idx), null, null, true, false);
+                sidebar.updateWorkspace(index, app.workspaceName(index), null, null, null, false, false);
+                sidebar.updateWorkspace(new_idx, app.workspaceName(new_idx), null, null, null, true, false);
                 sidebar.setActiveIndex(new_idx);
             }
         }
@@ -2611,14 +2615,15 @@ pub const Window = extern struct {
             app.workspaceName(old_idx),
             null,
             null,
+            null,
             false,
             false,
         );
 
         // Add to sidebar and activate the new workspace.
-        sidebar.addWorkspace(name, null, null);
+        sidebar.addWorkspace(name, null, null, null);
         app.setActiveWorkspaceIndex(new_idx);
-        sidebar.updateWorkspace(new_idx, name, null, null, true, false);
+        sidebar.updateWorkspace(new_idx, name, null, null, null, true, false);
         sidebar.setActiveIndex(new_idx);
     }
 
@@ -2655,7 +2660,7 @@ pub const Window = extern struct {
         // one, otherwise stay at the same index (which is now the next one).
         const new_active: u32 = if (active_idx > 0) active_idx - 1 else 0;
         app.setActiveWorkspaceIndex(new_active);
-        sidebar.updateWorkspace(new_active, app.workspaceName(new_active), null, null, true, false);
+        sidebar.updateWorkspace(new_active, app.workspaceName(new_active), null, null, null, true, false);
         sidebar.setActiveIndex(new_active);
 
         log.info("termplex-close-workspace: removed workspace {d}, now active={d}", .{ active_idx, new_active });
@@ -2675,9 +2680,9 @@ pub const Window = extern struct {
         const next = current + 1;
 
         const sidebar = self.private().sidebar;
-        sidebar.updateWorkspace(current, app.workspaceName(current), null, null, false, false);
+        sidebar.updateWorkspace(current, app.workspaceName(current), null, null, null, false, false);
         app.setActiveWorkspaceIndex(next);
-        sidebar.updateWorkspace(next, app.workspaceName(next), null, null, true, false);
+        sidebar.updateWorkspace(next, app.workspaceName(next), null, null, null, true, false);
         sidebar.setActiveIndex(next);
 
         if (app.workspaceTabView(next)) |tv| {
@@ -2699,9 +2704,9 @@ pub const Window = extern struct {
         const prev = current - 1;
 
         const sidebar = self.private().sidebar;
-        sidebar.updateWorkspace(current, app.workspaceName(current), null, null, false, false);
+        sidebar.updateWorkspace(current, app.workspaceName(current), null, null, null, false, false);
         app.setActiveWorkspaceIndex(prev);
-        sidebar.updateWorkspace(prev, app.workspaceName(prev), null, null, true, false);
+        sidebar.updateWorkspace(prev, app.workspaceName(prev), null, null, null, true, false);
         sidebar.setActiveIndex(prev);
 
         if (app.workspaceTabView(prev)) |tv| {

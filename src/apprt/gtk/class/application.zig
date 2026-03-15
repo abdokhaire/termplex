@@ -815,6 +815,18 @@ pub const Application = extern struct {
         return priv.workspace_dirs.items[index];
     }
 
+    /// Format a workspace directory for display, replacing $HOME with ~.
+    pub fn formatDirDisplay(self: *Self, idx: u32, buf: *[512]u8) ?[:0]const u8 {
+        const priv = self.private();
+        if (idx >= priv.workspace_dirs.items.len) return null;
+        const dir = priv.workspace_dirs.items[idx];
+        const home = std.posix.getenv("HOME") orelse "";
+        if (home.len > 0 and std.mem.startsWith(u8, dir, home)) {
+            return std.fmt.bufPrintZ(buf, "~{s}", .{dir[home.len..]}) catch null;
+        }
+        return dir;
+    }
+
     /// Get the AdwTabView for the workspace at the given index,
     /// or null if the index is out of range.
     pub fn workspaceTabView(self: *Self, index: u32) ?*adw.TabView {
@@ -1143,6 +1155,14 @@ pub const Application = extern struct {
             return ipcWorkspaceSelect(self, alloc, id, root.object);
         }
 
+        if (std.mem.eql(u8, method, "workspace.close")) {
+            return ipcWorkspaceClose(self, alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "workspace.rename")) {
+            return ipcWorkspaceRename(self, alloc, id, root.object);
+        }
+
         if (std.mem.eql(u8, method, "notification.create")) {
             return ipcNotificationCreate(self, alloc, id, root.object);
         }
@@ -1199,15 +1219,15 @@ pub const Application = extern struct {
         if (std.mem.eql(u8, method, "surface.read")) {
             return ipcSurfaceRead(self, alloc, id, root.object);
         }
+        if (std.mem.eql(u8, method, "surface.split")) {
+            return ipcSurfaceSplit(self, alloc, id, root.object);
+        }
 
         // Stubs for other known methods — return ok with null result.
         const known_stubs = [_][]const u8{
             "system.tree",
-            "workspace.close",
-            "workspace.rename",
             "surface.list",
             "surface.create",
-            "surface.split",
             "surface.close",
             "surface.focus",
             "notification.list",
@@ -1439,9 +1459,10 @@ pub const Application = extern struct {
     /// Handle workspace.create — calls addWorkspaceWithDir() and returns the new index.
     /// Accepts an optional "dir" field in "params".
     fn ipcWorkspaceCreate(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+
         // Extract optional "dir" from params
         const dir: ?[:0]const u8 = blk: {
-            const params_val = obj.get("params") orelse break :blk null;
             if (params_val != .object) break :blk null;
             const dv = params_val.object.get("dir") orelse break :blk null;
             switch (dv) {
@@ -1463,10 +1484,156 @@ pub const Application = extern struct {
                 .{id},
             ) catch null;
         };
+
+        // Extract optional "name" and rename if provided.
+        if (params_val == .object) {
+            if (params_val.object.get("name")) |nv| {
+                switch (nv) {
+                    .string => |s| {
+                        if (s.len > 0) {
+                            const name_z = alloc.dupeZ(u8, s) catch null;
+                            if (name_z) |nz| {
+                                defer alloc.free(nz);
+                                self.renameWorkspace(new_idx, nz);
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        // Update sidebar UI.
+        const name = self.workspaceName(new_idx) orelse "Workspace";
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            if (gobject.ext.cast(Window, active_win)) |win| {
+                win.getSidebar().addWorkspace(name, null, null, null);
+            }
+        }
+
         return std.fmt.allocPrint(
             alloc,
             "{{\"ok\":true,\"result\":{{\"index\":{d}}},\"id\":{d}}}",
             .{ new_idx, id },
+        ) catch null;
+    }
+
+    /// Handle workspace.close — removes a workspace and its tabs.
+    fn ipcWorkspaceClose(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        if (params_val != .object) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params object required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        const ws_idx = self.resolveWorkspaceIdx(params_val.object) orelse {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        const priv = self.private();
+
+        // Don't allow closing the last workspace.
+        if (priv.workspace_names.items.len <= 1) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_operation\",\"message\":\"cannot close last workspace\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        // Don't allow closing the orchestration workspace.
+        if (priv.orchestration_workspace_idx) |orch_idx| {
+            if (ws_idx == orch_idx) {
+                return std.fmt.allocPrint(alloc,
+                    "{{\"ok\":false,\"error\":{{\"code\":\"invalid_operation\",\"message\":\"cannot close orchestration workspace\"}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            }
+        }
+
+        // Remove from sidebar UI first (before internal state changes indices).
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            if (gobject.ext.cast(Window, active_win)) |win| {
+                win.getSidebar().removeWorkspace(ws_idx);
+            }
+        }
+
+        // Remove internal state (closes tabs, frees memory).
+        self.removeWorkspace(ws_idx);
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
+            .{id},
+        ) catch null;
+    }
+
+    /// Handle workspace.rename — renames an existing workspace.
+    fn ipcWorkspaceRename(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        if (params_val != .object) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params object required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        const ws_idx = self.resolveWorkspaceIdx(params_val.object) orelse {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        // Extract new name.
+        const new_name: [:0]const u8 = blk: {
+            const nv = params_val.object.get("new_name") orelse {
+                return std.fmt.allocPrint(alloc,
+                    "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"new_name required\"}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            };
+            switch (nv) {
+                .string => |s| {
+                    if (s.len == 0) {
+                        return std.fmt.allocPrint(alloc,
+                            "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"new_name cannot be empty\"}},\"id\":{d}}}",
+                            .{id},
+                        ) catch null;
+                    }
+                    break :blk alloc.dupeZ(u8, s) catch {
+                        return std.fmt.allocPrint(alloc,
+                            "{{\"ok\":false,\"error\":{{\"code\":\"oom\",\"message\":\"out of memory\"}},\"id\":{d}}}",
+                            .{id},
+                        ) catch null;
+                    };
+                },
+                else => {
+                    return std.fmt.allocPrint(alloc,
+                        "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"new_name must be a string\"}},\"id\":{d}}}",
+                        .{id},
+                    ) catch null;
+                },
+            }
+        };
+        defer alloc.free(new_name);
+
+        // Rename internal state.
+        self.renameWorkspace(ws_idx, new_name);
+
+        // Update sidebar UI.
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            if (gobject.ext.cast(Window, active_win)) |win| {
+                win.getSidebar().updateWorkspace(ws_idx, new_name, null, null, null, ws_idx == self.private().active_workspace_idx, false);
+            }
+        }
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
+            .{id},
         ) catch null;
     }
 
@@ -1594,6 +1761,7 @@ pub const Application = extern struct {
                             self.workspaceName(old_idx),
                             null,
                             null,
+                            null,
                             false,
                             false,
                         );
@@ -1602,6 +1770,7 @@ pub const Application = extern struct {
                     sidebar.updateWorkspace(
                         idx,
                         self.workspaceName(idx),
+                        null,
                         null,
                         null,
                         true,
@@ -1911,6 +2080,83 @@ pub const Application = extern struct {
 
         // Fewer than N lines — return everything.
         return text;
+    }
+
+    /// Handle surface.split — creates a new split in the active surface.
+    ///
+    /// Params:
+    ///   direction: "right" | "left" | "up" | "down" | "horizontal" | "vertical"
+    ///             (default: "right")
+    ///             "horizontal" maps to "right", "vertical" maps to "down"
+    fn ipcSurfaceSplit(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+
+        // Parse direction from params (default: "right").
+        const direction: []const u8 = blk: {
+            if (params_val == .object) {
+                if (params_val.object.get("direction")) |dir_val| {
+                    if (dir_val == .string) {
+                        const d = dir_val.string;
+                        // Map horizontal/vertical to right/down for convenience.
+                        if (std.mem.eql(u8, d, "horizontal")) break :blk "right";
+                        if (std.mem.eql(u8, d, "vertical")) break :blk "down";
+                        // Validate direction name.
+                        if (std.mem.eql(u8, d, "right") or
+                            std.mem.eql(u8, d, "left") or
+                            std.mem.eql(u8, d, "up") or
+                            std.mem.eql(u8, d, "down"))
+                        {
+                            break :blk d;
+                        }
+                        return std.fmt.allocPrint(alloc,
+                            "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"direction must be right, left, up, down, horizontal, or vertical\"}},\"id\":{d}}}",
+                            .{id},
+                        ) catch null;
+                    }
+                }
+            }
+            break :blk "right";
+        };
+
+        // Get the active window.
+        const active_win = self.as(gtk.Application).getActiveWindow() orelse {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"no active window\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const win = gobject.ext.cast(Window, active_win) orelse {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"active window is not a termplex window\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        // Get the active surface and activate the split-tree action on it.
+        const surface = win.getActiveSurface() orelse {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"no_surface\",\"message\":\"no active surface\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        const result = surface.as(gtk.Widget).activateAction(
+            "split-tree.new-split",
+            "&s",
+            direction.ptr,
+        );
+
+        if (result == 0) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"split_failed\",\"message\":\"failed to create split\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":true,\"result\":{{\"direction\":\"{s}\"}},\"id\":{d}}}",
+            .{ direction, id },
+        ) catch null;
     }
 
     /// Handle tab.list — returns tabs in a workspace.
@@ -2791,8 +3037,11 @@ pub const Application = extern struct {
             break :blk label;
         };
 
+        var dir_buf: [512]u8 = undefined;
+        const dir_z: ?[:0]const u8 = self.formatDirDisplay(active_idx, &dir_buf);
+
         // Update the sidebar in every open window.
-        updateSidebarForAllWindows(self, active_idx, name, priv.listening_ports_str, branch_z);
+        updateSidebarForAllWindows(self, active_idx, name, priv.listening_ports_str, branch_z, dir_z);
     }
 
     /// Push the current port state to the active workspace tab in the sidebar.
@@ -2815,7 +3064,10 @@ pub const Application = extern struct {
             break :blk label;
         };
 
-        updateSidebarForAllWindows(self, active_idx, name, priv.listening_ports_str, branch_z);
+        var dir_buf: [512]u8 = undefined;
+        const dir_z: ?[:0]const u8 = self.formatDirDisplay(active_idx, &dir_buf);
+
+        updateSidebarForAllWindows(self, active_idx, name, priv.listening_ports_str, branch_z, dir_z);
     }
 
     /// Update the active workspace tab in the sidebar of every open window.
@@ -2825,18 +3077,21 @@ pub const Application = extern struct {
         name: ?[:0]const u8,
         port_text: ?[:0]const u8,
         branch_text: ?[:0]const u8,
+        dir_text: ?[:0]const u8,
     ) void {
         const Ctx = struct {
             active_idx: u32,
             name: ?[:0]const u8,
             port_text: ?[:0]const u8,
             branch_text: ?[:0]const u8,
+            dir_text: ?[:0]const u8,
         };
         var ctx = Ctx{
             .active_idx = active_idx,
             .name = name,
             .port_text = port_text,
             .branch_text = branch_text,
+            .dir_text = dir_text,
         };
         const list = self.as(gtk.Application).getWindows();
         list.foreach(struct {
@@ -2844,7 +3099,7 @@ pub const Application = extern struct {
                 const c: *Ctx = @ptrCast(@alignCast(userdata orelse return));
                 const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
                 const win = gobject.ext.cast(Window, ptr) orelse return;
-                win.getSidebar().updateWorkspace(c.active_idx, c.name, c.port_text, c.branch_text, true, false);
+                win.getSidebar().updateWorkspace(c.active_idx, c.name, c.port_text, c.branch_text, c.dir_text, true, false);
             }
         }.cb, @ptrCast(&ctx));
     }
@@ -3816,9 +4071,13 @@ pub const Application = extern struct {
         const as_variant_type = glib.VariantType.new("as");
         defer as_variant_type.free();
 
+        const s_variant_type = glib.VariantType.new("s");
+        defer s_variant_type.free();
+
         const actions = [_]ext.actions.Action(Self){
             .init("new-window", actionNewWindow, null),
             .init("new-window-command", actionNewWindow, as_variant_type),
+            .init("new-split", actionNewSplit, s_variant_type),
             .init("open-config", actionOpenConfig, null),
             .init("present-surface", actionPresentSurface, t_variant_type),
             .init("quit", actionQuit, null),
@@ -4195,6 +4454,55 @@ pub const Application = extern struct {
         }) catch |err| {
             log.warn("unable to create new window: {t}", .{err});
         };
+    }
+
+    /// Handle `app.new-split` GTK action — creates a split in the active
+    /// window's focused surface. The parameter is a direction string:
+    /// "right", "left", "up", "down" (or aliases "horizontal"→"right",
+    /// "vertical"→"down").
+    pub fn actionNewSplit(
+        _: *gio.SimpleAction,
+        parameter_: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        log.debug("received new split action", .{});
+
+        const direction: []const u8 = blk: {
+            const parameter = parameter_ orelse break :blk "right";
+            var len: usize = undefined;
+            const buf = parameter.getString(&len);
+            const dir = buf[0..len];
+            if (std.mem.eql(u8, dir, "horizontal")) break :blk "right";
+            if (std.mem.eql(u8, dir, "vertical")) break :blk "down";
+            if (std.mem.eql(u8, dir, "right") or
+                std.mem.eql(u8, dir, "left") or
+                std.mem.eql(u8, dir, "up") or
+                std.mem.eql(u8, dir, "down"))
+            {
+                break :blk dir;
+            }
+            log.warn("invalid split direction: {s}, defaulting to right", .{dir});
+            break :blk "right";
+        };
+
+        const active_win = self.as(gtk.Application).getActiveWindow() orelse {
+            log.warn("new-split: no active window", .{});
+            return;
+        };
+        const win = gobject.ext.cast(Window, active_win) orelse {
+            log.warn("new-split: active window is not a termplex window", .{});
+            return;
+        };
+        const surface = win.getActiveSurface() orelse {
+            log.warn("new-split: no active surface", .{});
+            return;
+        };
+
+        _ = surface.as(gtk.Widget).activateAction(
+            "split-tree.new-split",
+            "&s",
+            direction.ptr,
+        );
     }
 
     pub fn actionOpenConfig(
@@ -4856,11 +5164,13 @@ const Action = struct {
             priv.orchestration_workspace_idx = idx;
             log.info("orchestration enabled: workspace created at index {d}", .{idx});
 
-            // Update sidebar with orchestration index.
+            // Add workspace row to sidebar and apply orchestration styling.
             if (self.as(gtk.Application).getActiveWindow()) |active_win| {
                 if (gobject.ext.cast(Window, active_win)) |win| {
                     const sidebar = win.getSidebar();
                     sidebar.setOrchestrationIndex(idx);
+                    sidebar.addWorkspace("ORCHESTRATOR", null, null, null);
+                    sidebar.updateWorkspace(idx, "ORCHESTRATOR", null, null, null, false, false);
                 }
             }
         }
@@ -4943,18 +5253,37 @@ const Action = struct {
     /// Copy a resource file from the install prefix to the orchestration directory.
     fn copyResourceFile(relative_src: []const u8, orch_dir: []const u8, relative_dst: []const u8) void {
         const alloc = std.heap.c_allocator;
-        // Try common install prefixes.
-        const prefixes = [_][]const u8{ "/usr/local", "/usr" };
-        for (prefixes) |prefix| {
+        const dst = std.fmt.allocPrint(alloc, "{s}/{s}", .{ orch_dir, relative_dst }) catch return;
+        defer alloc.free(dst);
+
+        // Try relative to the executable first (covers local zig-out builds),
+        // then fall back to common system install prefixes.
+        const exe_prefix: ?[]const u8 = blk: {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const exe_path = std.fs.selfExePath(&buf) catch break :blk null;
+            // exe_path is e.g. ".../zig-out/bin/termplex-app" — go up two dirs to get prefix.
+            const bin_dir = std.fs.path.dirname(exe_path) orelse break :blk null;
+            const prefix_dir = std.fs.path.dirname(bin_dir) orelse break :blk null;
+            break :blk prefix_dir;
+        };
+
+        // Build list of prefixes to try.
+        const static_prefixes = [_][]const u8{ "/usr/local", "/usr" };
+        const total = if (exe_prefix != null) static_prefixes.len + 1 else static_prefixes.len;
+
+        for (0..total) |i| {
+            const prefix: []const u8 = if (i == 0 and exe_prefix != null)
+                exe_prefix.?
+            else
+                static_prefixes[i - @as(usize, if (exe_prefix != null) 1 else 0)];
+
             const src = std.fmt.allocPrint(alloc, "{s}/{s}", .{ prefix, relative_src }) catch continue;
             defer alloc.free(src);
-            const dst = std.fmt.allocPrint(alloc, "{s}/{s}", .{ orch_dir, relative_dst }) catch continue;
-            defer alloc.free(dst);
             std.fs.copyFileAbsolute(src, dst, .{}) catch continue;
             log.debug("copied resource {s} -> {s}", .{ src, dst });
             return; // Success.
         }
-        log.debug("resource file not found: {s} (skipping)", .{relative_src});
+        log.warn("resource file not found: {s} (tried exe prefix and system prefixes)", .{relative_src});
     }
 
     pub fn openConfig(self: *Application) bool {

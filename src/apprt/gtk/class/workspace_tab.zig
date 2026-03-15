@@ -17,6 +17,8 @@ const log = std.log.scoped(.gtk_termplex_workspace_tab);
 ///       |   +-- Gtk.Label (name_label, bold, left-aligned, hexpand)
 ///       |   +-- Gtk.Label (port_label, green, right-aligned)
 ///       +-- Gtk.Box (row2, horizontal)
+///       |   +-- Gtk.Label (dir_label, dim gray, ellipsized)
+///       +-- Gtk.Box (row3, horizontal)
 ///           +-- Gtk.Label (branch_label, "⎇ main", cyan, smaller)
 ///
 /// The widget exposes an `update` method that refreshes label text and
@@ -42,6 +44,9 @@ pub const WorkspaceTab = extern struct {
 
         /// Label showing the primary port (green, right-aligned).
         port_label: *gtk.Label = undefined,
+
+        /// Label showing the workspace directory path (dim gray, ellipsized).
+        dir_label: *gtk.Label = undefined,
 
         /// Label showing "⎇ <branch>" (cyan, smaller font).
         branch_label: *gtk.Label = undefined,
@@ -96,15 +101,28 @@ pub const WorkspaceTab = extern struct {
         priv.port_label = port_label;
         row1.append(port_label.as(gtk.Widget));
 
-        // -- Row 2: branch label --
+        // -- Row 2: directory label --
         const row2 = gtk.Box.new(.horizontal, 0);
         content.append(row2.as(gtk.Widget));
+
+        const dir_label = gtk.Label.new(null);
+        dir_label.setXalign(0.0);
+        dir_label.as(gtk.Widget).setHexpand(1);
+        dir_label.setEllipsize(.end);
+        dir_label.setMaxWidthChars(25);
+        dir_label.as(gtk.Widget).addCssClass("termplex-tab-dir");
+        priv.dir_label = dir_label;
+        row2.append(dir_label.as(gtk.Widget));
+
+        // -- Row 3: branch label --
+        const row3 = gtk.Box.new(.horizontal, 0);
+        content.append(row3.as(gtk.Widget));
 
         const branch_label = gtk.Label.new(null);
         branch_label.setXalign(0.0);
         branch_label.as(gtk.Widget).addCssClass("termplex-tab-branch");
         priv.branch_label = branch_label;
-        row2.append(branch_label.as(gtk.Widget));
+        row3.append(branch_label.as(gtk.Widget));
     }
 
     // ---------------------------------------------------------------
@@ -122,6 +140,7 @@ pub const WorkspaceTab = extern struct {
         name: ?[:0]const u8,
         port_text: ?[:0]const u8,
         branch_text: ?[:0]const u8,
+        dir_text: ?[:0]const u8,
         is_active: bool,
         has_unread: bool,
     ) void {
@@ -145,6 +164,13 @@ pub const WorkspaceTab = extern struct {
             priv.branch_label.setLabel("");
             priv.branch_label.as(gtk.Widget).setVisible(0);
         }
+
+        // Update directory label. Preserve existing text when null.
+        if (dir_text) |d| {
+            priv.dir_label.setLabel(d);
+            priv.dir_label.as(gtk.Widget).setVisible(1);
+        }
+        // When dir_text is null, keep current label text visible (no else branch).
 
         // Update left border CSS classes for active / unread state.
         const border_widget = priv.left_border.as(gtk.Widget);
