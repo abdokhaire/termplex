@@ -1085,6 +1085,10 @@ pub const Application = extern struct {
         // Termplex: start the 10-second combined git+port probe timer.
         priv.port_scan_timer = glib.timeoutAdd(10000, combinedProbeCallback, self);
 
+        // Schedule initial combined probe shortly after startup (one-shot)
+        // so branch info appears quickly without waiting for the 10s timer.
+        _ = glib.timeoutAdd(500, initialProbeCallback, self);
+
         // Termplex: start the 5-second autosave timer.
         priv.autosave_timer = glib.timeoutAdd(5000, autosaveCallback, self);
     }
@@ -3071,6 +3075,9 @@ pub const Application = extern struct {
         // slot it corresponds to without extra context, but
         // triggerBurstPortScan and deinit both handle stale IDs gracefully.
         runPortScan(self);
+        // Burst scans target the active workspace's pwd change — update
+        // the sidebar immediately for the active workspace only.
+        self.updateSidebarPortState();
         return @intFromBool(glib.SOURCE_REMOVE);
     }
 
@@ -3123,6 +3130,32 @@ pub const Application = extern struct {
         return @intFromBool(glib.SOURCE_CONTINUE);
     }
 
+    /// One-shot callback to probe git for all workspaces at startup.
+    /// Fires once ~500ms after launch so branch info appears quickly.
+    fn initialProbeCallback(ud: ?*anyopaque) callconv(.c) c_int {
+        const self_ptr: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        const alloc = self_ptr.allocator();
+        const priv = self_ptr.private();
+
+        for (priv.workspace_dirs.items, 0..) |dir, i| {
+            if (priv.orchestration_workspace_idx) |orch_idx| {
+                if (i == orch_idx) continue;
+            }
+            var result = git_probe.probe(alloc, dir);
+            defer result.deinit(alloc);
+
+            if (priv.workspace_git_branches.items[i]) |old_b| alloc.free(old_b);
+            priv.workspace_git_branches.items[i] = if (result.branch) |b|
+                alloc.dupeZ(u8, b) catch null
+            else
+                null;
+            priv.workspace_git_dirty.items[i] = result.dirty;
+        }
+
+        self_ptr.refreshAllWorkspaceSidebars();
+        return @intFromBool(glib.SOURCE_REMOVE);
+    }
+
     /// Execute a port scan and update state + sidebar.
     ///
     /// Uses the current process PID as a placeholder since shell PIDs are not
@@ -3167,9 +3200,6 @@ pub const Application = extern struct {
         }
 
         log.debug("port scan: ports={s}", .{priv.listening_ports_str orelse "<none>"});
-
-        // Update sidebar for the active workspace.
-        self.updateSidebarPortState();
     }
 
     /// Push the current git state to the active workspace tab in the sidebar.
@@ -5389,10 +5419,12 @@ const Action = struct {
             // Add workspace row to sidebar and apply orchestration styling.
             if (self.as(gtk.Application).getActiveWindow()) |active_win| {
                 if (gobject.ext.cast(Window, active_win)) |win| {
+                    var orch_dir_buf: [512]u8 = undefined;
+                    const orch_dir_text = self.formatDirDisplay(idx, &orch_dir_buf);
                     const sidebar = win.getSidebar();
                     sidebar.setOrchestrationIndex(idx);
-                    sidebar.addWorkspace("ORCHESTRATOR", null, null, null);
-                    sidebar.updateWorkspace(idx, "ORCHESTRATOR", null, null, null, false, false);
+                    sidebar.addWorkspace("ORCHESTRATOR", null, null, orch_dir_text);
+                    sidebar.updateWorkspace(idx, "ORCHESTRATOR", null, null, orch_dir_text, false, false);
                 }
             }
         }

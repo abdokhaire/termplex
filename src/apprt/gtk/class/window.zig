@@ -331,17 +331,21 @@ pub const Window = extern struct {
                 var i: u32 = 0;
                 while (i < count) : (i += 1) {
                     const name = app.workspaceName(i);
-                    sidebar.addWorkspace(name, null, null, null);
+                    var dir_buf: [512]u8 = undefined;
+                    const dir_text = app.formatDirDisplay(i, &dir_buf);
+                    sidebar.addWorkspace(name, null, null, dir_text);
                 }
                 if (count > 0) {
                     sidebar.setActiveIndex(app.activeWorkspaceIndex());
                     // Mark the active workspace tab visually.
+                    var active_dir_buf: [512]u8 = undefined;
+                    const active_dir = app.formatDirDisplay(app.activeWorkspaceIndex(), &active_dir_buf);
                     sidebar.updateWorkspace(
                         app.activeWorkspaceIndex(),
                         app.workspaceName(app.activeWorkspaceIndex()),
                         null,
                         null,
-                        null,
+                        active_dir,
                         true,
                         false,
                     );
