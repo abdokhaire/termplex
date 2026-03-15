@@ -387,6 +387,16 @@ fn addLinuxAppResources(
         "bin/termplex-ctl",
     ).step);
 
+    // Install orchestration skill files
+    try steps.append(b.allocator, &b.addInstallFile(
+        b.path("tools/skill/termplex.md"),
+        "share/termplex/skill/termplex.md",
+    ).step);
+    try steps.append(b.allocator, &b.addInstallFile(
+        b.path("tools/skill/AGENTS.md"),
+        "share/termplex/skill/AGENTS.md",
+    ).step);
+
     // Various icons that our application can use, including the icon
     // that will be used for the desktop.
     try steps.append(b.allocator, &b.addInstallFile(
