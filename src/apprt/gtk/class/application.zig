@@ -18,6 +18,7 @@ const input = @import("../../../input.zig");
 const internal_os = @import("../../../os/main.zig");
 const systemd = @import("../../../os/systemd.zig");
 const terminal = @import("../../../terminal/main.zig");
+const termio = @import("../../../termio.zig");
 const xev = @import("../../../global.zig").xev;
 const Binding = @import("../../../input.zig").Binding;
 const CoreConfig = configpkg.Config;
@@ -1120,6 +1121,10 @@ pub const Application = extern struct {
             return ipcTabList(self, alloc, id, root.object);
         }
 
+        if (std.mem.eql(u8, method, "tab.create")) {
+            return ipcTabCreate(self, alloc, id, root.object);
+        }
+
         // Stubs for other known methods — return ok with null result.
         const known_stubs = [_][]const u8{
             "system.tree",
@@ -1483,6 +1488,166 @@ pub const Application = extern struct {
             "{{\"ok\":true,\"result\":{{\"tabs\":{s}}},\"id\":{d}}}",
             .{ arr_buf.items, id },
         ) catch null;
+    }
+
+    /// Handle tab.create — creates a new tab in a workspace.
+    fn ipcTabCreate(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        if (params_val != .object) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params object required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+        const params = params_val.object;
+
+        // Resolve workspace using shared helper
+        const ws_idx = self.resolveWorkspaceIdx(params) orelse {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        // Extract optional dir
+        const dir: ?[:0]const u8 = blk: {
+            const dv = params.get("dir") orelse break :blk null;
+            switch (dv) {
+                .string => |s| {
+                    if (s.len > 0)
+                        break :blk alloc.dupeZ(u8, s) catch break :blk null;
+                    break :blk null;
+                },
+                else => break :blk null,
+            }
+        };
+        defer if (dir) |d| alloc.free(d);
+
+        const priv = self.private();
+
+        // Get the workspace's TabView
+        const tab_view = priv.workspace_tab_views.items[ws_idx];
+
+        // Use the workspace dir as fallback
+        const working_dir = dir orelse self.workspaceDir(ws_idx);
+
+        // Create the tab via the active window
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            if (gobject.ext.cast(Window, active_win)) |win| {
+                win.createTabInView(tab_view, working_dir);
+
+                // Get the newly created tab page (last page)
+                const n_pages = tab_view.getNPages();
+                if (n_pages > 0) {
+                    const page = tab_view.getNthPage(n_pages - 1);
+
+                    // Set custom title if provided
+                    if (params.get("title")) |tv| {
+                        switch (tv) {
+                            .string => |s| {
+                                if (s.len > 0) {
+                                    const title_z = alloc.dupeZ(u8, s) catch null;
+                                    if (title_z) |tz| {
+                                        page.setTitle(tz);
+                                        alloc.free(tz);
+                                    }
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+
+                    // If command provided, schedule PTY write after shell init
+                    if (params.get("command")) |cv| {
+                        switch (cv) {
+                            .string => |cmd| {
+                                if (cmd.len > 0) {
+                                    // Use c_allocator for data that outlives the IPC call
+                                    const c_alloc = std.heap.c_allocator;
+                                    const cmd_with_newline = c_alloc.alloc(u8, cmd.len + 1) catch null;
+                                    if (cmd_with_newline) |cwn| {
+                                        @memcpy(cwn[0..cmd.len], cmd);
+                                        cwn[cmd.len] = '\n';
+                                        // Schedule deferred write via GLib timer; pass the
+                                        // stable page pointer to avoid index-reorder races.
+                                        self.scheduleTabCommand(tab_view, page, cwn);
+                                    }
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+
+                    const new_idx = n_pages - 1;
+                    log.info("IPC tab.create: workspace={d} new_tab_idx={d}", .{ ws_idx, new_idx });
+                    return std.fmt.allocPrint(alloc,
+                        "{{\"ok\":true,\"result\":{{\"index\":{d}}},\"id\":{d}}}",
+                        .{ new_idx, id },
+                    ) catch null;
+                }
+            }
+        }
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"no active window\"}},\"id\":{d}}}",
+            .{id},
+        ) catch null;
+    }
+
+    /// Delay before writing the deferred command to a new tab's PTY, in
+    /// milliseconds. Chosen to allow the shell to finish initializing.
+    const tab_command_delay_ms: u32 = 500;
+
+    /// Context for deferred tab command execution.
+    const TabCommandContext = struct {
+        tab_view: *adw.TabView,
+        /// Stable page reference — unaffected by tab reordering or other tabs
+        /// being created/closed between scheduling and callback execution.
+        page: *adw.TabPage,
+        command: []u8,
+        alloc: std.mem.Allocator,
+    };
+
+    fn scheduleTabCommand(self: *Self, tab_view: *adw.TabView, page: *adw.TabPage, command: []u8) void {
+        _ = self;
+        const alloc = std.heap.c_allocator;
+        const ctx = alloc.create(TabCommandContext) catch return;
+        ctx.* = .{
+            .tab_view = tab_view,
+            .page = page,
+            .command = command,
+            .alloc = alloc,
+        };
+        _ = glib.timeoutAdd(tab_command_delay_ms, &tabCommandCallback, ctx);
+    }
+
+    fn tabCommandCallback(ud: ?*anyopaque) callconv(.c) c_int {
+        const ctx: *TabCommandContext = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        defer {
+            ctx.alloc.free(ctx.command);
+            ctx.alloc.destroy(ctx);
+        }
+
+        // Verify the page is still attached to the tab view. getPagePosition
+        // returns -1 when the page is not present.
+        if (ctx.tab_view.getPagePosition(ctx.page) < 0) return @intFromBool(glib.SOURCE_REMOVE);
+
+        const child = ctx.page.getChild();
+
+        // The child is a Tab widget. Get its active surface and write to PTY.
+        if (gobject.ext.cast(Tab, child)) |tab| {
+            if (tab.getActiveSurface()) |gtk_surface| {
+                if (gtk_surface.core()) |core_surface| {
+                    const msg = termio.Message.writeReq(
+                        core_surface.alloc,
+                        ctx.command,
+                    ) catch return @intFromBool(glib.SOURCE_REMOVE);
+                    core_surface.io.queueMessage(msg, .unlocked);
+                }
+            }
+        }
+
+        return @intFromBool(glib.SOURCE_REMOVE); // One-shot timer
     }
 
     /// Set a socket fd to non-blocking mode.
