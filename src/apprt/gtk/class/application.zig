@@ -702,6 +702,12 @@ pub const Application = extern struct {
         return self.private().active_workspace_idx;
     }
 
+    /// Return the index of the orchestration workspace, or null if orchestration
+    /// is disabled or the workspace has not been created yet.
+    pub fn orchestrationWorkspaceIndex(self: *Self) ?u32 {
+        return self.private().orchestration_workspace_idx;
+    }
+
     /// Set the active workspace index. Caller is responsible for keeping
     /// the sidebar in sync after calling this.
     pub fn setActiveWorkspaceIndex(self: *Self, index: u32) void {

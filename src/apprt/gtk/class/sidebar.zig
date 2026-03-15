@@ -68,6 +68,9 @@ pub const Sidebar = extern struct {
         /// Popover widget for the context menu (reused/cleaned up across invocations).
         context_popover: ?*gtk.Popover = null,
 
+        /// Index of the orchestration workspace (null if none). Set by Application.
+        orchestration_idx: ?u32 = null,
+
         pub var offset: c_int = 0;
     };
 
@@ -195,6 +198,12 @@ pub const Sidebar = extern struct {
 
         const row = priv.workspace_list.getRowAtY(@as(c_int, @intFromFloat(y))) orelse return;
         const index: u32 = @intCast(row.getIndex());
+
+        // No context menu for the orchestration workspace.
+        if (priv.orchestration_idx) |orch_idx| {
+            if (index == orch_idx) return;
+        }
+
         priv.context_menu_index = index;
 
         log.debug("context menu: showing for workspace index={d}", .{index});
@@ -320,6 +329,22 @@ pub const Sidebar = extern struct {
         tab.update(name, port_text, branch_text, false, false);
 
         priv.workspace_list.append(tab.as(gtk.Widget));
+
+        // If this is the orchestration workspace, add a special CSS class to
+        // the ListBoxRow that GTK created for it.
+        if (priv.orchestration_idx) |orch_idx| {
+            // The new row's index is the last row in the list.
+            var last_idx: c_int = 0;
+            while (priv.workspace_list.getRowAtIndex(last_idx + 1) != null) {
+                last_idx += 1;
+            }
+            const new_idx: u32 = @intCast(last_idx);
+            if (new_idx == orch_idx) {
+                if (priv.workspace_list.getRowAtIndex(last_idx)) |new_row| {
+                    new_row.as(gtk.Widget).addCssClass("termplex-orchestrator-row");
+                }
+            }
+        }
     }
 
     /// Return the ListBoxRow for the workspace at the given index, or null
@@ -343,6 +368,16 @@ pub const Sidebar = extern struct {
             // Shift active index down since a row before it was removed.
             priv.active_index -= 1;
         }
+
+        // Adjust orchestration index after removal so it stays in sync with
+        // the remaining row indices.
+        if (priv.orchestration_idx) |orch_idx| {
+            if (index == orch_idx) {
+                priv.orchestration_idx = null;
+            } else if (index < orch_idx) {
+                priv.orchestration_idx = orch_idx - 1;
+            }
+        }
     }
 
     /// Update an existing workspace tab at the given index.
@@ -365,6 +400,15 @@ pub const Sidebar = extern struct {
         // We need to cast the generic Widget pointer to a WorkspaceTab pointer.
         const tab: *WorkspaceTab = @ptrCast(@alignCast(child_widget));
         tab.update(name, port_text, branch_text, is_active, has_unread);
+
+        // Apply orchestrator styling to the tab widget so the CSS descendant
+        // selector `.termplex-orchestrator-label .termplex-tab-name` can reach
+        // the inner name label.
+        if (priv.orchestration_idx) |orch_idx| {
+            if (index == orch_idx) {
+                tab.as(gtk.Widget).addCssClass("termplex-orchestrator-label");
+            }
+        }
     }
 
     /// Set which workspace tab is visually highlighted as active.
@@ -383,6 +427,15 @@ pub const Sidebar = extern struct {
         }
 
         priv.active_index = new_index;
+    }
+
+    /// Set the index of the orchestration workspace for special rendering.
+    ///
+    /// Pass `null` to clear the orchestration index (no workspace is treated
+    /// as the orchestrator). Call this after creating the orchestration
+    /// workspace so the sidebar can apply visual separation.
+    pub fn setOrchestrationIndex(self: *Self, idx: ?u32) void {
+        self.private().orchestration_idx = idx;
     }
 
     /// Return the number of workspace tabs currently in the list.

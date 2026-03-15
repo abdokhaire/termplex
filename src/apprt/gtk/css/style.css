@@ -256,6 +256,21 @@ label.resize-overlay {
   background-color: rgba(0, 212, 255, 0.06);
 }
 
+/* Orchestrator workspace row — visual separation below orchestrator */
+.termplex-orchestrator-row {
+  border-bottom: 1px solid #243447;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+}
+
+/* Orchestrator label styling — overrides normal tab name */
+.termplex-orchestrator-label .termplex-tab-name {
+  color: #00d4ff;
+  font-weight: 800;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+}
+
 /*
  * Termplex Attention Ring
  */

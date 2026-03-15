@@ -345,6 +345,9 @@ pub const Window = extern struct {
                         false,
                     );
                 }
+                // Tell the sidebar which workspace is the orchestrator so it can
+                // apply visual separation and suppress the context menu on it.
+                sidebar.setOrchestrationIndex(app.orchestrationWorkspaceIndex());
             }
 
             // Wire sidebar callbacks so user interactions reach the
