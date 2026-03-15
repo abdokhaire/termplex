@@ -305,6 +305,14 @@ pub const Application = extern struct {
         /// when the file does not exist. Must be freed in deinit().
         termplex_cfg: termplex_config.TermplexConfig = termplex_config.TermplexConfig.default(std.heap.c_allocator),
 
+        // ----- Termplex orchestration state -----
+
+        /// Index of the orchestration workspace (null if orchestration disabled).
+        orchestration_workspace_idx: ?u32 = null,
+
+        /// Whether the orchestration agent has been launched in this session.
+        orchestration_launched: bool = false,
+
         pub var offset: c_int = 0;
     };
 
@@ -493,6 +501,18 @@ pub const Application = extern struct {
         // Termplex: load Termplex config (falls back to defaults on any error).
         priv.termplex_cfg = termplex_config.load(std.heap.c_allocator) catch
             termplex_config.TermplexConfig.default(std.heap.c_allocator);
+
+        // Termplex: create orchestration workspace first (index 0) if enabled.
+        if (priv.termplex_cfg.orchestration.enabled orelse false) {
+            const orch_dir_z = std.heap.c_allocator.dupeZ(u8, priv.termplex_cfg.orchestration.dir) catch null;
+            defer if (orch_dir_z) |d| std.heap.c_allocator.free(d);
+            const orch_idx = self.addWorkspaceWithDir(orch_dir_z);
+            if (orch_idx) |idx| {
+                self.renameWorkspace(idx, "ORCHESTRATOR");
+                priv.orchestration_workspace_idx = idx;
+                log.info("created orchestration workspace at index {d}", .{idx});
+            }
+        }
 
         // Termplex: create the default "Workspace 1" (name, dir, and TabView).
         _ = self.addWorkspaceWithDir(null) orelse
@@ -839,6 +859,10 @@ pub const Application = extern struct {
         const priv = self.private();
         if (priv.workspace_names.items.len <= 1) return; // protect last workspace
         if (index >= priv.workspace_names.items.len) return;
+        // Cannot remove the orchestration workspace.
+        if (priv.orchestration_workspace_idx) |orch_idx| {
+            if (index == orch_idx) return;
+        }
 
         // Close all tabs in this workspace's TabView before releasing it.
         const tab_view = priv.workspace_tab_views.items[index];
@@ -1737,8 +1761,14 @@ pub const Application = extern struct {
         var ws_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer ws_buf.deinit(alloc);
         ws_buf.appendSlice(alloc, "[") catch return;
+        var need_comma: bool = false;
         for (priv.workspace_names.items, 0..) |name, i| {
-            if (i > 0) ws_buf.appendSlice(alloc, ",") catch return;
+            // Skip orchestration workspace — it is recreated on startup.
+            if (priv.orchestration_workspace_idx) |orch_idx| {
+                if (i == orch_idx) continue;
+            }
+            if (need_comma) ws_buf.appendSlice(alloc, ",") catch return;
+            need_comma = true;
             ws_buf.appendSlice(alloc, "{\"name\":\"") catch return;
             // Escape name
             for (name) |c| {
@@ -1894,7 +1924,7 @@ pub const Application = extern struct {
         else
             1;
 
-        // Clear the default "Workspace 1" — free names, dirs, and TabViews.
+        // Clear the default "Workspace 1" (and any orchestration workspace) — free names, dirs, and TabViews.
         for (priv.workspace_names.items) |name| alloc.free(name);
         priv.workspace_names.clearRetainingCapacity();
         for (priv.workspace_dirs.items) |dir_str| alloc.free(dir_str);
@@ -1903,11 +1933,30 @@ pub const Application = extern struct {
         priv.workspace_tab_views.clearRetainingCapacity();
         // Reset counter so addWorkspaceWithDir assigns correct numbers below.
         priv.next_workspace_number = 1;
+        priv.orchestration_workspace_idx = null;
+
+        // Recreate orchestration workspace first (index 0) if enabled.
+        if (priv.termplex_cfg.orchestration.enabled orelse false) {
+            const orch_dir_z = alloc.dupeZ(u8, priv.termplex_cfg.orchestration.dir) catch null;
+            defer if (orch_dir_z) |d| alloc.free(d);
+            const orch_idx = self.addWorkspaceWithDir(orch_dir_z);
+            if (orch_idx) |idx| {
+                self.renameWorkspace(idx, "ORCHESTRATOR");
+                priv.orchestration_workspace_idx = idx;
+            }
+        }
 
         // Accumulate tab counts and titles to pass to the window during
         // Phase 2 tab creation.
         var tab_counts = std.ArrayListUnmanaged(u32){};
         var tab_titles_per_ws = std.ArrayListUnmanaged([]const [:0]const u8){};
+
+        // If an orchestration workspace was created (index 0), seed its entry
+        // in the parallel arrays so indices stay in sync with workspace indices.
+        if (priv.orchestration_workspace_idx != null) {
+            tab_counts.append(alloc, 1) catch {};
+            tab_titles_per_ws.append(alloc, &[_][:0]const u8{}) catch {};
+        }
 
         // Re-populate from saved data.
         for (ws_arr) |item| {
@@ -1931,6 +1980,10 @@ pub const Application = extern struct {
                     }
                 }
             };
+
+            // Skip any ORCHESTRATOR entry that might have been saved by an
+            // older build; it is recreated on startup unconditionally.
+            if (std.mem.eql(u8, name_str, "ORCHESTRATOR")) continue;
 
             const home_fallback: []const u8 = std.posix.getenv("HOME") orelse "/tmp";
 
