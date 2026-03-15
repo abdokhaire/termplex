@@ -1116,6 +1116,10 @@ pub const Application = extern struct {
             ) catch null;
         }
 
+        if (std.mem.eql(u8, method, "tab.list")) {
+            return ipcTabList(self, alloc, id, root.object);
+        }
+
         // Stubs for other known methods — return ok with null result.
         const known_stubs = [_][]const u8{
             "system.tree",
@@ -1407,6 +1411,77 @@ pub const Application = extern struct {
             alloc,
             "{{\"ok\":true,\"result\":{{\"notified\":true}},\"id\":{d}}}",
             .{id},
+        ) catch null;
+    }
+
+    /// Resolve a workspace reference (name string or integer index) from IPC params.
+    /// Returns the workspace index, or null if not found.
+    fn resolveWorkspaceIdx(self: *Self, params: std.json.ObjectMap) ?u32 {
+        const priv = self.private();
+        const ws_val = params.get("workspace") orelse return priv.active_workspace_idx;
+        switch (ws_val) {
+            .integer => |n| {
+                if (n >= 0 and n < @as(i64, @intCast(priv.workspace_names.items.len)))
+                    return @intCast(n);
+                return null;
+            },
+            .string => |name| {
+                for (priv.workspace_names.items, 0..) |ws_name, idx| {
+                    if (std.mem.eql(u8, ws_name, name))
+                        return @intCast(idx);
+                }
+                return null;
+            },
+            else => return priv.active_workspace_idx,
+        }
+    }
+
+    /// Handle tab.list — returns tabs in a workspace.
+    fn ipcTabList(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const priv = self.private();
+        const params_val = obj.get("params") orelse .null;
+
+        const ws_idx: u32 = blk: {
+            if (params_val == .object) {
+                if (self.resolveWorkspaceIdx(params_val.object)) |i| break :blk i;
+                return std.fmt.allocPrint(alloc,
+                    "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            }
+            break :blk priv.active_workspace_idx;
+        };
+
+        const tab_view = priv.workspace_tab_views.items[ws_idx];
+        const n_pages = tab_view.getNPages();
+
+        var arr_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer arr_buf.deinit(alloc);
+
+        arr_buf.appendSlice(alloc, "[") catch return null;
+        var i: c_int = 0;
+        while (i < n_pages) : (i += 1) {
+            if (i > 0) arr_buf.appendSlice(alloc, ",") catch return null;
+            const page = tab_view.getNthPage(i);
+            const title = page.getTitle();
+
+            arr_buf.appendSlice(alloc, "{\"index\":") catch return null;
+            var idx_buf: [16]u8 = undefined;
+            const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{i}) catch return null;
+            arr_buf.appendSlice(alloc, idx_str) catch return null;
+            arr_buf.appendSlice(alloc, ",\"title\":\"") catch return null;
+            // JSON-escape the title
+            for (std.mem.span(title)) |c| {
+                if (c == '"' or c == '\\') arr_buf.append(alloc, '\\') catch return null;
+                arr_buf.append(alloc, c) catch return null;
+            }
+            arr_buf.appendSlice(alloc, "\",\"surface_count\":1}") catch return null;
+        }
+        arr_buf.appendSlice(alloc, "]") catch return null;
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":true,\"result\":{{\"tabs\":{s}}},\"id\":{d}}}",
+            .{ arr_buf.items, id },
         ) catch null;
     }
 
