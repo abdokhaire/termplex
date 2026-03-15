@@ -1,487 +1,191 @@
 # Developing Termplex
 
 This document describes the technical details behind Termplex's development.
-If you'd like to open any pull requests or would like to implement new features
-into Termplex, please make sure to read our ["Contributing to Termplex"](CONTRIBUTING.md)
-document first.
+If you'd like to contribute, please read ["Contributing to Termplex"](CONTRIBUTING.md) first.
 
-To start development on Termplex, you need to build Termplex from a Git checkout,
-which is very similar in process to [building Termplex from a source tarball](http://termplex.org/docs/install/build). One key difference is that obviously
-you need to clone the Git repository instead of unpacking the source tarball:
+## Getting Started
+
+Clone the repository and build:
 
 ```shell
-git clone https://github.com/termplex-org/termplex
+git clone https://github.com/abdokhaire/termplex
 cd termplex
 ```
 
-> [!NOTE]
->
-> Termplex may require [extra dependencies](#extra-dependencies)
-> when building from a Git checkout compared to a source tarball.
-> Tip versions may also require a different version of Zig or other toolchains
-> (e.g. the Xcode SDK on macOS) compared to stable versions — make sure to
-> follow the steps closely!
+### Requirements
 
-When you're developing Termplex, it's very likely that you will want to build a
-_debug_ build to diagnose issues more easily. This is already the default for
-Zig builds, so simply run `zig build` **without any `-Doptimize` flags**.
+- [Zig 0.15.2](https://ziglang.org/download/) (exact version required)
+- GTK4 4.14+ development headers
+- libadwaita 1.5+ development headers
+- `blueprint-compiler` 0.16.0+ (when building from Git checkout)
 
-There are many more build steps than just `zig build`, some of which are listed
-here:
+**Install on Ubuntu/Debian:**
 
-| Command                         | Description                                                                                                            |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `zig build run`                 | Runs Termplex                                                                                                           |
-| `zig build run-valgrind`        | Runs Termplex under Valgrind to [check for memory leaks](#checking-for-memory-leaks)                                    |
-| `zig build test`                | Runs unit tests (accepts `-Dtest-filter=<filter>` to only run tests whose name matches the filter)                     |
-| `zig build update-translations` | Updates Termplex's translation strings (see the [Contributor's Guide on Localizing Termplex](po/README_CONTRIBUTORS.md)) |
-| `zig build dist`                | Builds a source tarball                                                                                                |
-| `zig build distcheck`           | Builds and validates a source tarball                                                                                  |
-
-## Extra Dependencies
-
-Building Termplex from a Git checkout on Linux requires some additional
-dependencies:
-
-- `blueprint-compiler` (version 0.16.0 or newer)
-
-macOS users don't require any additional dependencies.
-
-## Xcode Version and SDKs
-
-Building the Termplex macOS app requires that Xcode, the macOS SDK,
-the iOS SDK, and Metal Toolchain are all installed.
-
-A common issue is that the incorrect version of Xcode is either
-installed or selected. Use the `xcode-select` command to
-ensure that the correct version of Xcode is selected:
-
-```shell-session
-sudo xcode-select --switch /Applications/Xcode.app
+```bash
+sudo apt install libgtk-4-dev libadwaita-1-dev blueprint-compiler
 ```
 
-> [!IMPORTANT]
->
-> Main branch development of Termplex requires **Xcode 26 and the macOS 26 SDK**.
->
-> You do not need to be running on macOS 26 to build Termplex, you can
-> still use Xcode 26 on macOS 15 stable.
+**Install on Fedora:**
+
+```bash
+sudo dnf install gtk4-devel libadwaita-devel blueprint-compiler
+```
+
+**Install on Arch:**
+
+```bash
+sudo pacman -S gtk4 libadwaita blueprint-compiler
+```
+
+### Build Commands
+
+| Command | Description |
+|---------|-------------|
+| `zig build -Dapp-runtime=gtk` | Debug build (default) |
+| `zig build -Dapp-runtime=gtk -Doptimize=ReleaseFast` | Release build (optimized) |
+| `zig build run` | Build and run |
+| `zig build test` | Run unit tests |
+| `zig build test -Dtest-filter=<filter>` | Run filtered tests |
+
+> **Note:** Add `-fno-sys=gtk4-layer-shell` if `gtk4-layer-shell` is not installed.
+
+When developing, use a **debug build** (no `-Doptimize` flag) — it's the default and makes diagnosing issues much easier.
+
+### Clean Build
+
+CSS files and GResources are compiled into the binary. If you change CSS or resource files and don't see your changes, do a clean build:
+
+```bash
+rm -rf .zig-cache zig-out
+zig build -Dapp-runtime=gtk
+```
+
+## Project Structure
+
+```
+src/
+├── apprt/gtk/           # GTK4 app runtime
+│   ├── class/           # Widget classes (application, window, sidebar, workspace_tab, surface)
+│   ├── css/             # Stylesheets (compiled into binary via GResource)
+│   ├── build/           # GResource compilation
+│   └── ui/              # Blueprint UI templates
+├── termplex/            # Termplex-specific code
+│   └── core/            # Workspace config, session persistence
+├── config/              # Configuration system
+├── terminal/            # Terminal emulation (VT parser, screen, pages)
+├── renderer/            # OpenGL renderer
+├── font/                # Font loading and shaping
+├── build/               # Build system modules
+├── shell-integration/   # Shell scripts (bash, zsh, fish, elvish, nushell)
+└── input/               # Keyboard/mouse input handling
+```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/apprt/gtk/class/application.zig` | App lifecycle, workspace management, session save/restore |
+| `src/apprt/gtk/class/window.zig` | Window UI, tab overview, workspace switching |
+| `src/apprt/gtk/class/sidebar.zig` | Sidebar widget with workspace list |
+| `src/apprt/gtk/css/style.css` | Main CSS (Electric Cyan brand) |
+| `src/config/Config.zig` | Configuration options and parsing |
+| `src/termplex/core/config.zig` | Termplex workspace config |
+| `build.zig` | Build system entry point |
 
 ## AI and Agents
 
-If you're using AI assistance with Termplex, Termplex provides an
-[AGENTS.md file](https://github.com/termplex-org/termplex/blob/main/AGENTS.md)
-read by most of the popular AI agents to help produce higher quality
-results.
-
-We also provide commands in `.agents/commands` that have some vetted
-prompts for common tasks that have been shown to produce good results.
-We provide these to help reduce the amount of time a contributor has to
-spend prompting the AI to get good results, and hopefully to lower the slop
-produced.
-
-- `/gh-issue <number/url>` - Produces a prompt for diagnosing a GitHub
-  issue, explaining the problem, and suggesting a plan for resolving it.
-  Requires `gh` to be installed with read-only access to Termplex.
-
-> [!WARNING]
->
-> All AI assistance usage [must be disclosed](https://github.com/termplex-org/termplex/blob/main/CONTRIBUTING.md#ai-assistance-notice)
-> and we expect contributors to understand the code that is produced and
-> be able to answer questions about it. If you don't understand the
-> code produced, feel free to disclose that, but if it has problems, we
-> may ask you to fix it and close the issue. It isn't a maintainers job to
-> review a PR so broken that it requires significant rework to be acceptable.
+Termplex provides a [CLAUDE.md](CLAUDE.md) file (also symlinked as `AGENTS.md`) for AI coding assistants with build commands, project structure, and conventions.
 
 ## Logging
 
-Termplex can write logs to a number of destinations. On all platforms, logging to
-`stderr` is available. Depending on the platform and how Termplex was launched,
-logs sent to `stderr` may be stored by the system and made available for later
-retrieval.
+Termplex writes logs to `stderr` by default. On Linux with systemd:
 
-On Linux if Termplex is launched by the default `systemd` user service, you can use
-`journald` to see Termplex's logs: `journalctl --user --unit app-com.termplex.app.service`.
+```bash
+journalctl --user --unit app-com.termplex.app.service
+```
 
-On macOS logging to the macOS unified log is available and enabled by default.
-Use the system `log` CLI to view Termplex's logs: `sudo log stream --level debug --predicate 'subsystem=="com.termplex.app"'`.
+Control logging with the `TERMPLEX_LOG` environment variable:
 
-Termplex's logging can be configured in two ways. The first is by what
-optimization level Termplex is compiled with. If Termplex is compiled with `Debug`
-optimizations debug logs will be output to `stderr`. If Termplex is compiled with
-any other optimization the debug logs will not be output to `stderr`.
+| Value | Effect |
+|-------|--------|
+| `true` | Enable all log destinations |
+| `false` | Disable all logging |
+| `stderr` | Log to stderr only |
 
-Termplex also checks the `TERMPLEX_LOG` environment variable. It can be used
-to control which destinations receive logs. Termplex currently defines two
-destinations:
-
-- `stderr` - logging to `stderr`.
-- `macos` - logging to macOS's unified log (has no effect on non-macOS platforms).
-
-Combine values with a comma to enable multiple destinations. Prefix a
-destination with `no-` to disable it. Enabling and disabling destinations
-can be done at the same time. Setting `TERMPLEX_LOG` to `true` will enable all
-destinations. Setting `TERMPLEX_LOG` to `false` will disable all destinations.
+Debug builds output debug-level logs automatically. Release builds only output warnings and errors.
 
 ## Linting
 
-### Prettier
+### Zig
 
-Termplex's docs and resources (not including Zig code) are linted using
-[Prettier](https://prettier.io) with out-of-the-box settings. A Prettier CI
-check will fail builds with improper formatting. Therefore, if you are
-modifying anything Prettier will lint, you may want to install it locally and
-run this from the repo root before you commit:
-
+```bash
+zig fmt .
 ```
+
+### Prettier (docs, configs)
+
+```bash
 prettier --write .
 ```
 
-Make sure your Prettier version matches the version of Prettier in [devShell.nix](https://github.com/termplex-org/termplex/blob/main/nix/devShell.nix).
+### ShellCheck (bash scripts)
 
-Nix users can use the following command to format with Prettier:
-
+```bash
+shellcheck --check-sourced --severity=warning \
+    $(find . \( -name "*.sh" -o -name "*.bash" \) -type f ! -path "./zig-out/*" ! -path "./.git/*" | sort)
 ```
-nix develop -c prettier --write .
-```
-
-### Alejandra
-
-Nix modules are formatted with [Alejandra](https://github.com/kamadorueda/alejandra/). An Alejandra CI check
-will fail builds with improper formatting.
-
-Nix users can use the following command to format with Alejandra:
-
-```
-nix develop -c alejandra .
-```
-
-Non-Nix users should install Alejandra and use the following command to format with Alejandra:
-
-```
-alejandra .
-```
-
-Make sure your Alejandra version matches the version of Alejandra in [devShell.nix](https://github.com/termplex-org/termplex/blob/main/nix/devShell.nix).
-
-### ShellCheck
-
-Bash scripts are checked with [ShellCheck](https://www.shellcheck.net/) in CI.
-
-Nix users can use the following command to run ShellCheck over all of our scripts:
-
-```
-nix develop -c shellcheck \
-    --check-sourced \
-    --severity=warning \
-    $(find . \( -name "*.sh" -o -name "*.bash" \) -type f ! -path "./zig-out/*" ! -path "./macos/build/*" ! -path "./.git/*" | sort)
-```
-
-Non-Nix users can [install ShellCheck](https://github.com/koalaman/shellcheck#user-content-installing) and then run:
-
-```
-shellcheck \
-    --check-sourced \
-    --severity=warning \
-    $(find . \( -name "*.sh" -o -name "*.bash" \) -type f ! -path "./zig-out/*" ! -path "./macos/build/*" ! -path "./.git/*" | sort)
-```
-
-### SwiftLint
-
-Swift code is linted using [SwiftLint](https://github.com/realm/SwiftLint). A
-SwiftLint CI check will fail builds with improper formatting. Therefore, if you
-are modifying Swift code, you may want to install it locally and run this from
-the repo root before you commit:
-
-```
-swiftlint lint --fix
-```
-
-Make sure your SwiftLint version matches the version in [devShell.nix](https://github.com/termplex-org/termplex/blob/main/nix/devShell.nix).
-
-Nix users can use the following command to format with SwiftLint:
-
-```
-nix develop -c swiftlint lint --fix
-```
-
-To check for violations without auto-fixing:
-
-```
-nix develop -c swiftlint lint --strict
-```
-
-### Updating the Zig Cache Fixed-Output Derivation Hash
-
-The Nix package depends on a [fixed-output
-derivation](https://nix.dev/manual/nix/stable/language/advanced-attributes.html#adv-attr-outputHash)
-that manages the Zig package cache. This allows the package to be built in the
-Nix sandbox.
-
-Occasionally (usually when `build.zig.zon` is updated), the hash that
-identifies the cache will need to be updated. There are jobs that monitor the
-hash in CI, and builds will fail if it drifts.
-
-To update it, you can run the following in the repository root:
-
-```
-./nix/build-support/check-zig-cache.sh --update
-```
-
-This will write out the `nix/zigCacheHash.nix` file with the updated hash
-that can then be committed and pushed to fix the builds.
-
-## Including and Updating Translations
-
-See the [Contributor's Guide](po/README_CONTRIBUTORS.md) for more details.
 
 ## Checking for Memory Leaks
 
-While Zig does an amazing job of finding and preventing memory leaks,
-Termplex uses many third-party libraries that are written in C. Improper usage
-of those libraries or bugs in those libraries can cause memory leaks that
-Zig cannot detect by itself.
+Termplex uses C libraries under the hood. Use Valgrind to check for leaks:
 
-### On Linux
-
-On Linux the recommended tool to check for memory leaks is Valgrind. The
-recommended way to run Valgrind is via `zig build`:
-
-```sh
+```bash
 zig build run-valgrind
 ```
 
-This builds a Termplex executable with Valgrind support and runs Valgrind
-with the proper flags to ensure we're suppressing known false positives.
+This builds with Valgrind support and runs with suppression rules for known false positives.
 
-You can combine the same build args with `run-valgrind` that you can with
-`run`, such as specifying additional configurations after a trailing `--`.
+## Architecture Notes
 
-## Input Stack Testing
+### Workspace System
 
-The input stack is the part of the codebase that starts with a
-key event and ends with text encoding being sent to the pty (it
-does not include _rendering_ the text, which is part of the
-font or rendering stack).
+- **App-level state** (`application.zig`): manages workspace list, `AdwTabView` per workspace, session persistence (JSON v3 format)
+- **Window-level UI** (`window.zig`): handles sidebar toggle, tab overview, deferred workspace switching (400ms timer for `AdwTabOverview` close animation)
+- **Sidebar** (`sidebar.zig`): GTK `ListBox` with workspace rows, right-click context menu
 
-If you modify any part of the input stack, you must manually verify
-all the following input cases work properly. We unfortunately do
-not automate this in any way, but if we can do that one day that'd
-save a LOT of grief and time.
+### CSS / Theming
 
-Note: this list may not be exhaustive, I'm still working on it.
+- CSS is compiled into the binary via GResource — not loaded from disk at runtime
+- Brand palette: primary `#00d4ff`, backgrounds `#0f1923` → `#131d2b` → `#1a2736` → `#243447`
+- Dark mode is forced in `startupStyleManager`
+- Changes to CSS require cleaning `.zig-cache` before rebuild
 
-### Linux IME
+### Session Persistence
 
-IME (Input Method Editors) are a common source of bugs in the input stack,
-especially on Linux since there are multiple different IME systems
-interacting with different windowing systems and application frameworks
-all written by different organizations.
+Sessions are auto-saved to `~/.local/state/termplex/session.json` in v3 format:
 
-The following matrix should be tested to ensure that all IME input works
-properly:
-
-1. Wayland, X11
-2. ibus, fcitx, none
-3. Dead key input (e.g. Spanish), CJK (e.g. Japanese), Emoji, Unicode Hex
-4. ibus versions: 1.5.29, 1.5.30, 1.5.31 (each exhibit slightly different behaviors)
-
-> [!NOTE]
->
-> This is a **work in progress**. I'm still working on this list and it
-> is not complete. As I find more test cases, I will add them here.
-
-#### Dead Key Input
-
-Set your keyboard layout to "Spanish" (or another layout that uses dead keys).
-
-1. Launch Termplex
-2. Press `'`
-3. Press `a`
-4. Verify that `á` is displayed
-
-Note that the dead key may or may not show a preedit state visually.
-For ibus and fcitx it does but for the "none" case it does not. Importantly,
-the text should be correct when it is sent to the pty.
-
-We should also test canceling dead key input:
-
-1. Launch Termplex
-2. Press `'`
-3. Press escape
-4. Press `a`
-5. Verify that `a` is displayed (no diacritic)
-
-#### CJK Input
-
-Configure fcitx or ibus with a keyboard layout like Japanese or Mozc. The
-exact layout doesn't matter.
-
-1. Launch Termplex
-2. Press `Ctrl+Shift` to switch to "Hiragana"
-3. On a US physical layout, type: `konn`, you should see `こん` in preedit.
-4. Press `Enter`
-5. Verify that `こん` is displayed in the terminal.
-
-We should also test switching input methods while preedit is active, which
-should commit the text:
-
-1. Launch Termplex
-2. Press `Ctrl+Shift` to switch to "Hiragana"
-3. On a US physical layout, type: `konn`, you should see `こん` in preedit.
-4. Press `Ctrl+Shift` to switch to another layout (any)
-5. Verify that `こん` is displayed in the terminal as committed text.
-
-## Nix Virtual Machines
-
-Several Nix virtual machine definitions are provided by the project for testing
-and developing Termplex against multiple different Linux desktop environments.
-
-Running these requires a working Nix installation, either Nix on your
-favorite Linux distribution, NixOS, or macOS with nix-darwin installed. Further
-requirements for macOS are detailed below.
-
-VMs should only be run on your local desktop and then powered off when not in
-use, which will discard any changes to the VM.
-
-The VM definitions provide minimal software "out of the box" but additional
-software can be installed by using standard Nix mechanisms like `nix run nixpkgs#<package>`.
-
-### Linux
-
-1. Check out the Termplex source and change to the directory.
-2. Run `nix run .#<vmtype>`. `<vmtype>` can be any of the VMs defined in the
-   `nix/vm` directory (without the `.nix` suffix) excluding any file prefixed
-   with `common` or `create`.
-3. The VM will build and then launch. Depending on the speed of your system, this
-   can take a while, but eventually you should get a new VM window.
-4. The Termplex source directory should be mounted to `/tmp/shared` in the VM. Depending
-   on what UID and GID of the user that you launched the VM as, `/tmp/shared` _may_ be
-   writable by the VM user, so be careful!
-
-### macOS
-
-1. To run the VMs on macOS you will need to enable the Linux builder in your `nix-darwin`
-   config. This _should_ be as simple as adding `nix.linux-builder.enable=true` to your
-   configuration and then rebuilding. See [this](https://nixcademy.com/posts/macos-linux-builder/)
-   blog post for more information about the Linux builder and how to tune the performance.
-2. Once the Linux builder has been enabled, you should be able to follow the Linux instructions
-   above to launch a VM.
-
-### Custom VMs
-
-To easily create a custom VM without modifying the Termplex source, create a new
-directory, then create a file called `flake.nix` with the following text in the
-new directory.
-
-```
+```json
 {
-  inputs = {
-    nixpkgs.url = "nixpkgs/nixpkgs-unstable";
-    termplex.url = "github:termplex-org/termplex";
-  };
-  outputs = {
-    nixpkgs,
-    termplex,
-    ...
-  }: {
-   nixosConfigurations.custom-vm = termplex.create-gnome-vm {
-     nixpkgs = nixpkgs;
-     system = "x86_64-linux";
-     overlay = termplex.overlays.releasefast;
-     # module = ./configuration.nix # also works
-     module = {pkgs, ...}: {
-       environment.systemPackages = [
-         pkgs.btop
-       ];
-     };
-    };
-  };
+  "version": 3,
+  "workspaces": [
+    {
+      "name": "dev",
+      "dir": "/home/user/projects",
+      "tabs": [{"title": "editor"}, {"title": "server"}]
+    }
+  ],
+  "active_workspace": 0
 }
 ```
 
-The custom VM can then be run with a command like this:
+## Release Process
 
-```
-nix run .#nixosConfigurations.custom-vm.config.system.build.vm
-```
+1. Build release binary:
+   ```bash
+   zig build -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell -Doptimize=ReleaseFast
+   ```
+2. Create packages (tarball, AppImage, .deb)
+3. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`
+4. Create GitHub release: `gh release create vX.Y.Z <assets>`
 
-A file named `termplex.qcow2` will be created that is used to persist any changes
-made in the VM. To "reset" the VM to default delete the file and it will be
-recreated the next time you run the VM.
-
-### Contributing new VM definitions
-
-#### VM Acceptance Criteria
-
-We welcome the contribution of new VM definitions, as long as they meet the following criteria:
-
-1. They should be different enough from existing VM definitions that they represent a distinct
-   user (and developer) experience.
-2. There's a significant Termplex user population that uses a similar environment.
-3. The VMs can be built using only packages from the current stable NixOS release.
-
-#### VM Definition Criteria
-
-1. VMs should be as minimal as possible so that they build and launch quickly.
-   Additional software can be added at runtime with a command like `nix run nixpkgs#<package name>`.
-2. VMs should not expose any services to the network, or run any remote access
-   software like SSH daemons, VNC or RDP.
-3. VMs should auto-login using the "termplex" user.
-
-## Nix VM Integration Tests
-
-Several Nix VM tests are provided by the project for testing Termplex in a "live"
-environment rather than just unit tests.
-
-Running these requires a working Nix installation, either Nix on your
-favorite Linux distribution, NixOS, or macOS with nix-darwin installed. Further
-requirements for macOS are detailed below.
-
-### Linux
-
-1. Check out the Termplex source and change to the directory.
-2. Run `nix run .#checks.<system>.<test-name>.driver`. `<system>` should be
-   `x86_64-linux` or `aarch64-linux` (even on macOS, this launches a Linux
-   VM, not a macOS one). `<test-name>` should be one of the tests defined in
-   `nix/tests.nix`. The test will build and then launch. Depending on the speed
-   of your system, this can take a while. Eventually though the test should
-   complete. Hopefully successfully, but if not error messages should be printed
-   out that can be used to diagnose the issue.
-3. To run _all_ of the tests, run `nix flake check`.
-
-### macOS
-
-1. To run the VMs on macOS you will need to enable the Linux builder in your `nix-darwin`
-   config. This _should_ be as simple as adding `nix.linux-builder.enable=true` to your
-   configuration and then rebuilding. See [this](https://nixcademy.com/posts/macos-linux-builder/)
-   blog post for more information about the Linux builder and how to tune the performance.
-2. Once the Linux builder has been enabled, you should be able to follow the Linux instructions
-   above to launch a test.
-
-### Interactively Running Test VMs
-
-To run a test interactively, run `nix run
-.#check.<system>.<test-name>.driverInteractive`. This will load a Python console
-that can be used to manage the test VMs. In this console run `start_all()` to
-start the VM(s). The VMs should boot up and a window should appear showing the
-VM's console.
-
-For more information about the Nix test console, see [the NixOS manual](https://nixos.org/manual/nixos/stable/index.html#sec-call-nixos-test-outside-nixos)
-
-### SSH Access to Test VMs
-
-Some test VMs are configured to allow outside SSH access for debugging. To
-access the VM, use a command like the following:
-
-```
-ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -p 2222 root@192.168.122.1
-ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -p 2222 termplex@192.168.122.1
-```
-
-The SSH options are important because the SSH host keys will be regenerated
-every time the test is started. Without them, your personal SSH known hosts file
-will become difficult to manage. The port that is needed to access the VM may
-change depending on the test.
-
-None of the users in the VM have passwords so do not expose these VMs to the Internet.
+See the [README](README.md) for user-facing installation instructions.
