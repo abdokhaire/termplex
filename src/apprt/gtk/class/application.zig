@@ -44,6 +44,7 @@ const GlobalShortcuts = @import("global_shortcuts.zig").GlobalShortcuts;
 
 const git_probe = @import("../../../termplex/core/git_probe.zig");
 const port_scanner = @import("../../../termplex/core/port_scanner.zig");
+const termplex_config = @import("../../../termplex/core/config.zig");
 
 const log = std.log.scoped(.gtk_termplex_application);
 
@@ -297,6 +298,13 @@ pub const Application = extern struct {
         /// Current working directory of the active workspace (for git probing).
         current_pwd: ?[:0]const u8 = null,
 
+        // ----- Termplex config -----
+
+        /// Loaded Termplex configuration. Populated during Application init
+        /// by reading ~/.config/termplex/config.toml; falls back to defaults
+        /// when the file does not exist. Must be freed in deinit().
+        termplex_cfg: termplex_config.TermplexConfig = termplex_config.TermplexConfig.default(std.heap.c_allocator),
+
         pub var offset: c_int = 0;
     };
 
@@ -482,6 +490,10 @@ pub const Application = extern struct {
             .saved_language = saved_language,
         };
 
+        // Termplex: load Termplex config (falls back to defaults on any error).
+        priv.termplex_cfg = termplex_config.load(std.heap.c_allocator) catch
+            termplex_config.TermplexConfig.default(std.heap.c_allocator);
+
         // Termplex: create the default "Workspace 1" (name, dir, and TabView).
         _ = self.addWorkspaceWithDir(null) orelse
             @panic("OOM: cannot create initial workspace");
@@ -617,6 +629,9 @@ pub const Application = extern struct {
             alloc.free(p);
             priv.current_pwd = null;
         }
+
+        // Termplex: free the loaded Termplex config.
+        priv.termplex_cfg.deinit();
 
         priv.config.unref();
         priv.winproto.deinit(alloc);
