@@ -15,11 +15,14 @@ const log = std.log.scoped(.gtk_termplex_workspace_tab);
 ///   +-- Gtk.Box (content, vertical, padding)
 ///       +-- Gtk.Box (row1, horizontal)
 ///       |   +-- Gtk.Label (name_label, bold, left-aligned, hexpand)
-///       |   +-- Gtk.Label (port_label, green, right-aligned)
+///       |   +-- Gtk.Box (port_box, horizontal)
+///       |       +-- Gtk.Label (port_primary_label, green, right-aligned)
+///       |       +-- Gtk.Label (port_badge_label, "+N" badge)
 ///       +-- Gtk.Box (row2, horizontal)
 ///       |   +-- Gtk.Label (dir_label, dim gray, ellipsized)
 ///       +-- Gtk.Box (row3, horizontal)
-///           +-- Gtk.Label (branch_label, "⎇ main", cyan, smaller)
+///       |   +-- Gtk.Label (branch_label, "⎇ main", cyan, smaller)
+///       +-- Gtk.Box (port_detail_box, vertical, hidden by default)
 ///
 /// The widget exposes an `update` method that refreshes label text and
 /// CSS classes based on workspace state values passed in by the caller.
@@ -42,8 +45,20 @@ pub const WorkspaceTab = extern struct {
         /// Label showing the workspace name (bold, left-aligned).
         name_label: *gtk.Label = undefined,
 
-        /// Label showing the primary port (green, right-aligned).
-        port_label: *gtk.Label = undefined,
+        /// Box containing port_primary_label and port_badge_label (horizontal).
+        port_box: *gtk.Box = undefined,
+
+        /// Label showing the first port (e.g., ":3000"), green.
+        port_primary_label: *gtk.Label = undefined,
+
+        /// Label showing "+N" badge for additional ports.
+        port_badge_label: *gtk.Label = undefined,
+
+        /// Vertical box showing all ports, hidden by default.
+        port_detail_box: *gtk.Box = undefined,
+
+        /// Whether the port detail box is currently expanded.
+        ports_expanded: bool = false,
 
         /// Label showing the workspace directory path (dim gray, ellipsized).
         dir_label: *gtk.Label = undefined,
@@ -95,11 +110,33 @@ pub const WorkspaceTab = extern struct {
         priv.name_label = name_label;
         row1.append(name_label.as(gtk.Widget));
 
-        const port_label = gtk.Label.new(null);
-        port_label.setXalign(1.0);
-        port_label.as(gtk.Widget).addCssClass("termplex-tab-port");
-        priv.port_label = port_label;
-        row1.append(port_label.as(gtk.Widget));
+        // -- Port area: primary port + "+N" badge --
+        const port_box = gtk.Box.new(.horizontal, 2);
+        priv.port_box = port_box;
+        row1.append(port_box.as(gtk.Widget));
+
+        const port_primary_label = gtk.Label.new(null);
+        port_primary_label.setXalign(1.0);
+        port_primary_label.as(gtk.Widget).addCssClass("termplex-tab-port");
+        priv.port_primary_label = port_primary_label;
+        port_box.append(port_primary_label.as(gtk.Widget));
+
+        const port_badge_label = gtk.Label.new(null);
+        port_badge_label.as(gtk.Widget).addCssClass("termplex-port-badge");
+        priv.port_badge_label = port_badge_label;
+        port_box.append(port_badge_label.as(gtk.Widget));
+
+        // Click handler on badge to toggle port detail expansion.
+        const badge_click = gtk.GestureClick.new();
+        badge_click.as(gtk.GestureSingle).setButton(1); // left-click
+        _ = gtk.GestureClick.signals.pressed.connect(
+            badge_click,
+            *Self,
+            &onPortBadgeClick,
+            self,
+            .{},
+        );
+        port_badge_label.as(gtk.Widget).addController(badge_click.as(gtk.EventController));
 
         // -- Row 2: directory label --
         const row2 = gtk.Box.new(.horizontal, 0);
@@ -124,6 +161,25 @@ pub const WorkspaceTab = extern struct {
         branch_label.as(gtk.Widget).addCssClass("termplex-tab-branch");
         priv.branch_label = branch_label;
         row3.append(branch_label.as(gtk.Widget));
+
+        // -- Port detail box (hidden by default, shown when "+N" badge clicked) --
+        const port_detail_box = gtk.Box.new(.vertical, 1);
+        port_detail_box.as(gtk.Widget).addCssClass("termplex-port-detail");
+        port_detail_box.as(gtk.Widget).setVisible(0);
+        priv.port_detail_box = port_detail_box;
+        content.append(port_detail_box.as(gtk.Widget));
+    }
+
+    fn onPortBadgeClick(
+        _: *gtk.GestureClick,
+        _: c_int,
+        _: f64,
+        _: f64,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        priv.ports_expanded = !priv.ports_expanded;
+        priv.port_detail_box.as(gtk.Widget).setVisible(@intFromBool(priv.ports_expanded));
     }
 
     // ---------------------------------------------------------------
@@ -150,12 +206,64 @@ pub const WorkspaceTab = extern struct {
         // Update labels
         priv.name_label.setLabel(name orelse "workspace");
 
+        // Update port display.
         if (port_text) |p| {
-            priv.port_label.setLabel(p);
-            priv.port_label.as(gtk.Widget).setVisible(1);
+            if (p.len == 0) {
+                priv.port_box.as(gtk.Widget).setVisible(0);
+                priv.port_detail_box.as(gtk.Widget).setVisible(0);
+                priv.ports_expanded = false;
+            } else {
+                priv.port_box.as(gtk.Widget).setVisible(1);
+
+                // Count ports by counting ':' characters.
+                var port_count: u32 = 0;
+                for (p) |ch| {
+                    if (ch == ':') port_count += 1;
+                }
+
+                if (port_count <= 1) {
+                    // Single port: show as-is, hide badge.
+                    priv.port_primary_label.setLabel(p);
+                    priv.port_badge_label.as(gtk.Widget).setVisible(0);
+                    priv.port_detail_box.as(gtk.Widget).setVisible(0);
+                    priv.ports_expanded = false;
+                } else {
+                    // Multiple ports: show first port + "+N" badge.
+                    const first_end = std.mem.indexOfScalar(u8, p, ' ') orelse p.len;
+                    var first_buf: [16]u8 = undefined;
+                    const first_port = std.fmt.bufPrintZ(&first_buf, "{s}", .{p[0..first_end]}) catch p;
+                    priv.port_primary_label.setLabel(first_port);
+
+                    var badge_buf: [8]u8 = undefined;
+                    const badge_text = std.fmt.bufPrintZ(&badge_buf, "+{d}", .{port_count - 1}) catch "+?";
+                    priv.port_badge_label.setLabel(badge_text);
+                    priv.port_badge_label.as(gtk.Widget).setVisible(1);
+
+                    // Rebuild port detail box contents.
+                    const detail_widget = priv.port_detail_box.as(gtk.Widget);
+                    while (detail_widget.getFirstChild()) |child| {
+                        child.unparent();
+                    }
+                    // Add one label per port.
+                    var iter = std.mem.splitScalar(u8, p, ' ');
+                    while (iter.next()) |port_str| {
+                        if (port_str.len == 0) continue;
+                        var lbl_buf: [16]u8 = undefined;
+                        const lbl_text = std.fmt.bufPrintZ(&lbl_buf, "{s}", .{port_str}) catch continue;
+                        const lbl = gtk.Label.new(lbl_text);
+                        lbl.setXalign(0.0);
+                        lbl.as(gtk.Widget).addCssClass("termplex-tab-port");
+                        priv.port_detail_box.append(lbl.as(gtk.Widget));
+                    }
+
+                    // Maintain current expansion state.
+                    detail_widget.setVisible(@intFromBool(priv.ports_expanded));
+                }
+            }
         } else {
-            priv.port_label.setLabel("");
-            priv.port_label.as(gtk.Widget).setVisible(0);
+            priv.port_box.as(gtk.Widget).setVisible(0);
+            priv.port_detail_box.as(gtk.Widget).setVisible(0);
+            priv.ports_expanded = false;
         }
 
         if (branch_text) |b| {

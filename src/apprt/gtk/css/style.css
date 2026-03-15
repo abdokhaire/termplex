@@ -231,6 +231,21 @@ label.resize-overlay {
   font-size: 10px;
 }
 
+.termplex-port-badge {
+  background-color: #1a3a2a;
+  color: #4ade80;
+  border-radius: 3px;
+  padding: 0px 3px;
+  font-size: 9px;
+}
+
+.termplex-port-detail {
+  background-color: #131d2b;
+  border-radius: 4px;
+  padding: 4px 6px;
+  margin-top: 2px;
+}
+
 .termplex-sidebar-toggle {
   min-width: 24px;
   min-height: 32px;
