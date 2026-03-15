@@ -1196,6 +1196,9 @@ pub const Application = extern struct {
         if (std.mem.eql(u8, method, "surface.send")) {
             return ipcSurfaceSend(self, alloc, id, root.object);
         }
+        if (std.mem.eql(u8, method, "surface.read")) {
+            return ipcSurfaceRead(self, alloc, id, root.object);
+        }
 
         // Stubs for other known methods — return ok with null result.
         const known_stubs = [_][]const u8{
@@ -1767,6 +1770,148 @@ pub const Application = extern struct {
             "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
             .{id},
         ) catch null;
+    }
+
+    /// Handle surface.read — reads terminal screen buffer text.
+    fn ipcSurfaceRead(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        if (params_val != .object) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params object required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+        const params = params_val.object;
+
+        const page = self.resolveTabPage(params) orelse {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace or tab not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        // Get lines count from params (default 50, min 1, max 1000).
+        const lines: usize = blk: {
+            const lv = params.get("lines") orelse break :blk 50;
+            switch (lv) {
+                .integer => |n| {
+                    if (n < 1) break :blk 1;
+                    if (n > 1000) break :blk 1000;
+                    break :blk @intCast(n);
+                },
+                else => break :blk 50,
+            }
+        };
+
+        // Navigate: page -> Tab -> Surface -> CoreSurface -> terminal text.
+        const child = page.getChild();
+        const tab = gobject.ext.cast(Tab, child) orelse {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"tab not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const gtk_surface = tab.getActiveSurface() orelse {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"surface not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const core_surface = gtk_surface.core() orelse {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"core surface not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        // Lock the renderer mutex — required for thread safety.
+        core_surface.renderer_state.mutex.lock();
+        defer core_surface.renderer_state.mutex.unlock();
+
+        const t = core_surface.renderer_state.terminal;
+
+        // Get viewport text.
+        const full_text = t.plainString(alloc) catch {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"read_error\",\"message\":\"failed to read terminal buffer\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        defer alloc.free(full_text);
+
+        // Extract the last N lines from the text.
+        const text = extractLastLines(full_text, lines);
+
+        // Build JSON response with escaped text.
+        var buf = std.ArrayListUnmanaged(u8){};
+        defer buf.deinit(alloc);
+
+        buf.appendSlice(alloc, "{\"ok\":true,\"result\":{\"output\":\"") catch {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"read_error\",\"message\":\"failed to build response\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        // JSON-escape the text.
+        for (text) |c| {
+            const slice: ?[]const u8 = switch (c) {
+                '"' => "\\\"",
+                '\\' => "\\\\",
+                '\n' => "\\n",
+                '\r' => "\\r",
+                '\t' => "\\t",
+                else => null,
+            };
+            if (slice) |s| {
+                buf.appendSlice(alloc, s) catch return null;
+            } else if (c < 0x20) {
+                const hex = "0123456789abcdef";
+                buf.appendSlice(alloc, "\\u00") catch return null;
+                buf.append(alloc, hex[c >> 4]) catch return null;
+                buf.append(alloc, hex[c & 0xf]) catch return null;
+            } else {
+                buf.append(alloc, c) catch return null;
+            }
+        }
+
+        // Close the JSON: "},"id":N}
+        const tail = std.fmt.allocPrint(alloc, "\"}},\"id\":{d}}}", .{id}) catch return null;
+        defer alloc.free(tail);
+        buf.appendSlice(alloc, tail) catch return null;
+
+        return buf.toOwnedSlice(alloc) catch null;
+    }
+
+    /// Extract the last N lines from a string. Returns a slice into the input.
+    fn extractLastLines(text: []const u8, n: usize) []const u8 {
+        if (text.len == 0) return text;
+
+        // Count line endings from the end.
+        var count: usize = 0;
+        var pos: usize = text.len;
+
+        // Skip trailing newline if present.
+        if (pos > 0 and text[pos - 1] == '\n') {
+            pos -= 1;
+        }
+
+        while (pos > 0) : (count += 1) {
+            if (count >= n) {
+                return text[pos..];
+            }
+            // Search backwards for the next newline.
+            while (pos > 0) {
+                pos -= 1;
+                if (text[pos] == '\n') {
+                    pos += 1; // position after the newline
+                    break;
+                }
+            }
+        }
+
+        // Fewer than N lines — return everything.
+        return text;
     }
 
     /// Handle tab.list — returns tabs in a workspace.
