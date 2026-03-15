@@ -4340,6 +4340,194 @@ const Action = struct {
 
         // Show the window
         gtk.Window.present(win.as(gtk.Window));
+
+        // Termplex: show first-run orchestration dialog if not yet configured.
+        showOrchestrationDialog(self);
+    }
+
+    // -----------------------------------------------------------------
+    // Termplex orchestration first-run dialog
+    // -----------------------------------------------------------------
+
+    /// Show the first-run orchestration dialog if orchestration.enabled is null.
+    fn showOrchestrationDialog(self: *Application) void {
+        const priv = self.private();
+
+        // Only show if enabled is null (never configured).
+        if (priv.termplex_cfg.orchestration.enabled != null) return;
+
+        // Require an active window to parent the dialog.
+        const active_win = self.as(gtk.Application).getActiveWindow() orelse return;
+
+        const dialog = adw.AlertDialog.new(
+            "Enable Orchestration?",
+            "Termplex can run an AI agent that manages your workspaces, tabs, and terminal sessions. Enable orchestration to get started, or skip to set this up later.",
+        );
+
+        dialog.addResponse("skip", "Skip");
+        dialog.addResponse("enable", "Enable");
+        dialog.setResponseAppearance("enable", .suggested);
+        dialog.setDefaultResponse("enable");
+
+        dialog.choose(
+            active_win.as(gtk.Widget),
+            null,
+            orchestrationDialogReady,
+            self,
+        );
+    }
+
+    fn orchestrationDialogReady(
+        source: ?*gobject.Object,
+        result: *gio.AsyncResult,
+        ud: ?*anyopaque,
+    ) callconv(.c) void {
+        const dialog: *adw.AlertDialog = @ptrCast(@alignCast(source orelse return));
+        const self: *Application = @ptrCast(@alignCast(ud orelse return));
+
+        const response = dialog.chooseFinish(result);
+        if (std.mem.orderZ(u8, response, "enable") == .eq) {
+            enableOrchestration(self);
+        } else {
+            disableOrchestration(self);
+        }
+    }
+
+    fn enableOrchestration(self: *Application) void {
+        const alloc = std.heap.c_allocator;
+
+        // 1. Create orchestration directory structure (recursive).
+        const home = std.posix.getenv("HOME") orelse return;
+        const orch_path = std.fmt.allocPrint(alloc, "{s}/.termplex/orchestration", .{home}) catch return;
+        defer alloc.free(orch_path);
+
+        // Create parent + subdirectories.
+        const dirs = [_][]const u8{ "skill", "logs", "state" };
+        for (dirs) |subdir| {
+            const full = std.fmt.allocPrint(alloc, "{s}/{s}", .{ orch_path, subdir }) catch continue;
+            defer alloc.free(full);
+            std.fs.cwd().makePath(full) catch continue;
+        }
+
+        // 2. Copy skill files to orchestration directory.
+        copyResourceFile("share/termplex/skill/termplex.md", orch_path, "skill/termplex.md");
+        copyResourceFile("share/termplex/skill/AGENTS.md", orch_path, "AGENTS.md");
+
+        // 3. Write orchestration.enabled = true to config.toml.
+        writeOrchestrationConfig(true, orch_path, "claude");
+
+        // Update in-memory config so the dialog guard doesn't re-fire.
+        const priv = self.private();
+        priv.termplex_cfg.orchestration.enabled = true;
+
+        // 4. Create the orchestration workspace.
+        const orch_dir_z = alloc.dupeZ(u8, orch_path) catch return;
+        defer alloc.free(orch_dir_z);
+        const orch_idx = self.addWorkspaceWithDir(orch_dir_z);
+        if (orch_idx) |idx| {
+            self.renameWorkspace(idx, "ORCHESTRATOR");
+            priv.orchestration_workspace_idx = idx;
+            log.info("orchestration enabled: workspace created at index {d}", .{idx});
+
+            // Update sidebar with orchestration index.
+            if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+                if (gobject.ext.cast(Window, active_win)) |win| {
+                    const sidebar = win.getSidebar();
+                    sidebar.setOrchestrationIndex(idx);
+                }
+            }
+        }
+    }
+
+    fn disableOrchestration(self: *Application) void {
+        writeOrchestrationConfig(false, null, null);
+        // Update in-memory config so the dialog guard doesn't re-fire.
+        self.private().termplex_cfg.orchestration.enabled = false;
+        log.info("orchestration disabled by user", .{});
+    }
+
+    fn writeOrchestrationConfig(enabled: bool, dir: ?[]const u8, agent_command: ?[]const u8) void {
+        const alloc = std.heap.c_allocator;
+
+        // Resolve config base dir: $XDG_CONFIG_HOME takes priority over $HOME/.config.
+        // Always allocate so ownership is uniform and we can always free.
+        const config_base: []u8 = blk: {
+            if (std.posix.getenv("XDG_CONFIG_HOME")) |xdg| {
+                if (xdg.len > 0) break :blk alloc.dupe(u8, xdg) catch return;
+            }
+            const home = std.posix.getenv("HOME") orelse return;
+            break :blk std.fmt.allocPrint(alloc, "{s}/.config", .{home}) catch return;
+        };
+        defer alloc.free(config_base);
+
+        const config_path = std.fmt.allocPrint(alloc, "{s}/termplex/config.toml", .{config_base}) catch return;
+        defer alloc.free(config_path);
+
+        // Read existing config.
+        var existing: []u8 = &.{};
+        const existing_owned = blk: {
+            const file = std.fs.openFileAbsolute(config_path, .{}) catch break :blk false;
+            defer file.close();
+            existing = file.readToEndAlloc(alloc, 1024 * 1024) catch break :blk false;
+            break :blk true;
+        };
+        defer if (existing_owned) alloc.free(existing);
+
+        // Strip any existing [orchestration] section to avoid duplicates.
+        var cleaned: std.ArrayListUnmanaged(u8) = .empty;
+        defer cleaned.deinit(alloc);
+        var in_orch_section = false;
+        var line_iter = std.mem.splitScalar(u8, existing, '\n');
+        while (line_iter.next()) |line| {
+            if (line.len > 0 and line[0] == '[') {
+                in_orch_section = std.mem.startsWith(u8, line, "[orchestration]");
+            }
+            if (!in_orch_section) {
+                cleaned.appendSlice(alloc, line) catch continue;
+                cleaned.append(alloc, '\n') catch continue;
+            }
+        }
+
+        // Build the new orchestration section.
+        var buf: [512]u8 = undefined;
+        const section = if (enabled)
+            std.fmt.bufPrint(&buf,
+                "\n[orchestration]\nenabled = true\ndir = \"{s}\"\nagent_command = \"{s}\"\nagent_terminate_policy = \"keep\"\n",
+                .{
+                    dir orelse "~/.termplex/orchestration",
+                    agent_command orelse "claude",
+                }) catch return
+        else
+            std.fmt.bufPrint(&buf, "\n[orchestration]\nenabled = false\n", .{}) catch return;
+
+        cleaned.appendSlice(alloc, section) catch return;
+
+        // Ensure config directory exists.
+        const config_dir = std.fmt.allocPrint(alloc, "{s}/termplex", .{config_base}) catch return;
+        defer alloc.free(config_dir);
+        std.fs.cwd().makePath(config_dir) catch {};
+
+        const file = std.fs.createFileAbsolute(config_path, .{}) catch return;
+        defer file.close();
+        file.writeAll(cleaned.items) catch {};
+        log.info("wrote orchestration config (enabled={}) to {s}", .{ enabled, config_path });
+    }
+
+    /// Copy a resource file from the install prefix to the orchestration directory.
+    fn copyResourceFile(relative_src: []const u8, orch_dir: []const u8, relative_dst: []const u8) void {
+        const alloc = std.heap.c_allocator;
+        // Try common install prefixes.
+        const prefixes = [_][]const u8{ "/usr/local", "/usr" };
+        for (prefixes) |prefix| {
+            const src = std.fmt.allocPrint(alloc, "{s}/{s}", .{ prefix, relative_src }) catch continue;
+            defer alloc.free(src);
+            const dst = std.fmt.allocPrint(alloc, "{s}/{s}", .{ orch_dir, relative_dst }) catch continue;
+            defer alloc.free(dst);
+            std.fs.copyFileAbsolute(src, dst, .{}) catch continue;
+            log.debug("copied resource {s} -> {s}", .{ src, dst });
+            return; // Success.
+        }
+        log.debug("resource file not found: {s} (skipping)", .{relative_src});
     }
 
     pub fn openConfig(self: *Application) bool {
