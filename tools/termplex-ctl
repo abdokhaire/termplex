@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""termplex-ctl — CLI for controlling Termplex via IPC socket."""
+
+import argparse
+import json
+import os
+import socket
+import sys
+
+def get_socket_path():
+    """Resolve socket path: $TERMPLEX_SOCKET > $XDG_RUNTIME_DIR/termplex.sock > /tmp/termplex-{uid}.sock"""
+    env = os.environ.get("TERMPLEX_SOCKET")
+    if env:
+        return env
+    xdg = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg:
+        return os.path.join(xdg, "termplex.sock")
+    return f"/tmp/termplex-{os.getuid()}.sock"
+
+def send_request(method, params=None, socket_path=None):
+    """Send a JSON-RPC request to the Termplex IPC socket and return the parsed response."""
+    if socket_path is None:
+        socket_path = get_socket_path()
+
+    request = {"method": method, "params": params or {}, "id": 1}
+    request_json = json.dumps(request) + "\n"
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(10.0)
+    try:
+        sock.connect(socket_path)
+        sock.sendall(request_json.encode("utf-8"))
+
+        # Read response with a 1MB safety limit
+        data = b""
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+            if len(data) > 1_048_576:  # 1MB safety limit
+                return {"ok": False, "error": {"code": "response_too_large", "message": "response exceeded 1MB limit"}}
+            if b"\n" in data:
+                break
+
+        response_str = data.decode("utf-8").strip()
+        if not response_str:
+            return {"ok": False, "error": {"code": "empty_response", "message": "empty response from server"}}
+        try:
+            return json.loads(response_str)
+        except (json.JSONDecodeError, ValueError):
+            return {"ok": False, "error": {"code": "invalid_json", "message": "server returned malformed JSON"}}
+    except FileNotFoundError:
+        print(f"Error: Socket not found at {socket_path}", file=sys.stderr)
+        print("Is Termplex running?", file=sys.stderr)
+        sys.exit(1)
+    except ConnectionRefusedError:
+        print(f"Error: Connection refused at {socket_path}", file=sys.stderr)
+        sys.exit(1)
+    except socket.timeout:
+        print(f"Error: Timed out waiting for response from {socket_path}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        sock.close()
+
+def format_human(response):
+    """Format a response for human-readable output."""
+    if not response.get("ok"):
+        err = response.get("error", {})
+        return f"Error [{err.get('code', 'unknown')}]: {err.get('message', 'unknown error')}"
+    result = response.get("result")
+    if result is None:
+        return "OK"
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, indent=2)
+
+def main():
+    parser = argparse.ArgumentParser(prog="termplex-ctl", description="Control Termplex via IPC")
+    parser.add_argument("--human", action="store_true", help="Human-readable output (default: JSON)")
+    parser.add_argument("--socket", help="Override socket path")
+    subparsers = parser.add_subparsers(dest="resource")
+
+    # --- ping ---
+    subparsers.add_parser("ping", help="Ping the server")
+
+    # --- status ---
+    subparsers.add_parser("status", help="Get server status")
+
+    # --- workspace ---
+    ws = subparsers.add_parser("workspace", help="Workspace operations")
+    ws_sub = ws.add_subparsers(dest="action")
+
+    ws_sub.add_parser("list", help="List workspaces")
+
+    ws_create = ws_sub.add_parser("create", help="Create workspace")
+    ws_create.add_argument("--name", help="Workspace name")
+    ws_create.add_argument("--dir", help="Working directory")
+
+    ws_select = ws_sub.add_parser("select", help="Select workspace")
+    ws_select.add_argument("--name", help="Workspace name")
+    ws_select.add_argument("--index", type=int, help="Workspace index")
+
+    ws_close = ws_sub.add_parser("close", help="Close workspace")
+    ws_close.add_argument("--name", help="Workspace name")
+    ws_close.add_argument("--index", type=int, help="Workspace index")
+
+    ws_rename = ws_sub.add_parser("rename", help="Rename workspace")
+    ws_rename.add_argument("--name", required=True, help="Current name")
+    ws_rename.add_argument("--new-name", required=True, help="New name")
+
+    # --- tab ---
+    tab = subparsers.add_parser("tab", help="Tab operations")
+    tab_sub = tab.add_subparsers(dest="action")
+
+    tab_list = tab_sub.add_parser("list", help="List tabs")
+    tab_list.add_argument("--workspace", required=True, help="Workspace name or index")
+
+    tab_create = tab_sub.add_parser("create", help="Create tab")
+    tab_create.add_argument("--workspace", required=True, help="Workspace name or index")
+    tab_create.add_argument("--title", help="Tab title")
+    tab_create.add_argument("--dir", help="Working directory")
+    tab_create.add_argument("--command", help="Command to run")
+
+    # --- surface ---
+    surface = subparsers.add_parser("surface", help="Surface/terminal operations")
+    surface_sub = surface.add_subparsers(dest="action")
+
+    surface_send = surface_sub.add_parser("send", help="Send text to terminal")
+    surface_send.add_argument("--workspace", required=True, help="Workspace name or index")
+    surface_send.add_argument("--tab", required=True, type=int, help="Tab index")
+    surface_send.add_argument("text", help="Text to send (use \\n for Enter)")
+
+    surface_read = surface_sub.add_parser("read", help="Read terminal output")
+    surface_read.add_argument("--workspace", required=True, help="Workspace name or index")
+    surface_read.add_argument("--tab", required=True, type=int, help="Tab index")
+    surface_read.add_argument("--lines", type=int, default=50, help="Number of lines (default: 50)")
+
+    # --- agent ---
+    agent = subparsers.add_parser("agent", help="Agent operations")
+    agent_sub = agent.add_subparsers(dest="action")
+
+    agent_sub.add_parser("list", help="List registered agents")
+
+    agent_reg = agent_sub.add_parser("register", help="Register agent")
+    agent_reg.add_argument("--workspace", required=True, help="Workspace name or index")
+    agent_reg.add_argument("--tab", required=True, type=int, help="Tab index")
+    agent_reg.add_argument("--type", required=True, choices=["claude", "codex", "custom"], help="Agent type")
+    agent_reg.add_argument("--pid", required=True, type=int, help="Agent PID")
+
+    agent_unreg = agent_sub.add_parser("unregister", help="Unregister agent")
+    agent_unreg.add_argument("--pid", required=True, type=int, help="Agent PID")
+
+    agent_term = agent_sub.add_parser("terminate", help="Terminate agent")
+    agent_term.add_argument("--pid", required=True, type=int, help="Agent PID")
+    agent_term.add_argument("--policy", choices=["keep", "terminate"], help="Override tab policy")
+
+    args = parser.parse_args()
+
+    if not args.resource:
+        parser.print_help()
+        sys.exit(1)
+
+    # Build IPC method and params
+    method, params = build_request(args)
+    if method is None:
+        parser.print_help()
+        sys.exit(1)
+
+    response = send_request(method, params, socket_path=args.socket)
+
+    if args.human:
+        print(format_human(response))
+    else:
+        print(json.dumps(response))
+
+    sys.exit(0 if response.get("ok") else 1)
+
+def parse_workspace_ref(value):
+    """Parse workspace argument: try integer first, fall back to string name."""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return value
+
+def build_request(args):
+    """Map parsed args to (method, params) tuple."""
+    resource = args.resource
+    action = getattr(args, "action", None)
+
+    if resource == "ping":
+        return "system.ping", {}
+
+    if resource == "status":
+        return "system.tree", {}
+
+    if resource == "workspace":
+        if action == "list":
+            return "workspace.list", {}
+        if action == "create":
+            p = {}
+            if args.name:
+                p["name"] = args.name
+            if args.dir:
+                p["dir"] = args.dir
+            return "workspace.create", p
+        if action == "select":
+            p = {}
+            if args.name:
+                p["ref"] = args.name
+            if args.index is not None:
+                p["index"] = args.index
+            return "workspace.select", p
+        if action == "close":
+            p = {}
+            if args.name:
+                p["ref"] = args.name
+            if args.index is not None:
+                p["index"] = args.index
+            return "workspace.close", p
+        if action == "rename":
+            return "workspace.rename", {"name": args.name, "new_name": args.new_name}
+        return None, None
+
+    if resource == "tab":
+        if action == "list":
+            return "tab.list", {"workspace": parse_workspace_ref(args.workspace)}
+        if action == "create":
+            p = {"workspace": parse_workspace_ref(args.workspace)}
+            if args.title:
+                p["title"] = args.title
+            if args.dir:
+                p["dir"] = args.dir
+            if args.command:
+                p["command"] = args.command
+            return "tab.create", p
+        return None, None
+
+    if resource == "surface":
+        if action == "send":
+            return "surface.send", {
+                "workspace": parse_workspace_ref(args.workspace),
+                "tab": args.tab,
+                "text": args.text.replace("\\n", "\n"),
+            }
+        if action == "read":
+            return "surface.read", {
+                "workspace": parse_workspace_ref(args.workspace),
+                "tab": args.tab,
+                "lines": args.lines,
+            }
+        return None, None
+
+    if resource == "agent":
+        if action == "list":
+            return "agent.list", {}
+        if action == "register":
+            return "agent.register", {
+                "workspace": parse_workspace_ref(args.workspace),
+                "tab": args.tab,
+                "type": args.type,
+                "pid": args.pid,
+            }
+        if action == "unregister":
+            return "agent.unregister", {"pid": args.pid}
+        if action == "terminate":
+            p = {"pid": args.pid}
+            if args.policy:
+                p["policy"] = args.policy
+            return "agent.terminate", p
+        return None, None
+
+    return None, None
+
+if __name__ == "__main__":
+    main()
