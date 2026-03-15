@@ -20,6 +20,7 @@ pub const ipc = struct {
     pub const socket_server = @import("ipc/socket_server.zig");
     pub const protocol = @import("ipc/protocol.zig");
     pub const handle = @import("ipc/handle.zig");
+    pub const agents = @import("ipc/agents.zig");
 };
 pub const util = struct {
     pub const uuid = @import("util/uuid.zig");
