@@ -1830,7 +1830,8 @@ pub const Application = extern struct {
 
         const t = core_surface.renderer_state.terminal;
 
-        // Get viewport text.
+        // Get viewport text. Note: plainString reads only the visible viewport
+        // (not scrollback). Future enhancement could use .screen to read history.
         const full_text = t.plainString(alloc) catch {
             return std.fmt.allocPrint(alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"read_error\",\"message\":\"failed to read terminal buffer\"}},\"id\":{d}}}",
@@ -1887,25 +1888,23 @@ pub const Application = extern struct {
     fn extractLastLines(text: []const u8, n: usize) []const u8 {
         if (text.len == 0) return text;
 
-        // Count line endings from the end.
-        var count: usize = 0;
-        var pos: usize = text.len;
+        var end: usize = text.len;
 
         // Skip trailing newline if present.
-        if (pos > 0 and text[pos - 1] == '\n') {
-            pos -= 1;
+        if (text[end - 1] == '\n') {
+            end -= 1;
         }
 
-        while (pos > 0) : (count += 1) {
-            if (count >= n) {
-                return text[pos..];
-            }
-            // Search backwards for the next newline.
-            while (pos > 0) {
-                pos -= 1;
-                if (text[pos] == '\n') {
-                    pos += 1; // position after the newline
-                    break;
+        // Scan backwards counting newlines.
+        var count: usize = 0;
+        var pos: usize = end;
+
+        while (pos > 0) {
+            pos -= 1;
+            if (text[pos] == '\n') {
+                count += 1;
+                if (count >= n) {
+                    return text[pos + 1 ..];
                 }
             }
         }
