@@ -32,14 +32,14 @@ const Sidebar = @import("sidebar.zig").Sidebar;
 const WorkspaceTab = @import("workspace_tab.zig").WorkspaceTab;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
-const log = std.log.scoped(.gtk_ghostty_window);
+const log = std.log.scoped(.gtk_termplex_window);
 
 pub const Window = extern struct {
     const Self = @This();
     parent_instance: Parent,
     pub const Parent = adw.ApplicationWindow;
     pub const getGObjectType = gobject.ext.defineClass(Self, .{
-        .name = "GhosttyWindow",
+        .name = "TermplexWindow",
         .instanceInit = &init,
         .classInit = &Class.init,
         .parent_class = &Class.parent,
@@ -264,6 +264,15 @@ pub const Window = extern struct {
         sidebar_saved_width: c_int = 180,
         sidebar_toggle_btn: *gtk.Button = undefined,
         sidebar_programmatic: bool = false,
+
+        /// When the tab overview is open and the user switches workspaces,
+        /// we defer the actual switch until the overview finishes closing.
+        /// This avoids crashes from swapping the TabView while the overview
+        /// is still animating/rendering thumbnails.
+        pending_workspace_switch: ?u32 = null,
+
+        /// If true, reopen the tab overview after a deferred workspace switch.
+        reopen_overview_after_switch: bool = false,
 
         /// Signal handler IDs for the active TabView (for disconnect/reconnect).
         tab_view_handler_ids: [7]c_ulong = .{0} ** 7,
@@ -886,13 +895,13 @@ pub const Window = extern struct {
             config.@"background-opacity" >= 1,
         );
 
-        // Apply class to color headerbar if window-theme is set to `ghostty` and
+        // Apply class to color headerbar if window-theme is set to `termplex` and
         // GTK version is before 4.16. The conditional is because above 4.16
         // we use GTK CSS color variables.
         self.toggleCssClass(
-            "window-theme-ghostty",
+            "window-theme-termplex",
             !gtk_version.atLeast(4, 16, 0) and
-                config.@"window-theme" == .ghostty,
+                config.@"window-theme" == .termplex,
         );
 
         // Move the tab bar to the proper location.
@@ -1439,8 +1448,27 @@ pub const Window = extern struct {
     /// Called when the user clicks a workspace row in the sidebar.
     fn termplexOnWorkspaceSelected(index: u32, userdata: ?*anyopaque) void {
         const win: *Self = @ptrCast(@alignCast(userdata orelse return));
+        const priv = win.private();
+        const overview_was_open = priv.tab_overview.getOpen() != 0;
+
+        // If the tab overview is open, close it first, defer the switch
+        // until the close animation finishes, then reopen the overview
+        // showing the new workspace's tabs.
+        if (overview_was_open) {
+            priv.pending_workspace_switch = index;
+            priv.reopen_overview_after_switch = true;
+            priv.tab_overview.setOpen(0);
+            return;
+        }
+
+        win.performWorkspaceSwitch(index);
+    }
+
+    /// Execute the actual workspace switch (update app state, sidebar, and TabView).
+    fn performWorkspaceSwitch(self: *Self, index: u32) void {
+        const priv = self.private();
         const app = Application.default();
-        const sidebar = win.private().sidebar;
+        const sidebar = priv.sidebar;
 
         const old_idx = app.activeWorkspaceIndex();
 
@@ -1472,7 +1500,7 @@ pub const Window = extern struct {
 
         // Switch TabView
         if (app.workspaceTabView(index)) |tv| {
-            win.switchToTabView(tv);
+            self.switchToTabView(tv);
         }
     }
 
@@ -1767,6 +1795,26 @@ pub const Window = extern struct {
         // We only care about when the tab overview is closed.
         if (tab_overview.getOpen() != 0) return;
 
+        const priv = self.private();
+
+        // If a workspace switch was deferred while the overview was open,
+        // wait for the close animation (400ms) to finish before swapping
+        // the TabView. Swapping during the animation crashes.
+        if (priv.pending_workspace_switch != null) {
+            // Cancel any existing focus timer
+            if (priv.tab_overview_focus_timer) |timer| {
+                _ = glib.Source.remove(timer);
+                priv.tab_overview_focus_timer = null;
+            }
+            // Schedule the workspace switch after the animation completes
+            _ = glib.timeoutAdd(
+                500,
+                deferredWorkspaceSwitch,
+                self,
+            );
+            return;
+        }
+
         // On tab overview close, focus is sometimes lost. This is an
         // upstream issue in libadwaita[1]. When this is resolved we
         // can put a runtime version check here to avoid this workaround.
@@ -1778,7 +1826,6 @@ pub const Window = extern struct {
         // [1]: https://gitlab.gnome.org/GNOME/libadwaita/-/issues/670
 
         // If we have an old timer remove it
-        const priv = self.private();
         if (priv.tab_overview_focus_timer) |timer| {
             _ = glib.Source.remove(timer);
         }
@@ -1789,6 +1836,24 @@ pub const Window = extern struct {
             tabOverviewFocusTimer,
             self,
         );
+    }
+
+    /// Timer callback: executes a deferred workspace switch after the tab
+    /// overview close animation has finished.
+    fn deferredWorkspaceSwitch(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return 0));
+        const priv = self.private();
+        if (priv.pending_workspace_switch) |index| {
+            priv.pending_workspace_switch = null;
+            const should_reopen = priv.reopen_overview_after_switch;
+            priv.reopen_overview_after_switch = false;
+            self.performWorkspaceSwitch(index);
+            // Reopen the tab overview if it was open before the switch.
+            if (should_reopen) {
+                priv.tab_overview.setOpen(1);
+            }
+        }
+        return 0; // don't repeat
     }
 
     fn tabOverviewFocusTimer(
@@ -2228,9 +2293,9 @@ pub const Window = extern struct {
         _: ?*glib.Variant,
         self: *Self,
     ) callconv(.c) void {
-        const name = "Ghostty";
-        const icon = "com.mitchellh.ghostty";
-        const website = "https://ghostty.org";
+        const name = "Termplex";
+        const icon = "com.termplex.app";
+        const website = "https://termplex.org";
 
         if (adw_version.supportsDialogs()) {
             adw.showAboutDialog(
@@ -2238,13 +2303,13 @@ pub const Window = extern struct {
                 "application-name",
                 name,
                 "developer-name",
-                i18n._("Ghostty Developers"),
+                i18n._("Termplex Developers"),
                 "application-icon",
                 icon,
                 "version",
                 build_config.version_string.ptr,
                 "issue-url",
-                "https://github.com/ghostty-org/ghostty/issues",
+                "https://github.com/termplex-org/termplex/issues",
                 "website",
                 website,
                 @as(?*anyopaque, null),
@@ -2257,7 +2322,7 @@ pub const Window = extern struct {
                 "logo-icon-name",
                 icon,
                 "title",
-                i18n._("About Ghostty"),
+                i18n._("About Termplex"),
                 "version",
                 build_config.version_string.ptr,
                 "website",
@@ -2501,13 +2566,13 @@ pub const Window = extern struct {
         self.toggleCommandPalette();
     }
 
-    /// Toggle the Ghostty inspector for the active surface.
+    /// Toggle the Termplex inspector for the active surface.
     fn toggleInspector(self: *Self) void {
         const surface = self.getActiveSurface() orelse return;
         _ = surface.controlInspector(.toggle);
     }
 
-    /// React to a GTK action requesting that the Ghostty inspector be toggled.
+    /// React to a GTK action requesting that the Termplex inspector be toggled.
     fn actionToggleInspector(
         _: *gio.SimpleAction,
         _: ?*glib.Variant,

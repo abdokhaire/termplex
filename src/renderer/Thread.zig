@@ -707,7 +707,7 @@ fn cursorBlinkInterval() u64 {
         //
         // This is a hack, we should change some of our cursor timer
         // logic to be more efficient:
-        // https://github.com/ghostty-org/ghostty/issues/8003
+        // https://github.com/termplex-org/termplex/issues/8003
         return CURSOR_BLINK_INTERVAL * 5;
     }
 

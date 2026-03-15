@@ -625,13 +625,13 @@ const Subprocess = struct {
 
         // If we have a resources dir then set our env var
         if (cfg.resources_dir) |dir| {
-            log.info("found Ghostty resources dir: {s}", .{dir});
-            try env.put("GHOSTTY_RESOURCES_DIR", dir);
+            log.info("found Termplex resources dir: {s}", .{dir});
+            try env.put("TERMPLEX_RESOURCES_DIR", dir);
         }
 
         // Set our TERM var. This is a bit complicated because we want to use
-        // the ghostty TERM value but we want to only do that if we have
-        // ghostty in the TERMINFO database.
+        // the termplex TERM value but we want to only do that if we have
+        // termplex in the TERMINFO database.
         //
         // For now, we just look up a bundled dir but in the future we should
         // also load the terminfo database and look for it.
@@ -648,7 +648,7 @@ const Subprocess = struct {
             try env.put("TERMINFO", dir);
         } else {
             if (comptime builtin.target.os.tag.isDarwin()) {
-                log.warn("ghostty terminfo not found, using xterm-256color", .{});
+                log.warn("termplex terminfo not found, using xterm-256color", .{});
                 log.warn("the terminfo SHOULD exist on macos, please ensure", .{});
                 log.warn("you're using a valid app bundle.", .{});
             }
@@ -658,35 +658,35 @@ const Subprocess = struct {
         }
 
         // Add our binary to the path if we can find it.
-        ghostty_path: {
+        termplex_path: {
             // Skip this for flatpak since host cannot reach them
             if ((comptime build_config.flatpak) and
                 internal_os.isFlatpak())
             {
-                break :ghostty_path;
+                break :termplex_path;
             }
 
             var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
             const exe_bin_path = std.fs.selfExePath(&exe_buf) catch |err| {
-                log.warn("failed to get ghostty exe path err={}", .{err});
-                break :ghostty_path;
+                log.warn("failed to get termplex exe path err={}", .{err});
+                break :termplex_path;
             };
-            const exe_dir = std.fs.path.dirname(exe_bin_path) orelse break :ghostty_path;
-            log.debug("appending ghostty bin to path dir={s}", .{exe_dir});
+            const exe_dir = std.fs.path.dirname(exe_bin_path) orelse break :termplex_path;
+            log.debug("appending termplex bin to path dir={s}", .{exe_dir});
 
             // We always set this so that if the shell overwrites the path
-            // scripts still have a way to find the Ghostty binary when
-            // running in Ghostty.
-            try env.put("GHOSTTY_BIN_DIR", exe_dir);
+            // scripts still have a way to find the Termplex binary when
+            // running in Termplex.
+            try env.put("TERMPLEX_BIN_DIR", exe_dir);
 
-            // Append if we have a path. We want to append so that ghostty is
+            // Append if we have a path. We want to append so that termplex is
             // the last priority in the path. If we don't have a path set
             // then we just set it to the directory of the binary.
             if (env.get("PATH")) |path| {
                 // Verify that our path doesn't already contain this entry
                 var it = std.mem.tokenizeScalar(u8, path, std.fs.path.delimiter);
                 while (it.next()) |entry| {
-                    if (std.mem.eql(u8, entry, exe_dir)) break :ghostty_path;
+                    if (std.mem.eql(u8, entry, exe_dir)) break :termplex_path;
                 }
 
                 try env.put(
@@ -739,7 +739,7 @@ const Subprocess = struct {
 
         // Set environment variables used by some programs (such as neovim) to detect
         // which terminal emulator and version they're running under.
-        try env.put("TERM_PROGRAM", "ghostty");
+        try env.put("TERM_PROGRAM", "termplex");
         try env.put("TERM_PROGRAM_VERSION", build_config.version_string);
 
         // VTE_VERSION is set by gnome-terminal and other VTE-based terminals.
@@ -755,7 +755,7 @@ const Subprocess = struct {
                     else => "sh",
                 } };
 
-            // Always set up shell features (GHOSTTY_SHELL_FEATURES). These are
+            // Always set up shell features (TERMPLEX_SHELL_FEATURES). These are
             // used by both automatic and manual shell integrations.
             try shell_integration.setupFeatures(
                 &env,
@@ -766,7 +766,7 @@ const Subprocess = struct {
             const force: ?shell_integration.Shell = switch (cfg.shell_integration) {
                 .none => {
                     // This is a source of confusion for users despite being
-                    // opt-in since it results in some Ghostty features not
+                    // opt-in since it results in some Termplex features not
                     // working. We always want to log it.
                     log.info("shell integration disabled by configuration", .{});
                     break :shell default_shell_command;
@@ -821,7 +821,7 @@ const Subprocess = struct {
         ) catch |err| switch (err) {
             // If we fail to allocate space for the command we want to
             // execute, we'd still like to try to run something so
-            // Ghostty can launch (and maybe the user can debug this further).
+            // Termplex can launch (and maybe the user can debug this further).
             // Realistically, if you're getting OOM, I think other stuff is
             // about to crash, but we can try.
             error.OutOfMemory => oom: {
@@ -852,7 +852,7 @@ const Subprocess = struct {
         // on the same behavior in Konsole and Kitty (see the linked issues):
         // https://bugs.kde.org/show_bug.cgi?id=242114
         // https://github.com/kovidgoyal/kitty/issues/1595
-        // https://github.com/ghostty-org/ghostty/discussions/7769
+        // https://github.com/termplex-org/termplex/discussions/7769
         if (cwd) |pwd| try env.put("PWD", pwd);
 
         return .{
@@ -1070,7 +1070,7 @@ const Subprocess = struct {
 
     /// This should be called after fork but before exec in the child process.
     /// To repeat: this function RUNS IN THE FORKED CHILD PROCESS before
-    /// exec is called; it does NOT run in the main Ghostty process.
+    /// exec is called; it does NOT run in the main Termplex process.
     fn childPreExec(self: *Subprocess) !void {
         // Setup our pty
         try self.pty.?.childPreExec();

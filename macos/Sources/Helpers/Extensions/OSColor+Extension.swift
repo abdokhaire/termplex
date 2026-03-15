@@ -1,6 +1,6 @@
 import Foundation
 #if !DOCK_TILE_PLUGIN
-import GhosttyKit
+import TermplexKit
 #endif
 
 extension OSColor {
@@ -93,14 +93,14 @@ extension OSColor {
     }
 }
 
-// MARK: Ghostty Types
+// MARK: Termplex Types
 #if !DOCK_TILE_PLUGIN
 extension OSColor {
-    /// Create a color from a Ghostty color.
-    convenience init(ghostty: ghostty_config_color_s) {
-        let red = Double(ghostty.r) / 255
-        let green = Double(ghostty.g) / 255
-        let blue = Double(ghostty.b) / 255
+    /// Create a color from a Termplex color.
+    convenience init(termplex: termplex_config_color_s) {
+        let red = Double(termplex.r) / 255
+        let green = Double(termplex.g) / 255
+        let blue = Double(termplex.b) / 255
         self.init(red: red, green: green, blue: blue, alpha: 1)
     }
 }

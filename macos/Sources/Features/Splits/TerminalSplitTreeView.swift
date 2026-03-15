@@ -9,16 +9,16 @@ enum TerminalSplitOperation {
     case drop(Drop)
 
     struct Resize {
-        let node: SplitTree<Ghostty.SurfaceView>.Node
+        let node: SplitTree<Termplex.SurfaceView>.Node
         let ratio: Double
     }
 
     struct Drop {
         /// The surface being dragged.
-        let payload: Ghostty.SurfaceView
+        let payload: Termplex.SurfaceView
 
         /// The surface it was dragged onto
-        let destination: Ghostty.SurfaceView
+        let destination: Termplex.SurfaceView
 
         /// The zone it was dropped to determine how to split the destination.
         let zone: TerminalSplitDropZone
@@ -26,7 +26,7 @@ enum TerminalSplitOperation {
 }
 
 struct TerminalSplitTreeView: View {
-    let tree: SplitTree<Ghostty.SurfaceView>
+    let tree: SplitTree<Termplex.SurfaceView>
     let action: (TerminalSplitOperation) -> Void
 
     var body: some View {
@@ -38,16 +38,16 @@ struct TerminalSplitTreeView: View {
             // This is necessary because we can't rely on SwiftUI's implicit
             // structural identity to detect changes to this view. Due to
             // the tree structure of splits it could result in bad behaviors.
-            // See: https://github.com/ghostty-org/ghostty/issues/7546
+            // See: https://github.com/termplex-org/termplex/issues/7546
             .id(node.structuralIdentity)
         }
     }
 }
 
 private struct TerminalSplitSubtreeView: View {
-    @EnvironmentObject var ghostty: Ghostty.App
+    @EnvironmentObject var termplex: Termplex.App
 
-    let node: SplitTree<Ghostty.SurfaceView>.Node
+    let node: SplitTree<Termplex.SurfaceView>.Node
     var isRoot: Bool = false
     let action: (TerminalSplitOperation) -> Void
 
@@ -69,7 +69,7 @@ private struct TerminalSplitSubtreeView: View {
                 }, set: {
                     action(.resize(.init(node: node, ratio: $0)))
                 }),
-                dividerColor: ghostty.config.splitDividerColor,
+                dividerColor: termplex.config.splitDividerColor,
                 resizeIncrements: .init(width: 1, height: 1),
                 left: {
                     TerminalSplitSubtreeView(node: split.left, action: action)
@@ -79,7 +79,7 @@ private struct TerminalSplitSubtreeView: View {
                 },
                 onEqualize: {
                     guard let surface = node.leftmostLeaf().surface else { return }
-                    ghostty.splitEqualize(surface: surface)
+                    termplex.splitEqualize(surface: surface)
                 }
             )
         }
@@ -87,7 +87,7 @@ private struct TerminalSplitSubtreeView: View {
 }
 
 private struct TerminalSplitLeaf: View {
-    let surfaceView: Ghostty.SurfaceView
+    let surfaceView: Termplex.SurfaceView
     let isSplit: Bool
     let action: (TerminalSplitOperation) -> Void
 
@@ -96,7 +96,7 @@ private struct TerminalSplitLeaf: View {
 
     var body: some View {
         GeometryReader { geometry in
-            Ghostty.InspectableSurface(
+            Termplex.InspectableSurface(
                 surfaceView: surfaceView,
                 isSplit: isSplit)
             .background {
@@ -105,7 +105,7 @@ private struct TerminalSplitLeaf: View {
                 // so it is a proper invalid drop zone.
                 if !isSelfDragging {
                     Color.clear
-                        .onDrop(of: [.ghosttySurfaceId], delegate: SplitDropDelegate(
+                        .onDrop(of: [.termplexSurfaceId], delegate: SplitDropDelegate(
                             dropState: $dropState,
                             viewSize: geometry.size,
                             destinationSurface: surfaceView,
@@ -119,7 +119,7 @@ private struct TerminalSplitLeaf: View {
                         .allowsHitTesting(false)
                 }
             }
-            .onPreferenceChange(Ghostty.DraggingSurfaceKey.self) { value in
+            .onPreferenceChange(Termplex.DraggingSurfaceKey.self) { value in
                 isSelfDragging = value == surfaceView.id
                 if isSelfDragging {
                     dropState = .idle
@@ -138,11 +138,11 @@ private struct TerminalSplitLeaf: View {
     private struct SplitDropDelegate: DropDelegate {
         @Binding var dropState: DropState
         let viewSize: CGSize
-        let destinationSurface: Ghostty.SurfaceView
+        let destinationSurface: Termplex.SurfaceView
         let action: (TerminalSplitOperation) -> Void
 
         func validateDrop(info: DropInfo) -> Bool {
-            info.hasItemsConforming(to: [.ghosttySurfaceId])
+            info.hasItemsConforming(to: [.termplexSurfaceId])
         }
 
         func dropEntered(info: DropInfo) {
@@ -167,11 +167,11 @@ private struct TerminalSplitLeaf: View {
             dropState = .idle
 
             // Load the dropped surface asynchronously using Transferable
-            let providers = info.itemProviders(for: [.ghosttySurfaceId])
+            let providers = info.itemProviders(for: [.termplexSurfaceId])
             guard let provider = providers.first else { return false }
 
             // Capture action before the async closure
-            _ = provider.loadTransferable(type: Ghostty.SurfaceView.self) { [weak destinationSurface] result in
+            _ = provider.loadTransferable(type: Termplex.SurfaceView.self) { [weak destinationSurface] result in
                 switch result {
                 case .success(let sourceSurface):
                     DispatchQueue.main.async {

@@ -1,12 +1,12 @@
 import AppKit
 
-/// Handler for the `input text` AppleScript command defined in `Ghostty.sdef`.
+/// Handler for the `input text` AppleScript command defined in `Termplex.sdef`.
 ///
 /// Cocoa scripting instantiates this class because the command's `<cocoa>` element
-/// specifies `class="GhosttyScriptInputTextCommand"`. The runtime calls
+/// specifies `class="TermplexScriptInputTextCommand"`. The runtime calls
 /// `performDefaultImplementation()` to execute the command.
 @MainActor
-@objc(GhosttyScriptInputTextCommand)
+@objc(TermplexScriptInputTextCommand)
 final class ScriptInputTextCommand: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
         guard NSApp.validateScript(command: self) else { return nil }

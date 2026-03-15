@@ -1,7 +1,7 @@
 import Foundation
 import Cocoa
 import SwiftUI
-import GhosttyKit
+import TermplexKit
 
 /// This initializes a clipboard confirmation warning window. The window itself
 /// WILL NOT show automatically and the caller must show the window via
@@ -9,13 +9,13 @@ import GhosttyKit
 class ClipboardConfirmationController: NSWindowController {
     override var windowNibName: NSNib.Name? { "ClipboardConfirmation" }
 
-    let surface: ghostty_surface_t
+    let surface: termplex_surface_t
     let contents: String
-    let request: Ghostty.ClipboardRequest
+    let request: Termplex.ClipboardRequest
     let state: UnsafeMutableRawPointer?
     weak private var delegate: ClipboardConfirmationViewDelegate?
 
-    init(surface: ghostty_surface_t, contents: String, request: Ghostty.ClipboardRequest, state: UnsafeMutableRawPointer?, delegate: ClipboardConfirmationViewDelegate) {
+    init(surface: termplex_surface_t, contents: String, request: Termplex.ClipboardRequest, state: UnsafeMutableRawPointer?, delegate: ClipboardConfirmationViewDelegate) {
         self.surface = surface
         self.contents = contents
         self.request = request

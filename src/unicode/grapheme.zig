@@ -8,7 +8,7 @@ const uucode = @import("uucode");
 /// This function does NOT work with control characters. Control characters,
 /// line feeds, and carriage returns are expected to be filtered out before
 /// calling this function. This is because this function is tuned for
-/// Ghostty.
+/// Termplex.
 pub fn graphemeBreak(cp1: u21, cp2: u21, state: *uucode.grapheme.BreakState) bool {
     const value = Precompute.data[
         (Precompute.Key{
@@ -83,7 +83,7 @@ const Precompute = struct {
 /// implementation. This iterates over billions of codepoints so it is
 /// SLOW. It's not meant to be run in CI, but it's useful for debugging.
 /// TODO: this is hard to build with newer zig build, so
-/// https://github.com/ghostty-org/ghostty/pull/7806 took the approach of
+/// https://github.com/termplex-org/termplex/pull/7806 took the approach of
 /// adding a `-Demit-unicode-test` option for `zig build`, but that
 /// hasn't been done here.
 pub fn main() !void {

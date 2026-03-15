@@ -15,8 +15,8 @@ jobs:
   # are other fast skip conditions, and add it as an output. Then modify
   # other tests `needs/if` to check them. Document the outputs.
   skip:
-    if: github.repository == 'ghostty-org/ghostty'
-    runs-on: namespace-profile-ghostty-xsm
+    if: github.repository == 'termplex-org/termplex'
+    runs-on: namespace-profile-termplex-xsm
     outputs:
       # 'true' when all changed files are non-code (e.g. only VOUCHED.td),
       # signaling that all other jobs can be skipped entirely.
@@ -80,18 +80,18 @@ jobs:
   required:
     name: "Required Checks: Test"
     if: always()
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     needs:
       - skip
       - build-bench
       - build-dist
       - build-examples
       - build-flatpak
-      - build-libghostty-vt
-      - build-libghostty-vt-android
-      - build-libghostty-vt-macos
+      - build-libtermplex-vt
+      - build-libtermplex-vt-android
+      - build-libtermplex-vt-macos
       - build-linux
-      - build-linux-libghostty
+      - build-linux-libtermplex
       - build-nix
       - build-macos
       - build-macos-freetype
@@ -102,7 +102,7 @@ jobs:
       - test-gtk
       - test-sentry-linux
       - test-i18n
-      - test-fuzz-libghostty
+      - test-fuzz-libtermplex
       - test-macos
       - pinact
       - prettier
@@ -139,7 +139,7 @@ jobs:
 
   build-bench:
     # We build benchmarks on large because it uses ReleaseFast
-    runs-on: namespace-profile-ghostty-lg
+    runs-on: namespace-profile-termplex-lg
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -161,7 +161,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Build Benchmarks
@@ -182,7 +182,7 @@ jobs:
             zig-vt-stream,
           ]
     name: Example ${{ matrix.dir }}
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -204,7 +204,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Build Example
@@ -215,7 +215,7 @@ jobs:
   build-flatpak:
     strategy:
       fail-fast: false
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -237,7 +237,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Build with Flatpak
@@ -249,7 +249,7 @@ jobs:
   build-snap:
     strategy:
       fail-fast: false
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -271,7 +271,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Build with Snap
@@ -280,7 +280,7 @@ jobs:
             zig build \
             -Dsnap
 
-  build-libghostty-vt:
+  build-libtermplex-vt:
     strategy:
       matrix:
         target:
@@ -293,7 +293,7 @@ jobs:
             x86_64-windows,
             wasm32-freestanding,
           ]
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -315,7 +315,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Build
@@ -325,11 +325,11 @@ jobs:
             -Dsimd=false
 
   # lib-vt requires macOS runner for macOS/iOS builds becauase it requires the `apple_sdk` path
-  build-libghostty-vt-macos:
+  build-libtermplex-vt-macos:
     strategy:
       matrix:
         target: [aarch64-macos, x86_64-macos, aarch64-ios]
-    runs-on: namespace-profile-ghostty-macos-tahoe
+    runs-on: namespace-profile-termplex-macos-tahoe
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /Users/runner/zig/local-cache
@@ -352,7 +352,7 @@ jobs:
           determinate: true
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Xcode Select
@@ -364,12 +364,12 @@ jobs:
             -Dtarget=${{ matrix.target }}
 
   # lib-vt requires the Android NDK for Android builds
-  build-libghostty-vt-android:
+  build-libtermplex-vt-android:
     strategy:
       matrix:
         target:
           [aarch64-linux-android, x86_64-linux-android, arm-linux-androideabi]
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -392,7 +392,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Setup Android NDK
@@ -415,7 +415,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [namespace-profile-ghostty-md, namespace-profile-ghostty-md-arm64]
+        os: [namespace-profile-termplex-md, namespace-profile-termplex-md-arm64]
     runs-on: ${{ matrix.os }}
     needs: test
     env:
@@ -438,14 +438,14 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Test Build
         run: nix develop -c zig build
 
-  build-linux-libghostty:
-    runs-on: namespace-profile-ghostty-md
+  build-linux-libtermplex:
+    runs-on: namespace-profile-termplex-md
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -467,17 +467,17 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
-      - name: Build Libghostty
+      - name: Build Libtermplex
         run: nix develop -c zig build -Dapp-runtime=none
 
   build-nix:
     strategy:
       fail-fast: false
       matrix:
-        os: [namespace-profile-ghostty-md, namespace-profile-ghostty-md-arm64]
+        os: [namespace-profile-termplex-md, namespace-profile-termplex-md-arm64]
     runs-on: ${{ matrix.os }}
     needs: test
     env:
@@ -500,29 +500,29 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Test release NixOS package build
-        run: nix build .#ghostty-releasefast
+        run: nix build .#termplex-releasefast
 
       - name: Check version
-        run: result/bin/ghostty +version | grep -q '.ReleaseFast'
+        run: result/bin/termplex +version | grep -q '.ReleaseFast'
 
       - name: Check to see if the binary has been stripped
-        run: nm result/bin/.ghostty-wrapped 2>&1 | grep -q 'no symbols'
+        run: nm result/bin/.termplex-wrapped 2>&1 | grep -q 'no symbols'
 
       - name: Test debug NixOS package build
-        run: nix build .#ghostty-debug
+        run: nix build .#termplex-debug
 
       - name: Check version
-        run: result/bin/ghostty +version | grep -q '.Debug'
+        run: result/bin/termplex +version | grep -q '.Debug'
 
       - name: Check to see if the binary has not been stripped
-        run: nm result/bin/.ghostty-wrapped 2>&1 | grep -q 'main_ghostty.main'
+        run: nm result/bin/.termplex-wrapped 2>&1 | grep -q 'main_termplex.main'
 
   build-dist:
-    runs-on: namespace-profile-ghostty-md
+    runs-on: namespace-profile-termplex-md
     needs: test
     outputs:
       artifact-id: ${{ steps.upload-artifact.outputs.artifact-id }}
@@ -546,14 +546,14 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Build and Check Source Tarball
         run: |
           rm -rf zig-out/dist
           nix develop -c zig build distcheck
-          cp zig-out/dist/*.tar.gz ghostty-source.tar.gz
+          cp zig-out/dist/*.tar.gz termplex-source.tar.gz
 
       - name: Upload artifact
         id: upload-artifact
@@ -561,11 +561,11 @@ jobs:
         with:
           name: source-tarball
           path: |-
-            ghostty-source.tar.gz
+            termplex-source.tar.gz
 
   trigger-snap:
     if: github.event_name != 'pull_request'
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     needs: [build-dist, build-snap]
     steps:
       - name: Checkout code
@@ -583,7 +583,7 @@ jobs:
 
   trigger-flatpak:
     if: github.event_name != 'pull_request'
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     needs: [build-dist, build-flatpak]
     steps:
       - name: Checkout code
@@ -600,7 +600,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-macos:
-    runs-on: namespace-profile-ghostty-macos-tahoe
+    runs-on: namespace-profile-termplex-macos-tahoe
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /Users/runner/zig/local-cache
@@ -623,7 +623,7 @@ jobs:
           determinate: true
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Xcode Select
@@ -636,31 +636,31 @@ jobs:
         id: deps
         run: nix build -L .#deps && echo "deps=$(readlink ./result)" >> $GITHUB_OUTPUT
 
-      # GhosttyKit is the framework that is built from Zig for our native
+      # TermplexKit is the framework that is built from Zig for our native
       # Mac app to access.
-      - name: Build GhosttyKit
+      - name: Build TermplexKit
         run: nix develop -c zig build --system ${{ steps.deps.outputs.deps }} -Demit-macos-app=false
 
       # The native app is built with native Xcode tooling. This also does
       # codesigning. IMPORTANT: this must NOT run in a Nix environment.
       # Nix breaks xcodebuild so this has to be run outside.
-      - name: Build Ghostty.app
+      - name: Build Termplex.app
         run: |
           cd macos
-          xcodebuild -target Ghostty \
+          xcodebuild -target Termplex \
             COMPILATION_CACHE_CAS_PATH=/Users/runner/Library/Developer/Xcode/DerivedData/CompilationCache.noindex \
             COMPILATION_CACHE_KEEP_CAS_DIRECTORY=YES
 
       # Build the iOS target without code signing just to verify it works.
-      - name: Build Ghostty iOS
+      - name: Build Termplex iOS
         run: |
           cd macos
-          xcodebuild -target Ghostty-iOS "CODE_SIGNING_ALLOWED=NO" \
+          xcodebuild -target Termplex-iOS "CODE_SIGNING_ALLOWED=NO" \
             COMPILATION_CACHE_CAS_PATH=/Users/runner/Library/Developer/Xcode/DerivedData/CompilationCache.noindex \
             COMPILATION_CACHE_KEEP_CAS_DIRECTORY=YES
 
   build-macos-freetype:
-    runs-on: namespace-profile-ghostty-macos-tahoe
+    runs-on: namespace-profile-termplex-macos-tahoe
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /Users/runner/zig/local-cache
@@ -683,7 +683,7 @@ jobs:
           determinate: true
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Xcode Select
@@ -776,9 +776,9 @@ jobs:
         run: Get-Content -Path ".\build.log"
 
   test:
-    if: github.repository == 'ghostty-org/ghostty' && needs.skip.outputs.skip != 'true'
+    if: github.repository == 'termplex-org/termplex' && needs.skip.outputs.skip != 'true'
     needs: skip
-    runs-on: namespace-profile-ghostty-md
+    runs-on: namespace-profile-termplex-md
     outputs:
       zig_version: ${{ steps.zig.outputs.version }}
     env:
@@ -806,7 +806,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: test
@@ -826,7 +826,7 @@ jobs:
         x11: ["true", "false"]
         wayland: ["true", "false"]
     name: GTK x11=${{ matrix.x11 }} wayland=${{ matrix.wayland }}
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -848,7 +848,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Test
@@ -874,7 +874,7 @@ jobs:
       matrix:
         simd: ["true", "false"]
     name: Build -Dsimd=${{ matrix.simd }}
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -896,7 +896,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Test
@@ -909,7 +909,7 @@ jobs:
       matrix:
         sentry: ["true", "false"]
     name: Build -Dsentry=${{ matrix.sentry }}
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -931,7 +931,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Test Sentry Build
@@ -939,7 +939,7 @@ jobs:
           nix develop -c zig build -Dsentry=${{ matrix.sentry }}
 
   test-macos:
-    runs-on: namespace-profile-ghostty-macos-tahoe
+    runs-on: namespace-profile-termplex-macos-tahoe
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /Users/runner/zig/local-cache
@@ -962,7 +962,7 @@ jobs:
           determinate: true
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Xcode Select
@@ -984,7 +984,7 @@ jobs:
       matrix:
         i18n: ["true", "false"]
     name: Build -Di18n=${{ matrix.i18n }}
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -1006,16 +1006,16 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Test
         run: |
           nix develop -c zig build -Di18n=${{ matrix.i18n }}
 
-  test-fuzz-libghostty:
-    name: Build test/fuzz-libghostty
-    runs-on: namespace-profile-ghostty-sm
+  test-fuzz-libtermplex:
+    name: Build test/fuzz-libtermplex
+    runs-on: namespace-profile-termplex-sm
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -1037,7 +1037,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Install AFL++ and LLVM
@@ -1056,12 +1056,12 @@ jobs:
 
       - name: Build fuzzer harness
         run: |
-          nix develop -c sh -c 'cd test/fuzz-libghostty && zig build'
+          nix develop -c sh -c 'cd test/fuzz-libtermplex && zig build'
 
   zig-fmt:
-    if: github.repository == 'ghostty-org/ghostty' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.zig == 'true'
+    if: github.repository == 'termplex-org/termplex' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.zig == 'true'
     needs: skip
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     timeout-minutes: 60
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -1079,7 +1079,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: true
           useDaemon: false # sometimes fails on short jobs
@@ -1088,9 +1088,9 @@ jobs:
 
   pinact:
     name: "GitHub Actions Pins"
-    if: github.repository == 'ghostty-org/ghostty' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.actions_pins == 'true'
+    if: github.repository == 'termplex-org/termplex' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.actions_pins == 'true'
     needs: skip
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     timeout-minutes: 60
     permissions:
       contents: read
@@ -1110,7 +1110,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: true
           useDaemon: false # sometimes fails on short jobs
@@ -1120,9 +1120,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   prettier:
-    if: github.repository == 'ghostty-org/ghostty' && needs.skip.outputs.skip != 'true'
+    if: github.repository == 'termplex-org/termplex' && needs.skip.outputs.skip != 'true'
     needs: skip
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     timeout-minutes: 60
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -1140,7 +1140,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: true
           useDaemon: false # sometimes fails on short jobs
@@ -1148,8 +1148,8 @@ jobs:
         run: nix develop -c prettier --check .
 
   swiftlint:
-    if: github.repository == 'ghostty-org/ghostty' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.macos == 'true'
-    runs-on: namespace-profile-ghostty-macos-tahoe
+    if: github.repository == 'termplex-org/termplex' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.macos == 'true'
+    runs-on: namespace-profile-termplex-macos-tahoe
     needs: skip
     timeout-minutes: 60
     steps:
@@ -1169,7 +1169,7 @@ jobs:
           determinate: true
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: true
           useDaemon: false # sometimes fails on short jobs
@@ -1178,9 +1178,9 @@ jobs:
         run: nix develop -c swiftlint lint --strict
 
   alejandra:
-    if: github.repository == 'ghostty-org/ghostty' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.nix == 'true'
+    if: github.repository == 'termplex-org/termplex' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.nix == 'true'
     needs: skip
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     timeout-minutes: 60
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -1198,7 +1198,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: true
           useDaemon: false # sometimes fails on short jobs
@@ -1206,9 +1206,9 @@ jobs:
         run: nix develop -c alejandra --check .
 
   typos:
-    if: github.repository == 'ghostty-org/ghostty' && needs.skip.outputs.skip != 'true'
+    if: github.repository == 'termplex-org/termplex' && needs.skip.outputs.skip != 'true'
     needs: skip
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     timeout-minutes: 60
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -1226,7 +1226,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: true
           useDaemon: false # sometimes fails on short jobs
@@ -1234,9 +1234,9 @@ jobs:
         run: nix develop -c typos
 
   shellcheck:
-    if: github.repository == 'ghostty-org/ghostty' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.shell == 'true'
+    if: github.repository == 'termplex-org/termplex' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.shell == 'true'
     needs: skip
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     timeout-minutes: 60
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -1254,7 +1254,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: true
           useDaemon: false # sometimes fails on short jobs
@@ -1267,9 +1267,9 @@ jobs:
             $(find . \( -name "*.sh" -o -name "*.bash" \) -type f ! -path "./zig-out/*" ! -path "./macos/build/*" ! -path "./.git/*" | sort)
 
   translations:
-    if: github.repository == 'ghostty-org/ghostty' && needs.skip.outputs.skip != 'true'
+    if: github.repository == 'termplex-org/termplex' && needs.skip.outputs.skip != 'true'
     needs: skip
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     timeout-minutes: 60
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -1287,7 +1287,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: true
           useDaemon: false # sometimes fails on short jobs
@@ -1295,9 +1295,9 @@ jobs:
         run: nix develop -c .github/scripts/check-translations.sh
 
   blueprint-compiler:
-    if: github.repository == 'ghostty-org/ghostty' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.blueprints == 'true'
+    if: github.repository == 'termplex-org/termplex' && needs.skip.outputs.skip != 'true' && needs.skip.outputs.blueprints == 'true'
     needs: skip
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     timeout-minutes: 60
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -1315,7 +1315,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: true
           useDaemon: false # sometimes fails on short jobs
@@ -1330,7 +1330,7 @@ jobs:
       matrix:
         pkg: ["wuffs"]
     name: Test pkg/${{ matrix.pkg }}
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     needs: test
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -1352,7 +1352,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Test ${{ matrix.pkg }} Build
@@ -1361,7 +1361,7 @@ jobs:
 
   test-debian-13:
     name: Test build on Debian 13
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     timeout-minutes: 10
     needs: [test, build-dist]
     steps:
@@ -1379,7 +1379,7 @@ jobs:
       - name: Extract tarball
         run: |
           mkdir dist
-          tar --verbose --extract --strip-components 1 --directory dist --file ghostty-source.tar.gz
+          tar --verbose --extract --strip-components 1 --directory dist --file termplex-source.tar.gz
 
       - name: Build and push
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
@@ -1390,8 +1390,8 @@ jobs:
             DISTRO_VERSION=13
 
   valgrind:
-    if: github.repository == 'ghostty-org/ghostty'
-    runs-on: namespace-profile-ghostty-lg
+    if: github.repository == 'termplex-org/termplex'
+    runs-on: namespace-profile-termplex-lg
     timeout-minutes: 30
     needs: test
     env:
@@ -1414,7 +1414,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: valgrind deps
@@ -1437,7 +1437,7 @@ jobs:
   #         - "15.0"
   #   timeout-minutes: 10
   #   steps:
-  #     - name: Checkout Ghostty
+  #     - name: Checkout Termplex
   #       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
   #
   #     - name: Start SSH
@@ -1484,4 +1484,4 @@ jobs:
   #       run: |
   #         cd $GITHUB_WORKSPACE
   #         zig build
-  #         ./zig-out/bin/ghostty +version
+  #         ./zig-out/bin/termplex +version

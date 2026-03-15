@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   setup:
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     outputs:
       version: ${{ steps.extract_version.outputs.version }}
     steps:
@@ -37,25 +37,25 @@ jobs:
 
   upload:
     needs: [setup]
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     env:
-      GHOSTTY_VERSION: ${{ needs.setup.outputs.version }}
+      TERMPLEX_VERSION: ${{ needs.setup.outputs.version }}
     steps:
       - name: Validate Release Files
         run: |
-          BASE="https://release.files.ghostty.org/${GHOSTTY_VERSION}"
-          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/ghostty-${GHOSTTY_VERSION}.tar.gz" | grep -q "^200$" || exit 1
-          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/ghostty-${GHOSTTY_VERSION}.tar.gz.minisig" | grep -q "^200$" || exit 1
-          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/ghostty-source.tar.gz" | grep -q "^200$" || exit 1
-          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/ghostty-source.tar.gz.minisig" | grep -q "^200$" || exit 1
-          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/ghostty-macos-universal.zip" | grep -q "^200$" || exit 1
-          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/ghostty-macos-universal-dsym.zip" | grep -q "^200$" || exit 1
-          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/Ghostty.dmg" | grep -q "^200$" || exit 1
+          BASE="https://release.files.termplex.org/${TERMPLEX_VERSION}"
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex-${TERMPLEX_VERSION}.tar.gz" | grep -q "^200$" || exit 1
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex-${TERMPLEX_VERSION}.tar.gz.minisig" | grep -q "^200$" || exit 1
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex-source.tar.gz" | grep -q "^200$" || exit 1
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex-source.tar.gz.minisig" | grep -q "^200$" || exit 1
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex-macos-universal.zip" | grep -q "^200$" || exit 1
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex-macos-universal-dsym.zip" | grep -q "^200$" || exit 1
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/Termplex.dmg" | grep -q "^200$" || exit 1
           curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/appcast-staged.xml" | grep -q "^200$" || exit 1
 
       - name: Download Staged Appcast
         run: |
-          curl -L https://release.files.ghostty.org/${GHOSTTY_VERSION}/appcast-staged.xml > appcast-staged.xml
+          curl -L https://release.files.termplex.org/${TERMPLEX_VERSION}/appcast-staged.xml > appcast-staged.xml
           mv appcast-staged.xml appcast.xml
 
       - name: Upload Appcast
@@ -69,6 +69,6 @@ jobs:
           r2-account-id: ${{ secrets.CF_R2_RELEASE_ACCOUNT_ID }}
           r2-access-key-id: ${{ secrets.CF_R2_RELEASE_AWS_KEY }}
           r2-secret-access-key: ${{ secrets.CF_R2_RELEASE_SECRET_KEY }}
-          r2-bucket: ghostty-release
+          r2-bucket: termplex-release
           source-dir: blob
           destination-dir: ./

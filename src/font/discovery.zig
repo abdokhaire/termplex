@@ -417,7 +417,7 @@ pub const CoreText = struct {
         // If our normal discovery doesn't find anything and we have a specific
         // codepoint, then fallback to using CTFontCreateForString to find a
         // matching font CoreText wants to use. See:
-        // https://github.com/ghostty-org/ghostty/issues/2499
+        // https://github.com/termplex-org/termplex/issues/2499
         if (it.list.len == 0 and desc.codepoint > 0) codepoint: {
             const ct_desc = try self.discoverCodepoint(
                 collection,

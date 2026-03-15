@@ -14,7 +14,7 @@ zig-out/
 /result*
 /.nixos-test-history
 example/*.wasm
-test/ghostty
+test/termplex
 test/cases/**/*.actual.png
 flatpak/builddir/
 flatpak/repo/
@@ -22,7 +22,7 @@ flatpak/repo/
 glad.zip
 /Box_test.ppm
 /Box_test_diff.ppm
-/ghostty.qcow2
+/termplex.qcow2
 
 vgcore.*
 

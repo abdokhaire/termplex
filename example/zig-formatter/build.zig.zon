@@ -3,7 +3,7 @@
     .version = "0.0.0",
     .fingerprint = 0x578de530797eafe6,
     .dependencies = .{
-        .ghostty = .{ .path = "../../" },
+        .termplex = .{ .path = "../../" },
     },
     .paths = .{
         "build.zig",

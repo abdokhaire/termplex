@@ -70,8 +70,8 @@ pub const Keybindings = struct {
 pub const Appearance = struct {
     /// "dark" or "light".
     theme: []const u8,
-    /// Path to ghostty config file (empty string = use ghostty default).
-    ghostty_config: []const u8,
+    /// Path to termplex config file (empty string = use termplex default).
+    termplex_config: []const u8,
 };
 
 /// Notification configuration.
@@ -128,7 +128,7 @@ pub const TermplexConfig = struct {
             .sidebar_position = .left,
             .appearance = .{
                 .theme = "dark",
-                .ghostty_config = "",
+                .termplex_config = "",
             },
             .keybindings = .{
                 .modifier = .ctrl_shift,
@@ -170,7 +170,7 @@ pub const TermplexConfig = struct {
     pub fn deinit(self: *TermplexConfig) void {
         if (self._owned) {
             self.allocator.free(self.appearance.theme);
-            self.allocator.free(self.appearance.ghostty_config);
+            self.allocator.free(self.appearance.termplex_config);
             self.allocator.free(self.keybindings.jump_unread);
             self.allocator.free(self.keybindings.new_workspace);
             self.allocator.free(self.keybindings.close_workspace);
@@ -260,8 +260,8 @@ pub fn parseConfig(allocator: std.mem.Allocator, toml: []const u8) !TermplexConf
     // deinit() can unconditionally free them once _owned is set.
     var theme = try allocator.dupe(u8, cfg.appearance.theme);
     errdefer allocator.free(theme);
-    var ghostty_config = try allocator.dupe(u8, cfg.appearance.ghostty_config);
-    errdefer allocator.free(ghostty_config);
+    var termplex_config = try allocator.dupe(u8, cfg.appearance.termplex_config);
+    errdefer allocator.free(termplex_config);
     var jump_unread = try allocator.dupe(u8, cfg.keybindings.jump_unread);
     errdefer allocator.free(jump_unread);
     var new_workspace = try allocator.dupe(u8, cfg.keybindings.new_workspace);
@@ -329,9 +329,9 @@ pub fn parseConfig(allocator: std.mem.Allocator, toml: []const u8) !TermplexConf
             if (std.mem.eql(u8, key, "theme")) {
                 allocator.free(theme);
                 theme = try allocator.dupe(u8, unquote(value));
-            } else if (std.mem.eql(u8, key, "ghostty_config")) {
-                allocator.free(ghostty_config);
-                ghostty_config = try allocator.dupe(u8, unquote(value));
+            } else if (std.mem.eql(u8, key, "termplex_config")) {
+                allocator.free(termplex_config);
+                termplex_config = try allocator.dupe(u8, unquote(value));
             }
         } else if (std.mem.eql(u8, current_section, "keybindings")) {
             if (std.mem.eql(u8, key, "modifier")) {
@@ -396,7 +396,7 @@ pub fn parseConfig(allocator: std.mem.Allocator, toml: []const u8) !TermplexConf
 
     // Commit all heap-owned strings back into the config.
     cfg.appearance.theme = theme;
-    cfg.appearance.ghostty_config = ghostty_config;
+    cfg.appearance.termplex_config = termplex_config;
     cfg.keybindings.jump_unread = jump_unread;
     cfg.keybindings.new_workspace = new_workspace;
     cfg.keybindings.close_workspace = close_workspace;
@@ -476,7 +476,7 @@ test "default config values" {
     try std.testing.expectEqual(@as(u32, 180), cfg.sidebar_width);
     try std.testing.expectEqual(SidebarPosition.left, cfg.sidebar_position);
     try std.testing.expectEqualStrings("dark", cfg.appearance.theme);
-    try std.testing.expectEqualStrings("", cfg.appearance.ghostty_config);
+    try std.testing.expectEqualStrings("", cfg.appearance.termplex_config);
     try std.testing.expectEqual(Modifier.ctrl_shift, cfg.keybindings.modifier);
     try std.testing.expectEqualStrings("U", cfg.keybindings.jump_unread);
     try std.testing.expectEqualStrings("N", cfg.keybindings.new_workspace);
@@ -506,7 +506,7 @@ test "parse full config" {
         \\
         \\[appearance]
         \\theme = "light"
-        \\ghostty_config = "/home/user/.config/ghostty/config"
+        \\termplex_config = "/home/user/.config/termplex/config"
         \\
         \\[keybindings]
         \\modifier = "super"
@@ -539,7 +539,7 @@ test "parse full config" {
     try std.testing.expectEqual(@as(u32, 220), cfg.sidebar_width);
     try std.testing.expectEqual(SidebarPosition.right, cfg.sidebar_position);
     try std.testing.expectEqualStrings("light", cfg.appearance.theme);
-    try std.testing.expectEqualStrings("/home/user/.config/ghostty/config", cfg.appearance.ghostty_config);
+    try std.testing.expectEqualStrings("/home/user/.config/termplex/config", cfg.appearance.termplex_config);
     try std.testing.expectEqual(Modifier.super, cfg.keybindings.modifier);
     try std.testing.expectEqualStrings("J", cfg.keybindings.jump_unread);
     try std.testing.expectEqualStrings("W", cfg.keybindings.new_workspace);
@@ -579,7 +579,7 @@ test "parse partial config keeps defaults for missing keys" {
 
     // Untouched values keep defaults.
     try std.testing.expectEqual(SidebarPosition.left, cfg.sidebar_position);
-    try std.testing.expectEqualStrings("", cfg.appearance.ghostty_config);
+    try std.testing.expectEqualStrings("", cfg.appearance.termplex_config);
     try std.testing.expectEqual(Modifier.ctrl_shift, cfg.keybindings.modifier);
     try std.testing.expectEqualStrings("U", cfg.keybindings.jump_unread);
     try std.testing.expectEqualStrings("#4da6ff", cfg.notifications.attention_color);

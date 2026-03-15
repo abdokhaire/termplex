@@ -5,18 +5,18 @@ const Config = @import("../config/Config.zig");
 pub const syntax = comptimeGenSyntax();
 pub const ftdetect =
     \\" Vim filetype detect file
-    \\" Language: Ghostty config file
-    \\" Maintainer: Ghostty <https://github.com/ghostty-org/ghostty>
+    \\" Language: Termplex config file
+    \\" Maintainer: Termplex <https://github.com/termplex-org/termplex>
     \\"
     \\" THIS FILE IS AUTO-GENERATED
     \\
-    \\au BufRead,BufNewFile */ghostty/config,*/*.ghostty/config,*/ghostty/themes/*,*.ghostty setf ghostty
+    \\au BufRead,BufNewFile */termplex/config,*/*.termplex/config,*/termplex/themes/*,*.termplex setf termplex
     \\
 ;
 pub const ftplugin =
     \\" Vim filetype plugin file
-    \\" Language: Ghostty config file
-    \\" Maintainer: Ghostty <https://github.com/ghostty-org/ghostty>
+    \\" Language: Termplex config file
+    \\" Maintainer: Termplex <https://github.com/termplex-org/termplex>
     \\"
     \\" THIS FILE IS AUTO-GENERATED
     \\
@@ -34,24 +34,24 @@ pub const ftplugin =
     \\let b:undo_ftplugin = 'setl cms< isk< ofu<'
     \\
     \\if !exists('current_compiler')
-    \\  compiler ghostty
+    \\  compiler termplex
     \\  let b:undo_ftplugin .= " makeprg< errorformat<"
     \\endif
     \\
 ;
 pub const compiler =
     \\" Vim compiler file
-    \\" Language: Ghostty config file
-    \\" Maintainer: Ghostty <https://github.com/ghostty-org/ghostty>
+    \\" Language: Termplex config file
+    \\" Maintainer: Termplex <https://github.com/termplex-org/termplex>
     \\"
     \\" THIS FILE IS AUTO-GENERATED
     \\
     \\if exists("current_compiler")
     \\  finish
     \\endif
-    \\let current_compiler = "ghostty"
+    \\let current_compiler = "termplex"
     \\
-    \\CompilerSet makeprg=ghostty\ +validate-config\ --config-file=%:S
+    \\CompilerSet makeprg=termplex\ +validate-config\ --config-file=%:S
     \\CompilerSet errorformat=%f:%l:%m,%m
     \\
 ;
@@ -75,8 +75,8 @@ fn comptimeGenSyntax() []const u8 {
 fn writeSyntax(writer: *std.Io.Writer) !void {
     try writer.writeAll(
         \\" Vim syntax file
-        \\" Language: Ghostty config file
-        \\" Maintainer: Ghostty <https://github.com/ghostty-org/ghostty>
+        \\" Language: Termplex config file
+        \\" Maintainer: Termplex <https://github.com/termplex-org/termplex>
         \\"
         \\" THIS FILE IS AUTO-GENERATED
         \\
@@ -84,13 +84,13 @@ fn writeSyntax(writer: *std.Io.Writer) !void {
         \\  finish
         \\endif
         \\
-        \\let b:current_syntax = 'ghostty'
+        \\let b:current_syntax = 'termplex'
         \\
         \\let s:cpo_save = &cpo
         \\set cpo&vim
         \\
         \\syn iskeyword @,48-57,-
-        \\syn keyword ghosttyConfigKeyword
+        \\syn keyword termplexConfigKeyword
     );
 
     const config_fields = @typeInfo(Config).@"struct".fields;
@@ -102,10 +102,10 @@ fn writeSyntax(writer: *std.Io.Writer) !void {
     try writer.writeAll(
         \\
         \\
-        \\syn match ghosttyConfigComment /^\s*#.*/ contains=@Spell
+        \\syn match termplexConfigComment /^\s*#.*/ contains=@Spell
         \\
-        \\hi def link ghosttyConfigComment Comment
-        \\hi def link ghosttyConfigKeyword Keyword
+        \\hi def link termplexConfigComment Comment
+        \\hi def link termplexConfigKeyword Keyword
         \\
         \\let &cpo = s:cpo_save
         \\unlet s:cpo_save

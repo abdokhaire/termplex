@@ -10,14 +10,14 @@ RUN pacman -Syu --noconfirm && \
     doxygen \
     graphviz && \
     pacman -Scc --noconfirm
-WORKDIR /ghostty
+WORKDIR /termplex
 COPY include/ ./include/
 COPY images/ ./images/
 COPY dist/doxygen/ ./dist/doxygen/
 COPY example/ ./example/
 COPY Doxyfile ./
 COPY DoxygenLayout.xml ./
-RUN mkdir -p zig-out/share/ghostty/doc/libghostty
+RUN mkdir -p zig-out/share/termplex/doc/libtermplex
 RUN doxygen
 
 #--------------------------------------------------------------------
@@ -30,7 +30,7 @@ ARG ADD_NOINDEX_HEADER=false
 ENV ADD_NOINDEX_HEADER=$ADD_NOINDEX_HEADER
 
 # Copy documentation and entrypoint script
-COPY --from=builder /ghostty/zig-out/share/ghostty/doc/libghostty /usr/share/nginx/html
+COPY --from=builder /termplex/zig-out/share/termplex/doc/libtermplex /usr/share/nginx/html
 COPY src/build/docker/lib-c-docs/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

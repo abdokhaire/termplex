@@ -13,7 +13,7 @@ window.ssd.no-border-radius {
 }
 
 /*
- * GhosttySurface URL overlay
+ * TermplexSurface URL overlay
  */
 label.url-overlay {
   padding: 4px 8px 4px 8px;
@@ -35,7 +35,7 @@ label.url-overlay.right {
 }
 
 /*
- * GhosttySurface search overlay
+ * TermplexSurface search overlay
  */
 .search-overlay {
   padding: 6px 8px;
@@ -47,7 +47,7 @@ label.url-overlay.right {
 }
 
 /*
- * GhosttySurface key state overlay
+ * TermplexSurface key state overlay
  */
 .key-state-overlay {
   padding: 6px 10px;
@@ -59,7 +59,7 @@ label.url-overlay.right {
 }
 
 /*
- * GhosttySurface resize overlay
+ * TermplexSurface resize overlay
  */
 label.resize-overlay {
   padding: 4px 8px 4px 8px;
@@ -70,7 +70,7 @@ label.resize-overlay {
 }
 
 /*
- * GhosttyClipboardConfirmationDialog
+ * TermplexClipboardConfirmationDialog
  *
  * Based on boxed-list-separate:
  * https://gitlab.gnome.org/GNOME/libadwaita/-/blob/ad446167acf3e6d1ee693f98ca636268be8592a1/src/stylesheet/widgets/_lists.scss#L548
@@ -173,6 +173,15 @@ label.resize-overlay {
 .termplex-sidebar {
   background-color: #131d2b;
   border-right: 1px solid #243447;
+}
+
+.termplex-sidebar list,
+.termplex-sidebar list row {
+  background-color: transparent;
+}
+
+.termplex-sidebar list row:selected {
+  background-color: rgba(0, 212, 255, 0.06);
 }
 
 .termplex-sidebar-active {
@@ -295,8 +304,8 @@ headerbar {
    * Upstream Gtk issue:
    * https://gitlab.gnome.org/GNOME/gtk/-/issues/4484#note_2362002
    *
-   * Ghostty issue:
-   * https://github.com/ghostty-org/ghostty/issues/3020
+   * Termplex issue:
+   * https://github.com/termplex-org/termplex/issues/3020
    *
    * Without this, it's not possible to select the first character on the
    * right-hand side of a split.

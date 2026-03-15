@@ -1,7 +1,7 @@
-# Example: `ghostty-vt` Zig Module
+# Example: `termplex-vt` Zig Module
 
-This contains a simple example of how to use the `ghostty-vt` Zig module
-exported by Ghostty to have access to a production grade terminal emulator.
+This contains a simple example of how to use the `termplex-vt` Zig module
+exported by Termplex to have access to a production grade terminal emulator.
 
 Requires the Zig version stated in the `build.zig.zon` file.
 

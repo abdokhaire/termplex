@@ -1,5 +1,5 @@
 const std = @import("std");
-const Action = @import("../../cli/ghostty.zig").Action;
+const Action = @import("../../cli/termplex.zig").Action;
 const help_strings = @import("help_strings");
 
 pub fn main() !void {
@@ -17,10 +17,10 @@ pub fn genActions(writer: *std.Io.Writer) !void {
     try writer.writeAll(
         \\---
         \\title: Reference
-        \\description: Reference of all Ghostty action subcommands.
-        \\editOnGithubLink: https://github.com/ghostty-org/ghostty/tree/main/src/cli
+        \\description: Reference of all Termplex action subcommands.
+        \\editOnGithubLink: https://github.com/termplex-org/termplex/tree/main/src/cli
         \\---
-        \\Ghostty includes a number of utility actions that can be accessed as subcommands.
+        \\Termplex includes a number of utility actions that can be accessed as subcommands.
         \\Actions provide utilities to work with config, list keybinds, list fonts, demo themes,
         \\and debug.
         \\
@@ -44,8 +44,8 @@ pub fn genActions(writer: *std.Io.Writer) !void {
             }
             try writer.writeAll("\n```\n");
             switch (action) {
-                .help, .version => try writer.writeAll("ghostty --" ++ field.name ++ "\n"),
-                else => try writer.writeAll("ghostty +" ++ field.name ++ "\n"),
+                .help, .version => try writer.writeAll("termplex --" ++ field.name ++ "\n"),
+                else => try writer.writeAll("termplex +" ++ field.name ++ "\n"),
             }
             try writer.writeAll("```\n\n");
         }

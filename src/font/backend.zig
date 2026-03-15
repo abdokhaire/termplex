@@ -42,7 +42,7 @@ pub const Backend = enum {
 
         // macOS also supports "coretext_freetype" but there is no scenario
         // that is the default. It is only used by people who want to
-        // self-compile Ghostty and prefer the freetype aesthetic.
+        // self-compile Termplex and prefer the freetype aesthetic.
         return if (target.os.tag.isDarwin()) .coretext else .fontconfig_freetype;
     }
 

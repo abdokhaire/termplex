@@ -4,8 +4,8 @@ const state = &@import("../global.zig").state;
 
 const log = std.log.scoped(.benchmark);
 
-/// Run the Ghostty benchmark CLI with the given action and arguments.
-export fn ghostty_benchmark_cli(
+/// Run the Termplex benchmark CLI with the given action and arguments.
+export fn termplex_benchmark_cli(
     action_name_: [*:0]const u8,
     args: [*:0]const u8,
 ) bool {

@@ -195,7 +195,7 @@ struct CommandPaletteView: View {
             // Grab focus on the first appearance.
             // This happens right after onAppear,
             // so we don’t need to dispatch it again.
-            // Fixes: https://github.com/ghostty-org/ghostty/issues/8497
+            // Fixes: https://github.com/termplex-org/termplex/issues/8497
             // Also fixes initial focus while animating.
             isTextFieldFocused = isPresented
         }

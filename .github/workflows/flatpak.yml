@@ -14,7 +14,7 @@ name: Flatpak
 
 jobs:
   build:
-    if: github.repository == 'ghostty-org/ghostty'
+    if: github.repository == 'termplex-org/termplex'
     name: "Flatpak"
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-47
@@ -24,9 +24,9 @@ jobs:
       matrix:
         variant:
           - arch: x86_64
-            runner: namespace-profile-ghostty-md
+            runner: namespace-profile-termplex-md
           - arch: aarch64
-            runner: namespace-profile-ghostty-md-arm64
+            runner: namespace-profile-termplex-md-arm64
     runs-on: ${{ matrix.variant.runner }}
     steps:
       - name: Download Source Tarball Artifacts
@@ -39,12 +39,12 @@ jobs:
       - name: Extract tarball
         run: |
           mkdir dist
-          tar --verbose --extract --strip-components 1 --directory dist --file ghostty-source.tar.gz
+          tar --verbose --extract --strip-components 1 --directory dist --file termplex-source.tar.gz
 
       - uses: flatpak/flatpak-github-actions/flatpak-builder@92ae9851ad316786193b1fd3f40c4b51eb5cb101 # v6.6
         with:
-          bundle: com.mitchellh.ghostty
-          manifest-path: dist/flatpak/com.mitchellh.ghostty.yml
+          bundle: com.termplex.app
+          manifest-path: dist/flatpak/com.termplex.app.yml
           cache-key: flatpak-builder-${{ github.sha }}
           arch: ${{ matrix.variant.arch }}
           verbose: true

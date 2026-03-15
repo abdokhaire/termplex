@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) !void {
     var flags: std.ArrayList([]const u8) = .empty;
     defer flags.deinit(b.allocator);
     // Zig 0.13 bug: https://github.com/ziglang/zig/issues/20414
-    // (See root Ghostty build.zig on why we do this)
+    // (See root Termplex build.zig on why we do this)
     try flags.appendSlice(b.allocator, &.{
         "-DSIMDUTF_IMPLEMENTATION_ICELAKE=0",
 

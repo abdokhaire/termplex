@@ -12,7 +12,7 @@
     settings = {
       trusted-users = [
         "root"
-        "ghostty"
+        "termplex"
       ];
     };
     extraOptions = ''
@@ -22,12 +22,12 @@
 
   users.mutableUsers = false;
 
-  users.groups.ghostty = {};
+  users.groups.termplex = {};
 
-  users.users.ghostty = {
+  users.users.termplex = {
     isNormalUser = true;
-    description = "Ghostty";
-    group = "ghostty";
+    description = "Termplex";
+    group = "termplex";
     extraGroups = ["wheel"];
     hashedPassword = "";
   };
@@ -35,7 +35,7 @@
   environment.systemPackages = [
     pkgs.kitty
     pkgs.fish
-    pkgs.ghostty
+    pkgs.termplex
     pkgs.helix
     pkgs.neovim
     pkgs.xterm
@@ -53,7 +53,7 @@
   services.displayManager = {
     autoLogin = {
       enable = true;
-      user = "ghostty";
+      user = "termplex";
     };
   };
 

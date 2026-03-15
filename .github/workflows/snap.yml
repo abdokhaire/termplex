@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          [namespace-profile-ghostty-snap, namespace-profile-ghostty-snap-arm64]
+          [namespace-profile-termplex-snap, namespace-profile-termplex-snap-arm64]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -35,7 +35,7 @@ jobs:
       - name: Extract tarball
         run: |
           mkdir dist
-          tar --verbose --extract --strip-components 1 --directory dist --file ghostty-source.tar.gz
+          tar --verbose --extract --strip-components 1 --directory dist --file termplex-source.tar.gz
 
       - name: Setup Cache
         uses: namespacelabs/nscloud-cache-action@a90bb5d4b27522ce881c6e98eebd7d7e6d1653f9 # v1.4.2

@@ -10,9 +10,9 @@ extension UpdateDriver: SPUUpdaterDelegate {
         // Sparkle supports a native concept of "channels" but it requires that
         // you share a single appcast file. We don't want to do that so we
         // do this instead.
-        switch appDelegate.ghostty.config.autoUpdateChannel {
-        case .tip: return "https://tip.files.ghostty.org/appcast.xml"
-        case .stable: return "https://release.files.ghostty.org/appcast.xml"
+        switch appDelegate.termplex.config.autoUpdateChannel {
+        case .tip: return "https://tip.files.termplex.org/appcast.xml"
+        case .stable: return "https://release.files.termplex.org/appcast.xml"
         }
     }
 

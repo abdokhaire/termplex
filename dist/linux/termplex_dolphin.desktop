@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=inode/directory
+Actions=RunTermplexDir
+
+[Desktop Action RunTermplexDir]
+Name=Open Termplex Here
+Icon=com.termplex.app
+Exec=termplex --working-directory=%F --gtk-single-instance=false
+

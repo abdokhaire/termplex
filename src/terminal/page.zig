@@ -2169,7 +2169,7 @@ test "Page.layout can take a maxed capacity" {
     // Our intention is for a maxed-out capacity to always fit
     // within a page layout without triggering runtime safety on any
     // overflow. This simplifies some of our handling downstream of the
-    // call (relevant to: https://github.com/ghostty-org/ghostty/issues/10258)
+    // call (relevant to: https://github.com/termplex-org/termplex/issues/10258)
     var cap: Capacity = undefined;
     inline for (@typeInfo(Capacity).@"struct".fields) |field| {
         @field(cap, field.name) = std.math.maxInt(field.type);

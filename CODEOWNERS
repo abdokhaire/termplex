@@ -1,15 +1,15 @@
-# This file documents the subsystem maintainers of the Ghostty project
+# This file documents the subsystem maintainers of the Termplex project
 # along with the responsibilities of a maintainer and how one can become
 # a maintainer.
 #
-# Ghostty follows a subsystem maintainer model where distinguished
+# Termplex follows a subsystem maintainer model where distinguished
 # contributors (with mutual agreement) are designated as maintainers of a
 # specific subset of the project. A subsystem maintainer has more privileges
 # and authority over a specific part of the project than a regular
 # contributor and deference is given to them when making decisions about
 # their subsystem.
 #
-# Ultimately Ghostty has a BDFL (Benevolent Dictator For Life) model
+# Ultimately Termplex has a BDFL (Benevolent Dictator For Life) model
 # currently with @mitchellh as the BDFL. The BDFL has the final say in all
 # decisions and may override a maintainer's decision if necessary. I like to
 # say its a BDFLFN (Benevolent Dictator For Life "For Now") model because
@@ -64,135 +64,135 @@
 #
 # # Subsystem List
 #
-# The subsystems don't fully cover the entirety of the Ghostty project but
+# The subsystems don't fully cover the entirety of the Termplex project but
 # are created organically as experts in certain areas emerge. If you feel
 # you are an expert in a certain area and would like to be a maintainer,
 # please reach out to @mitchellh on Discord.
 #
 # (Alphabetical order)
 #
-# - @ghostty-org/font - All things font related including discovery,
+# - @termplex-org/font - All things font related including discovery,
 #   rasterization, shaping, coloring, etc.
 #
-# - @ghostty-org/gtk - Anything GTK-related in the project, primarily
+# - @termplex-org/gtk - Anything GTK-related in the project, primarily
 #   the GTK apprt. Also includes X11/Wayland integrations and general
 #   Linux support.
 #
-# - @ghostty-org/localization/* - Anything related to localization
+# - @termplex-org/localization/* - Anything related to localization
 #   for a specific locale.
 #
 # - @ghosty-org/localization/manager - Manage all localization tasks
 #   and tooling. They are not responsible for any specific locale but
 #   are responsible for the overall localization process and tooling.
 #
-# - @ghostty-org/macos - The Ghostty macOS app and any macOS-specific
+# - @termplex-org/macos - The Termplex macOS app and any macOS-specific
 #   features, configurations, etc.
 #
-# - @ghostty-org/packaging/snap - Ghostty snap packaging
-#   (https://snapcraft.io/ghostty)
+# - @termplex-org/packaging/snap - Termplex snap packaging
+#   (https://snapcraft.io/termplex)
 #
-# - @ghostty-org/renderer - Ghostty rendering subsystem, including the
+# - @termplex-org/renderer - Termplex rendering subsystem, including the
 #   rendering abstractions as well as specific renderers like OpenGL
 #   and Metal.
 #
-# - @ghostty-org/shell - Ghostty shell integration, including shell
+# - @termplex-org/shell - Termplex shell integration, including shell
 #   completions, shell detection, and any other shell interactions.
 #
-# - @ghostty-org/terminal - The terminal emulator subsystem, including
+# - @termplex-org/terminal - The terminal emulator subsystem, including
 #   subprocess management and pty handling, escape sequence parsing,
 #   key encoding, etc.
 #
-# ## Outside of Ghostty
+# ## Outside of Termplex
 #
-# Other "subsystems" exist outside of Ghostty and will not be represented
+# Other "subsystems" exist outside of Termplex and will not be represented
 # in this CODEOWNERS file:
 #
-# - @ghostty-org/discord-bot - Maintainers of the Ghostty Discord bot.
+# - @termplex-org/discord-bot - Maintainers of the Termplex Discord bot.
 #
-# - @ghostty-org/website - Maintainers of the Ghostty website.
+# - @termplex-org/website - Maintainers of the Termplex website.
 
 # Font
-/src/font/ @ghostty-org/font
-/pkg/fontconfig/ @ghostty-org/font
-/pkg/freetype/ @ghostty-org/font
-/pkg/harfbuzz/ @ghostty-org/font
+/src/font/ @termplex-org/font
+/pkg/fontconfig/ @termplex-org/font
+/pkg/freetype/ @termplex-org/font
+/pkg/harfbuzz/ @termplex-org/font
 
 # GTK
-/src/apprt/gtk/ @ghostty-org/gtk
-/src/os/cgroup.zig @ghostty-org/gtk
-/src/os/flatpak.zig @ghostty-org/gtk
-/dist/linux/ @ghostty-org/gtk
+/src/apprt/gtk/ @termplex-org/gtk
+/src/os/cgroup.zig @termplex-org/gtk
+/src/os/flatpak.zig @termplex-org/gtk
+/dist/linux/ @termplex-org/gtk
 
 # macOS
 #
-# This includes libghostty because the macOS apprt is built on top of
-# libghostty and often requires or is impacted by changes to libghostty.
-# macOS subsystem maintainers are expected to only work on libghostty
+# This includes libtermplex because the macOS apprt is built on top of
+# libtermplex and often requires or is impacted by changes to libtermplex.
+# macOS subsystem maintainers are expected to only work on libtermplex
 # insofar as it impacts the macOS apprt.
-/include/ghostty.h @ghostty-org/macos
-/src/apprt/embedded.zig @ghostty-org/macos
-/src/os/cf_release_thread.zig @ghostty-org/macos
-/src/os/macos.zig @ghostty-org/macos
-/macos/ @ghostty-org/macos
-/dist/macos/ @ghostty-org/macos
-/pkg/apple-sdk/ @ghostty-org/macos
-/pkg/macos/ @ghostty-org/macos
-/.swiftlint.yml @ghostty-org/macos
+/include/termplex.h @termplex-org/macos
+/src/apprt/embedded.zig @termplex-org/macos
+/src/os/cf_release_thread.zig @termplex-org/macos
+/src/os/macos.zig @termplex-org/macos
+/macos/ @termplex-org/macos
+/dist/macos/ @termplex-org/macos
+/pkg/apple-sdk/ @termplex-org/macos
+/pkg/macos/ @termplex-org/macos
+/.swiftlint.yml @termplex-org/macos
 
 # Renderer
-/src/renderer.zig @ghostty-org/renderer
-/src/renderer/ @ghostty-org/renderer
-/pkg/glslang/ @ghostty-org/renderer
-/pkg/opengl/ @ghostty-org/renderer
-/pkg/spirv-cross/ @ghostty-org/renderer
-/pkg/wuffs/ @ghostty-org/renderer
+/src/renderer.zig @termplex-org/renderer
+/src/renderer/ @termplex-org/renderer
+/pkg/glslang/ @termplex-org/renderer
+/pkg/opengl/ @termplex-org/renderer
+/pkg/spirv-cross/ @termplex-org/renderer
+/pkg/wuffs/ @termplex-org/renderer
 
 # Shell
-/src/shell-integration/ @ghostty-org/shell
-/src/termio/shell_integration.zig @ghostty-org/shell
+/src/shell-integration/ @termplex-org/shell
+/src/termio/shell_integration.zig @termplex-org/shell
 
 # Terminal
-/src/simd/ @ghostty-org/terminal
-/src/input/KeyEncoder.zig @ghostty-org/terminal
-/src/terminal/ @ghostty-org/terminal
-/src/terminfo/ @ghostty-org/terminal
-/src/termio/ @ghostty-org/terminal
-/src/unicode/ @ghostty-org/terminal
-/src/Surface.zig @ghostty-org/terminal
-/src/surface_mouse.zig @ghostty-org/terminal
+/src/simd/ @termplex-org/terminal
+/src/input/KeyEncoder.zig @termplex-org/terminal
+/src/terminal/ @termplex-org/terminal
+/src/terminfo/ @termplex-org/terminal
+/src/termio/ @termplex-org/terminal
+/src/unicode/ @termplex-org/terminal
+/src/Surface.zig @termplex-org/terminal
+/src/surface_mouse.zig @termplex-org/terminal
 
 # Localization
-/po/README_TRANSLATORS.md @ghostty-org/localization
-/po/com.mitchellh.ghostty.pot @ghostty-org/localization
-/po/bg.po @ghostty-org/bg_BG
-/po/ca.po @ghostty-org/ca_ES
-/po/de.po @ghostty-org/de_DE
-/po/es_AR.po @ghostty-org/es_AR
-/po/es_BO.po @ghostty-org/es_BO
-/po/es_ES.po @ghostty-org/es_ES
-/po/fr.po @ghostty-org/fr_FR
-/po/ga.po @ghostty-org/ga_IE
-/po/he.po @ghostty-org/he_IL
-/po/hr.po @ghostty-org/hr_HR
-/po/hu.po @ghostty-org/hu_HU
-/po/id.po @ghostty-org/id_ID
-/po/it.po @ghostty-org/it_IT
-/po/ja.po @ghostty-org/ja_JP
-/po/kk.po @ghostty-org/kk_KZ
-/po/ko_KR.po @ghostty-org/ko_KR
-/po/lt.po @ghostty-org/lt_LT
-/po/lv.po @ghostty-org/lv_LV
-/po/mk.po @ghostty-org/mk_MK
-/po/nb.po @ghostty-org/nb_NO
-/po/nl.po @ghostty-org/nl_NL
-/po/pl.po @ghostty-org/pl_PL
-/po/pt_BR.po @ghostty-org/pt_BR
-/po/ru.po @ghostty-org/ru_RU
-/po/tr.po @ghostty-org/tr_TR
-/po/uk.po @ghostty-org/uk_UA
-/po/vi.po @ghostty-org/vi_VN
-/po/zh_CN.po @ghostty-org/zh_CN
-/po/zh_TW.po @ghostty-org/zh_TW
+/po/README_TRANSLATORS.md @termplex-org/localization
+/po/com.mitchellh.termplex.pot @termplex-org/localization
+/po/bg.po @termplex-org/bg_BG
+/po/ca.po @termplex-org/ca_ES
+/po/de.po @termplex-org/de_DE
+/po/es_AR.po @termplex-org/es_AR
+/po/es_BO.po @termplex-org/es_BO
+/po/es_ES.po @termplex-org/es_ES
+/po/fr.po @termplex-org/fr_FR
+/po/ga.po @termplex-org/ga_IE
+/po/he.po @termplex-org/he_IL
+/po/hr.po @termplex-org/hr_HR
+/po/hu.po @termplex-org/hu_HU
+/po/id.po @termplex-org/id_ID
+/po/it.po @termplex-org/it_IT
+/po/ja.po @termplex-org/ja_JP
+/po/kk.po @termplex-org/kk_KZ
+/po/ko_KR.po @termplex-org/ko_KR
+/po/lt.po @termplex-org/lt_LT
+/po/lv.po @termplex-org/lv_LV
+/po/mk.po @termplex-org/mk_MK
+/po/nb.po @termplex-org/nb_NO
+/po/nl.po @termplex-org/nl_NL
+/po/pl.po @termplex-org/pl_PL
+/po/pt_BR.po @termplex-org/pt_BR
+/po/ru.po @termplex-org/ru_RU
+/po/tr.po @termplex-org/tr_TR
+/po/uk.po @termplex-org/uk_UA
+/po/vi.po @termplex-org/vi_VN
+/po/zh_CN.po @termplex-org/zh_CN
+/po/zh_TW.po @termplex-org/zh_TW
 
 # Packaging - Snap
-/snap/ @ghostty-org/snap
+/snap/ @termplex-org/snap

@@ -197,6 +197,8 @@ pub const Sidebar = extern struct {
         const index: u32 = @intCast(row.getIndex());
         priv.context_menu_index = index;
 
+        log.debug("context menu: showing for workspace index={d}", .{index});
+
         // Build a vertical box with Rename and Delete buttons.
         const box = gtk.Box.new(.vertical, 4);
         box.as(gtk.Widget).setMarginTop(8);
@@ -216,7 +218,6 @@ pub const Sidebar = extern struct {
         box.append(rename_btn.as(gtk.Widget));
 
         const delete_btn = gtk.Button.newWithLabel("Delete");
-        delete_btn.as(gtk.Widget).addCssClass("flat");
         delete_btn.as(gtk.Widget).addCssClass("destructive-action");
         _ = gtk.Button.signals.clicked.connect(
             delete_btn,
@@ -226,6 +227,11 @@ pub const Sidebar = extern struct {
             .{},
         );
         box.append(delete_btn.as(gtk.Widget));
+
+        // Ensure all children are visible.
+        rename_btn.as(gtk.Widget).setVisible(1);
+        delete_btn.as(gtk.Widget).setVisible(1);
+        box.as(gtk.Widget).setVisible(1);
 
         // Create a popover, parent it to the clicked row, and show it.
         const popover = gtk.Popover.new();

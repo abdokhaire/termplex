@@ -86,8 +86,8 @@
       {
         settings = with lib.gvariant; {
           "org/gnome/desktop/background" = {
-            picture-uri = "file://${pkgs.ghostty}/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png";
-            picture-uri-dark = "file://${pkgs.ghostty}/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png";
+            picture-uri = "file://${pkgs.termplex}/share/icons/hicolor/512x512/apps/com.termplex.app.png";
+            picture-uri-dark = "file://${pkgs.termplex}/share/icons/hicolor/512x512/apps/com.termplex.app.png";
             picture-options = "centered";
             primary-color = "#000000000000";
             secondary-color = "#000000000000";
@@ -100,7 +100,7 @@
           };
           "org/gnome/desktop/screensaver" = {
             lock-enabled = false;
-            picture-uri = "file://${pkgs.ghostty}/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png";
+            picture-uri = "file://${pkgs.termplex}/share/icons/hicolor/512x512/apps/com.termplex.app.png";
             picture-options = "centered";
             primary-color = "#000000000000";
             secondary-color = "#000000000000";
@@ -134,15 +134,15 @@
       text = ''
         mkdir -p /var/lib/AccountsService/{icons,users}
 
-        cp ${pkgs.ghostty}/share/icons/hicolor/1024x1024/apps/com.mitchellh.ghostty.png /var/lib/AccountsService/icons/ghostty
+        cp ${pkgs.termplex}/share/icons/hicolor/1024x1024/apps/com.termplex.app.png /var/lib/AccountsService/icons/termplex
 
-        echo -e "[User]\nIcon=/var/lib/AccountsService/icons/ghostty\n" > /var/lib/AccountsService/users/ghostty
+        echo -e "[User]\nIcon=/var/lib/AccountsService/icons/termplex\n" > /var/lib/AccountsService/users/termplex
 
-        chown root:root /var/lib/AccountsService/users/ghostty
-        chmod 0600 /var/lib/AccountsService/users/ghostty
+        chown root:root /var/lib/AccountsService/users/termplex
+        chmod 0600 /var/lib/AccountsService/users/termplex
 
-        chown root:root /var/lib/AccountsService/icons/ghostty
-        chmod 0444 /var/lib/AccountsService/icons/ghostty
+        chown root:root /var/lib/AccountsService/icons/termplex
+        chmod 0444 /var/lib/AccountsService/icons/termplex
       '';
     };
   };

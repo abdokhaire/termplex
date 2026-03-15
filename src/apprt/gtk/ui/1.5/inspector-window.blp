@@ -1,9 +1,9 @@
 using Gtk 4.0;
 using Adw 1;
 
-template $GhosttyInspectorWindow: Adw.ApplicationWindow {
-  title: _("Ghostty: Terminal Inspector");
-  icon-name: "com.mitchellh.ghostty";
+template $TermplexInspectorWindow: Adw.ApplicationWindow {
+  title: _("Termplex: Terminal Inspector");
+  icon-name: "com.mitchellh.termplex";
   default-width: 1000;
   default-height: 600;
 
@@ -25,11 +25,11 @@ template $GhosttyInspectorWindow: Adw.ApplicationWindow {
       hexpand: true;
       vexpand: true;
 
-      $GhosttyDebugWarning {
+      $TermplexDebugWarning {
         visible: bind template.debug;
       }
 
-      $GhosttyInspectorWidget inspector_widget {
+      $TermplexInspectorWidget inspector_widget {
         notify::surface => $notify_inspector_surface();
         surface: bind template.surface;
       }

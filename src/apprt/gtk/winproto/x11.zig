@@ -1,4 +1,4 @@
-//! X11 window protocol implementation for the Ghostty GTK apprt.
+//! X11 window protocol implementation for the Termplex GTK apprt.
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
@@ -44,9 +44,9 @@ pub const App = struct {
         const x11_program_name: [:0]const u8 = if (config.@"x11-instance-name") |pn|
             pn
         else if (builtin.mode == .Debug)
-            "ghostty-debug"
+            "termplex-debug"
         else
-            "ghostty";
+            "termplex";
 
         // Set the X11 window class property (WM_CLASS) if are are on an X11
         // display.
@@ -61,7 +61,7 @@ pub const App = struct {
         //
         // This makes the property show up like so when using xprop:
         //
-        //     WM_CLASS(STRING) = "ghostty", "com.mitchellh.ghostty"
+        //     WM_CLASS(STRING) = "termplex", "com.termplex.app"
         //
         // Append "-debug" on both when using the debug build.
         glib.setPrgname(x11_program_name);
@@ -175,7 +175,7 @@ pub const Window = struct {
 
     // Cache last applied values to avoid redundant X11 property updates.
     // Redundant property updates seem to cause some visual glitches
-    // with some window managers: https://github.com/ghostty-org/ghostty/pull/8075
+    // with some window managers: https://github.com/termplex-org/termplex/pull/8075
     last_applied_blur_region: ?Region = null,
     last_applied_decoration_hints: ?MotifWMHints = null,
 

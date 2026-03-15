@@ -35,20 +35,20 @@ pub const ResourcesDir = struct {
 /// exists (not all platforms or packages have it). The output is
 /// owned by the caller.
 ///
-/// This is highly Ghostty-specific and can likely be generalized at
+/// This is highly Termplex-specific and can likely be generalized at
 /// some point but we can cross that bridge if we ever need to.
 pub fn resourcesDir(alloc: Allocator) !ResourcesDir {
-    // Use the GHOSTTY_RESOURCES_DIR environment variable in release builds.
+    // Use the TERMPLEX_RESOURCES_DIR environment variable in release builds.
     //
     // In debug builds we try using terminfo detection first instead, since
-    // if debug Ghostty is launched by an older version of Ghostty, it
-    // would inherit the old, stale resources of older Ghostty instead of the
-    // freshly built ones under zig-out/share/ghostty.
+    // if debug Termplex is launched by an older version of Termplex, it
+    // would inherit the old, stale resources of older Termplex instead of the
+    // freshly built ones under zig-out/share/termplex.
     //
     // Note: we ALWAYS want to allocate here because the result is always
     // freed, do not try to use internal_os.getenv or posix getenv.
     if (comptime builtin.mode != .Debug) {
-        if (std.process.getEnvVarOwned(alloc, "GHOSTTY_RESOURCES_DIR")) |dir| {
+        if (std.process.getEnvVarOwned(alloc, "TERMPLEX_RESOURCES_DIR")) |dir| {
             if (dir.len > 0) return .{ .app_path = dir };
         } else |err| switch (err) {
             error.EnvironmentVariableNotFound => {},
@@ -59,10 +59,10 @@ pub fn resourcesDir(alloc: Allocator) !ResourcesDir {
     // This is the sentinel value we look for in the path to know
     // we've found the resources directory.
     const sentinels = switch (comptime builtin.target.os.tag) {
-        .windows => .{"terminfo/ghostty.terminfo"},
-        .macos => .{"terminfo/78/xterm-ghostty"},
-        .freebsd => .{ "site-terminfo/g/ghostty", "site-terminfo/x/xterm-ghostty" },
-        else => .{ "terminfo/g/ghostty", "terminfo/x/xterm-ghostty" },
+        .windows => .{"terminfo/termplex.terminfo"},
+        .macos => .{"terminfo/78/xterm-termplex"},
+        .freebsd => .{ "site-terminfo/g/termplex", "site-terminfo/x/xterm-termplex" },
+        else => .{ "terminfo/g/termplex", "terminfo/x/xterm-termplex" },
     };
 
     // Get the path to our running binary
@@ -79,14 +79,14 @@ pub fn resourcesDir(alloc: Allocator) !ResourcesDir {
         if (comptime builtin.target.os.tag.isDarwin()) {
             inline for (sentinels) |sentinel| {
                 if (try maybeDir(&dir_buf, dir, "Contents/Resources", sentinel)) |v| {
-                    return .{ .app_path = try std.fs.path.join(alloc, &.{ v, "ghostty" }) };
+                    return .{ .app_path = try std.fs.path.join(alloc, &.{ v, "termplex" }) };
                 }
             }
         }
 
         // On all platforms (except BSD), we look for a /usr/share style path. This
         // is valid even on Mac since there is nothing that requires
-        // Ghostty to be in an app bundle.
+        // Termplex to be in an app bundle.
         inline for (sentinels) |sentinel| {
             if (try maybeDir(
                 &dir_buf,
@@ -94,7 +94,7 @@ pub fn resourcesDir(alloc: Allocator) !ResourcesDir {
                 if (builtin.target.os.tag == .freebsd) "local/share" else "share",
                 sentinel,
             )) |v| {
-                return .{ .app_path = try std.fs.path.join(alloc, &.{ v, "ghostty" }) };
+                return .{ .app_path = try std.fs.path.join(alloc, &.{ v, "termplex" }) };
             }
         }
     }
@@ -102,7 +102,7 @@ pub fn resourcesDir(alloc: Allocator) !ResourcesDir {
     // If terminfo detection failed in debug builds (somehow),
     // fallback and use the provided resources dir.
     if (comptime builtin.mode == .Debug) {
-        if (std.process.getEnvVarOwned(alloc, "GHOSTTY_RESOURCES_DIR")) |dir| {
+        if (std.process.getEnvVarOwned(alloc, "TERMPLEX_RESOURCES_DIR")) |dir| {
             if (dir.len > 0) return .{ .app_path = dir };
         } else |err| switch (err) {
             error.EnvironmentVariableNotFound => {},

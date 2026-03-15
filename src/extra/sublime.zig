@@ -5,23 +5,23 @@ const Template = struct {
         \\%YAML 1.2
         \\---
         \\# See http://www.sublimetext.com/docs/syntax.html
-        \\name: Ghostty Config
+        \\name: Termplex Config
         \\file_extensions:
-        \\  - ghostty
-        \\scope: source.ghostty
+        \\  - termplex
+        \\scope: source.termplex
         \\
         \\contexts:
         \\  main:
         \\    # Comments
         \\    - match: '^\s*#.*$'
-        \\      scope: comment.line.number-sign.ghostty
+        \\      scope: comment.line.number-sign.termplex
         \\
         \\    # Keywords
         \\    - match: '\b(
     ;
     const footer =
         \\)\b'
-        \\      scope: keyword.other.ghostty
+        \\      scope: keyword.other.termplex
         \\
     ;
 };

@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   sync:
-    runs-on: namespace-profile-ghostty-xsm
+    runs-on: namespace-profile-termplex-xsm
     steps:
       - uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
         id: app-token

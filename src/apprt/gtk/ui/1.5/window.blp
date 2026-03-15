@@ -1,7 +1,7 @@
 using Gtk 4.0;
 using Adw 1;
 
-template $GhosttyWindow: Adw.ApplicationWindow {
+template $TermplexWindow: Adw.ApplicationWindow {
   styles [
     "window",
   ]
@@ -142,7 +142,7 @@ template $GhosttyWindow: Adw.ApplicationWindow {
       Box {
         orientation: vertical;
 
-        $GhosttyDebugWarning {
+        $TermplexDebugWarning {
           visible: bind template.debug;
         }
 
@@ -289,7 +289,7 @@ menu main_menu {
 
   section {
     item {
-      label: _("About Ghostty");
+      label: _("About Termplex");
       action: "win.about";
     }
 

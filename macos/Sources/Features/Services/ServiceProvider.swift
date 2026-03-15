@@ -47,16 +47,16 @@ class ServiceProvider: NSObject {
         )
 
         for url in directoryURLs {
-            var config = Ghostty.SurfaceConfiguration()
+            var config = Termplex.SurfaceConfiguration()
             config.workingDirectory = url.path(percentEncoded: false)
 
             switch target {
             case .window:
-                _ = TerminalController.newWindow(delegate.ghostty, withBaseConfig: config)
+                _ = TerminalController.newWindow(delegate.termplex, withBaseConfig: config)
 
             case .tab:
                 _ = TerminalController.newTab(
-                    delegate.ghostty,
+                    delegate.termplex,
                     from: TerminalController.preferredParent?.window,
                     withBaseConfig: config)
             }

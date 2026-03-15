@@ -44,7 +44,7 @@ const GlobalShortcuts = @import("global_shortcuts.zig").GlobalShortcuts;
 const git_probe = @import("../../../termplex/core/git_probe.zig");
 const port_scanner = @import("../../../termplex/core/port_scanner.zig");
 
-const log = std.log.scoped(.gtk_ghostty_application);
+const log = std.log.scoped(.gtk_termplex_application);
 
 /// Function used to funnel GLib/GObject/GTK log messages into Zig's logging
 /// system rather than just getting dumped directly to stderr.
@@ -110,9 +110,9 @@ fn glibLogWriterFunction(
     return .handled;
 }
 
-/// The primary entrypoint for the Ghostty GTK application.
+/// The primary entrypoint for the Termplex GTK application.
 ///
-/// This requires a `ghostty.App` and `ghostty.Config` and takes
+/// This requires a `termplex.App` and `termplex.Config` and takes
 /// care of the rest. Call `run` to run the application to completion.
 pub const Application = extern struct {
     /// This type creates a new GObject class. Since the Application is
@@ -134,7 +134,7 @@ pub const Application = extern struct {
     parent_instance: Parent,
     pub const Parent = adw.Application;
     pub const getGObjectType = gobject.ext.defineClass(Self, .{
-        .name = "GhosttyApplication",
+        .name = "TermplexApplication",
         .classInit = &Class.init,
         .parent_class = &Class.parent,
         .private = .{ .Type = Private, .offset = &Private.offset },
@@ -163,11 +163,11 @@ pub const Application = extern struct {
 
     const Private = struct {
         /// The apprt App. This is annoying that we need this it'd be
-        /// nicer to just make THIS the apprt app but the current libghostty
+        /// nicer to just make THIS the apprt app but the current libtermplex
         /// API doesn't allow that.
         rt_app: *ApprtApp,
 
-        /// The libghostty App instance.
+        /// The libtermplex App instance.
         core_app: *CoreApp,
 
         /// The configuration for the application.
@@ -206,15 +206,15 @@ pub const Application = extern struct {
         /// glib source for our signal handler.
         signal_source: ?c_uint = null,
 
-        /// CSS Provider for any styles based on Ghostty configuration values.
+        /// CSS Provider for any styles based on Termplex configuration values.
         css_provider: *gtk.CssProvider,
 
         /// Providers for loading custom stylesheets defined by user
         custom_css_providers: std.ArrayListUnmanaged(*gtk.CssProvider) = .empty,
 
-        /// A copy of the LANG environment variable that was provided to Ghostty
+        /// A copy of the LANG environment variable that was provided to Termplex
         /// by the system. If this is null, the LANG environment variable did
-        /// not exist in Ghostty's environment variable.
+        /// not exist in Termplex's environment variable.
         saved_language: ?[:0]const u8 = null,
 
         // ----- Termplex workspace state -----
@@ -245,6 +245,11 @@ pub const Application = extern struct {
         /// Per-workspace tab counts from session restore, consumed during
         /// initAndShowWindow(). null when no restore is pending.
         restore_tab_counts: ?[]u32 = null,
+
+        /// Per-workspace tab titles from session restore (v3+), consumed
+        /// during initAndShowWindow(). Each inner slice contains the titles
+        /// for one workspace's tabs. null when no restore is pending.
+        restore_tab_titles: ?[][]const [:0]const u8 = null,
 
         // ----- Termplex IPC socket state -----
 
@@ -298,7 +303,7 @@ pub const Application = extern struct {
     /// properties globally.
     ///
     /// This asserts that there is a default application and that the
-    /// default application is a GhosttyApplication. The program would have
+    /// default application is a TermplexApplication. The program would have
     /// to be in a very bad state for this to be violated.
     pub fn default() *Self {
         const app = gio.Application.getDefault().?;
@@ -394,7 +399,7 @@ pub const Application = extern struct {
 
         // Our app ID determines uniqueness and maps to our desktop file.
         // We append "-debug" to the ID if we're in debug mode so that we
-        // can develop Ghostty in Ghostty.
+        // can develop Termplex in Termplex.
         const app_id: [:0]const u8 = app_id: {
             if (config.class) |class| {
                 if (gio.Application.idIsValid(class) != 0) {
@@ -458,7 +463,7 @@ pub const Application = extern struct {
             // Force the resource path to a known value so it doesn't depend
             // on the app id (which changes between debug/release and can be
             // user-configured) and force it to load in compiled resources.
-            .resource_base_path = "/com/mitchellh/ghostty",
+            .resource_base_path = "/com/mitchellh/termplex",
         });
 
         // Setup our private state. More setup is done in the init
@@ -542,6 +547,16 @@ pub const Application = extern struct {
         if (priv.restore_tab_counts) |counts| {
             alloc.free(counts);
             priv.restore_tab_counts = null;
+        }
+
+        // Termplex: free any unconsumed restore tab titles.
+        if (priv.restore_tab_titles) |titles_per_ws| {
+            for (titles_per_ws) |titles| {
+                for (titles) |t| alloc.free(t);
+                alloc.free(titles);
+            }
+            alloc.free(titles_per_ws);
+            priv.restore_tab_titles = null;
         }
 
         // Termplex: shut down the IPC socket server.
@@ -631,7 +646,7 @@ pub const Application = extern struct {
         return self.private().core_app.alloc;
     }
 
-    /// Get the original language that Ghostty was launched with. This returns a
+    /// Get the original language that Termplex was launched with. This returns a
     /// pointer to internal memory so it must be copied by callers.
     pub fn savedLanguage(self: *Self) ?[:0]const u8 {
         return self.private().saved_language;
@@ -775,6 +790,24 @@ pub const Application = extern struct {
         if (self.private().restore_tab_counts) |counts| {
             alloc.free(counts);
             self.private().restore_tab_counts = null;
+        }
+    }
+
+    /// Return per-workspace tab titles from session restore (v3+), or null.
+    pub fn getRestoreTabTitles(self: *Self) ?[]const []const [:0]const u8 {
+        return self.private().restore_tab_titles;
+    }
+
+    /// Free the restore_tab_titles and set to null.
+    pub fn clearRestoreTabTitles(self: *Self) void {
+        const alloc = self.allocator();
+        if (self.private().restore_tab_titles) |titles_per_ws| {
+            for (titles_per_ws) |titles| {
+                for (titles) |t| alloc.free(t);
+                alloc.free(titles);
+            }
+            alloc.free(titles_per_ws);
+            self.private().restore_tab_titles = null;
         }
     }
 
@@ -1445,7 +1478,7 @@ pub const Application = extern struct {
             }
         }
 
-        // Build JSON workspaces array (v2: objects with name, dir, tab_count).
+        // Build JSON workspaces array (v3: objects with name, dir, tabs[]).
         var ws_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer ws_buf.deinit(alloc);
         ws_buf.appendSlice(alloc, "[") catch return;
@@ -1464,16 +1497,25 @@ pub const Application = extern struct {
                 if (c == '"' or c == '\\') ws_buf.append(alloc, '\\') catch return;
                 ws_buf.append(alloc, c) catch return;
             }
-            ws_buf.appendSlice(alloc, "\",\"tab_count\":") catch return;
-            // Get tab count from TabView
-            const tab_count: c_int = if (i < priv.workspace_tab_views.items.len)
-                priv.workspace_tab_views.items[i].getNPages()
-            else
-                0;
-            var count_buf: [16]u8 = undefined;
-            const count_str = std.fmt.bufPrint(&count_buf, "{d}", .{tab_count}) catch "0";
-            ws_buf.appendSlice(alloc, count_str) catch return;
-            ws_buf.appendSlice(alloc, "}") catch return;
+            ws_buf.appendSlice(alloc, "\",\"tabs\":[") catch return;
+            // Serialize each tab's title
+            if (i < priv.workspace_tab_views.items.len) {
+                const tv = priv.workspace_tab_views.items[i];
+                const n_pages = tv.getNPages();
+                var j: c_int = 0;
+                while (j < n_pages) : (j += 1) {
+                    if (j > 0) ws_buf.appendSlice(alloc, ",") catch return;
+                    const page = tv.getNthPage(j);
+                    const title = std.mem.span(page.getTitle());
+                    ws_buf.appendSlice(alloc, "{\"title\":\"") catch return;
+                    for (title) |c| {
+                        if (c == '"' or c == '\\') ws_buf.append(alloc, '\\') catch return;
+                        ws_buf.append(alloc, c) catch return;
+                    }
+                    ws_buf.appendSlice(alloc, "\"}") catch return;
+                }
+            }
+            ws_buf.appendSlice(alloc, "]}") catch return;
         }
         ws_buf.appendSlice(alloc, "]") catch return;
 
@@ -1494,7 +1536,7 @@ pub const Application = extern struct {
 
         const json = std.fmt.allocPrint(alloc,
             \\{{
-            \\  "version": 2,
+            \\  "version": 3,
             \\  "window_width": {d},
             \\  "window_height": {d},
             \\  "sidebar_width": {d},
@@ -1588,9 +1630,10 @@ pub const Application = extern struct {
 
         // Detect format version. Absent or 1 → v1 (flat string array).
         // Explicit 2 → v2 (array of objects with name/dir/tab_count).
+        // Explicit 3 → v3 (v2 + tabs[] array with per-tab title).
         const format_version: u32 = if (root.object.get("version")) |vv|
             switch (vv) {
-                .integer => |n| if (n >= 2) 2 else 1,
+                .integer => |n| @as(u32, @intCast(std.math.clamp(n, 1, 3))),
                 else => 1,
             }
         else
@@ -1606,16 +1649,16 @@ pub const Application = extern struct {
         // Reset counter so addWorkspaceWithDir assigns correct numbers below.
         priv.next_workspace_number = 1;
 
-        // Accumulate tab counts to pass to the window during Phase 2 tab creation.
-        // This list is transferred to restore_tab_counts (via toOwnedSlice) at the
-        // end of the function so no defer-free is needed here.
+        // Accumulate tab counts and titles to pass to the window during
+        // Phase 2 tab creation.
         var tab_counts = std.ArrayListUnmanaged(u32){};
+        var tab_titles_per_ws = std.ArrayListUnmanaged([]const [:0]const u8){};
 
         // Re-populate from saved data.
         for (ws_arr) |item| {
-            // Extract name, dir, and tab_count depending on format version.
+            // Extract name, dir, and tab info depending on format version.
             const name_str: []const u8 = blk: {
-                if (format_version == 2) {
+                if (format_version >= 2) {
                     switch (item) {
                         .object => |obj| {
                             const nv = obj.get("name") orelse continue;
@@ -1637,7 +1680,7 @@ pub const Application = extern struct {
             const home_fallback: []const u8 = std.posix.getenv("HOME") orelse "/tmp";
 
             const dir_str_raw: []const u8 = blk: {
-                if (format_version == 2) {
+                if (format_version >= 2) {
                     switch (item) {
                         .object => |obj| {
                             if (obj.get("dir")) |dv| {
@@ -1653,22 +1696,59 @@ pub const Application = extern struct {
                 break :blk home_fallback;
             };
 
-            const tab_count: u32 = blk: {
-                if (format_version == 2) {
-                    switch (item) {
-                        .object => |obj| {
-                            if (obj.get("tab_count")) |tcv| {
-                                switch (tcv) {
-                                    .integer => |n| if (n > 0 and n <= std.math.maxInt(u32)) break :blk @as(u32, @intCast(n)),
-                                    else => {},
-                                }
+            // v3: extract tab count and titles from "tabs" array.
+            // v2: extract tab_count from "tab_count" field.
+            // v1: default to 1 tab.
+            var tab_count: u32 = 1;
+            var tab_title_list = std.ArrayListUnmanaged([:0]const u8){};
+            if (format_version >= 3) {
+                switch (item) {
+                    .object => |obj| {
+                        if (obj.get("tabs")) |tabs_val| {
+                            switch (tabs_val) {
+                                .array => |tabs_arr| {
+                                    tab_count = @intCast(tabs_arr.items.len);
+                                    if (tab_count == 0) tab_count = 1;
+                                    for (tabs_arr.items) |tab_item| {
+                                        switch (tab_item) {
+                                            .object => |tab_obj| {
+                                                if (tab_obj.get("title")) |tv| {
+                                                    switch (tv) {
+                                                        .string => |s| {
+                                                            const t = alloc.dupeZ(u8, s) catch continue;
+                                                            tab_title_list.append(alloc, t) catch {
+                                                                alloc.free(t);
+                                                            };
+                                                        },
+                                                        else => {},
+                                                    }
+                                                }
+                                            },
+                                            else => {},
+                                        }
+                                    }
+                                },
+                                else => {},
                             }
-                        },
-                        else => {},
-                    }
+                        }
+                    },
+                    else => {},
                 }
-                break :blk 1;
-            };
+            } else if (format_version == 2) {
+                switch (item) {
+                    .object => |obj| {
+                        if (obj.get("tab_count")) |tcv| {
+                            switch (tcv) {
+                                .integer => |n| if (n > 0 and n <= std.math.maxInt(u32)) {
+                                    tab_count = @as(u32, @intCast(n));
+                                },
+                                else => {},
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
 
             const name: [:0]const u8 = alloc.dupeZ(u8, name_str) catch {
                 log.warn("session restore: OOM allocating workspace name", .{});
@@ -1705,8 +1785,15 @@ pub const Application = extern struct {
                 log.warn("session restore: OOM appending workspace tab_view", .{});
                 continue;
             };
-            // Non-fatal if tab_count tracking fails; window will fall back to 1 tab.
+            // Non-fatal if tab_count/title tracking fails; window will fall back to defaults.
             tab_counts.append(alloc, tab_count) catch {};
+            // Store the collected tab titles (may be empty for v1/v2).
+            const owned_titles = tab_title_list.toOwnedSlice(alloc) catch blk: {
+                for (tab_title_list.items) |t| alloc.free(t);
+                tab_title_list.deinit(alloc);
+                break :blk &[_][:0]const u8{};
+            };
+            tab_titles_per_ws.append(alloc, owned_titles) catch {};
             priv.next_workspace_number += 1;
         }
 
@@ -1721,10 +1808,27 @@ pub const Application = extern struct {
         // Update next_workspace_number to avoid collisions.
         priv.next_workspace_number = @as(u32, @intCast(priv.workspace_names.items.len)) + 1;
 
-        // Store tab counts for Phase 2 (consumed in initAndShowWindow).
+        // Store tab counts and titles for Phase 2 (consumed in initAndShowWindow).
         if (priv.restore_tab_counts) |old| alloc.free(old);
         priv.restore_tab_counts = tab_counts.toOwnedSlice(alloc) catch blk: {
             tab_counts.deinit(alloc);
+            break :blk null;
+        };
+
+        // Store tab titles for Phase 2.
+        if (priv.restore_tab_titles) |old| {
+            for (old) |titles| {
+                for (titles) |t| alloc.free(t);
+                alloc.free(titles);
+            }
+            alloc.free(old);
+        }
+        priv.restore_tab_titles = tab_titles_per_ws.toOwnedSlice(alloc) catch blk: {
+            for (tab_titles_per_ws.items) |titles| {
+                for (titles) |t| alloc.free(t);
+                alloc.free(titles);
+            }
+            tab_titles_per_ws.deinit(alloc);
             break :blk null;
         };
 
@@ -2006,7 +2110,7 @@ pub const Application = extern struct {
 
     /// Run the application. This is a replacement for `gio.Application.run`
     /// because we want more tight control over our event loop so we can
-    /// integrate it with libghostty.
+    /// integrate it with libtermplex.
     pub fn run(self: *Self) !void {
         // Based on the actual `gio.Application.run` implementation:
         // https://github.com/GNOME/glib/blob/a8e8b742e7926e33eb635a8edceac74cf239d6ed/gio/gapplication.c#L2533
@@ -2050,7 +2154,7 @@ pub const Application = extern struct {
 
         // This just calls the `activate` signal but its part of the normal startup
         // routine so we just call it, but only if the config allows it (this allows
-        // for launching Ghostty in the "background" without immediately opening
+        // for launching Termplex in the "background" without immediately opening
         // a window).
         //
         // https://gitlab.gnome.org/GNOME/glib/-/blob/bd2ccc2f69ecfd78ca3f34ab59e42e2b462bad65/gio/gapplication.c#L2302
@@ -2081,7 +2185,7 @@ pub const Application = extern struct {
         while (priv.running) {
             _ = glib.MainContext.iteration(ctx, 1);
 
-            // Tick the core Ghostty terminal app
+            // Tick the core Termplex terminal app
             try priv.core_app.tick(priv.rt_app);
 
             // Check if we must quit based on the current state.
@@ -2468,7 +2572,7 @@ pub const Application = extern struct {
         const headerbar_foreground = config.@"window-titlebar-foreground" orelse config.foreground;
 
         switch (window_theme) {
-            .ghostty => try writer.print(
+            .termplex => try writer.print(
                 \\windowhandle {{
                 \\  background-color: rgb({d},{d},{d});
                 \\  color: rgb({d},{d},{d});
@@ -2559,19 +2663,19 @@ pub const Application = extern struct {
         );
 
         switch (window_theme) {
-            .ghostty => try writer.print(
+            .termplex => try writer.print(
                 \\:root {{
-                \\  --ghostty-fg: rgb({d},{d},{d});
-                \\  --ghostty-bg: rgb({d},{d},{d});
-                \\  --headerbar-fg-color: var(--ghostty-fg);
-                \\  --headerbar-bg-color: var(--ghostty-bg);
+                \\  --termplex-fg: rgb({d},{d},{d});
+                \\  --termplex-bg: rgb({d},{d},{d});
+                \\  --headerbar-fg-color: var(--termplex-fg);
+                \\  --headerbar-bg-color: var(--termplex-bg);
                 \\  --headerbar-backdrop-color: oklab(from var(--headerbar-bg-color) calc(l * 0.9) a b / alpha);
-                \\  --overview-fg-color: var(--ghostty-fg);
-                \\  --overview-bg-color: var(--ghostty-bg);
-                \\  --popover-fg-color: var(--ghostty-fg);
-                \\  --popover-bg-color: var(--ghostty-bg);
-                \\  --window-fg-color: var(--ghostty-fg);
-                \\  --window-bg-color: var(--ghostty-bg);
+                \\  --overview-fg-color: var(--termplex-fg);
+                \\  --overview-bg-color: var(--termplex-bg);
+                \\  --popover-fg-color: var(--termplex-fg);
+                \\  --popover-bg-color: var(--termplex-bg);
+                \\  --window-fg-color: var(--termplex-fg);
+                \\  --window-bg-color: var(--termplex-bg);
                 \\}}
                 \\windowhandle {{
                 \\  background-color: var(--headerbar-bg-color);
@@ -2707,7 +2811,7 @@ pub const Application = extern struct {
         const gtk_app = self.as(gtk.Application);
 
         // Ctrl+Q → quit (ensures the shortcut always works regardless of
-        // whether it is also bound via the Ghostty keybind system).
+        // whether it is also bound via the Termplex keybind system).
         const accels_quit = [_:null]?[*:0]const u8{"<Control>q"};
         gtk_app.setAccelsForAction("app.quit", &accels_quit);
 
@@ -2847,7 +2951,7 @@ pub const Application = extern struct {
     }
 
     //---------------------------------------------------------------
-    // Libghostty Callbacks
+    // Libtermplex Callbacks
 
     pub fn wakeup(self: *Self) void {
         _ = self;
@@ -2928,16 +3032,11 @@ pub const Application = extern struct {
         const config = priv.config.get();
 
         // Setup our initial light/dark
+        // Termplex brand is dark-native, so default to dark mode
+        // unless the user explicitly requests light.
         const style = self.as(adw.Application).getStyleManager();
         style.setColorScheme(switch (config.@"window-theme") {
-            .auto, .ghostty => auto: {
-                const lum = config.background.toTerminalRGB().perceivedLuminance();
-                break :auto if (lum > 0.5)
-                    .prefer_light
-                else
-                    .prefer_dark;
-            },
-            .system => .prefer_light,
+            .auto, .termplex, .system => .force_dark,
             .dark => .force_dark,
             .light => .force_light,
         });
@@ -2952,7 +3051,7 @@ pub const Application = extern struct {
         );
 
         // Do an initial color scheme sync. This is idempotent and does nothing
-        // if our current theme matches what libghostty has so its safe to
+        // if our current theme matches what libtermplex has so its safe to
         // call.
         handleStyleManagerDark(style, undefined, self);
     }
@@ -3396,7 +3495,7 @@ pub const Application = extern struct {
         // Send a message through the core app mailbox rather than presenting the
         // surface directly so that it can validate that the surface pointer is
         // valid. We could get an invalid pointer if a desktop notification outlives
-        // a Ghostty instance and a new one starts up, or there are multiple Ghostty
+        // a Termplex instance and a new one starts up, or there are multiple Termplex
         // instances running.
         _ = self.core().mailbox.push(
             .{
@@ -3428,9 +3527,9 @@ pub const Application = extern struct {
             {
                 const c = @cImport({
                     // generated header files
-                    @cInclude("ghostty_resources.h");
+                    @cInclude("termplex_resources.h");
                 });
-                if (c.ghostty_get_resource()) |ptr| {
+                if (c.termplex_get_resource()) |ptr| {
                     gio.resourcesRegister(@ptrCast(@alignCast(ptr)));
                 } else {
                     // If we fail to load resources then things will
@@ -3525,7 +3624,7 @@ const Action = struct {
 
         // Set a default title if we don't already have one
         const t = switch (n.title.len) {
-            0 => "Ghostty",
+            0 => "Termplex",
             else => n.title,
         };
 
@@ -3533,7 +3632,7 @@ const Action = struct {
         defer notification.unref();
         notification.setBody(n.body);
 
-        const icon = gio.ThemedIcon.new("com.mitchellh.ghostty");
+        const icon = gio.ThemedIcon.new("com.termplex.app");
         defer icon.unref();
         notification.setIcon(icon.as(gio.Icon));
         notification.setDefaultActionAndTargetValue(
@@ -3669,7 +3768,7 @@ const Action = struct {
         if (gtk_window.isActive() != 0) return false;
         // If it is hidden, skip it.
         if (gtk_window.as(gtk.Widget).isVisible() == 0) return false;
-        // If it isn't a Ghostty window, skip it.
+        // If it isn't a Termplex window, skip it.
         const window = gobject.ext.cast(
             Window,
             gtk_window,
@@ -3864,17 +3963,24 @@ const Action = struct {
         // Phase 2 session restore: if tab counts are pending, create tabs for
         // all workspaces now and skip the default single-tab creation.
         if (self.getRestoreTabCounts()) |tab_counts| {
+            const tab_titles = self.getRestoreTabTitles();
             const active_ws = self.activeWorkspaceIndex();
             for (tab_counts, 0..) |count, ws_idx| {
                 const ws_index: u32 = @intCast(ws_idx);
                 const ws_dir = self.workspaceDir(ws_index);
                 const n: u32 = if (count > 0) count else 1;
+                const titles: []const [:0]const u8 = if (tab_titles) |t|
+                    (if (ws_idx < t.len) t[ws_idx] else &[_][:0]const u8{})
+                else
+                    &[_][:0]const u8{};
                 if (ws_idx == active_ws) {
                     // Active workspace: create tabs via the window's newTab path.
                     var i: u32 = 0;
                     while (i < n) : (i += 1) {
+                        const title: ?[:0]const u8 = if (i < titles.len) titles[i] else null;
                         win.newTabForWindow(null, .{
                             .working_directory = ws_dir,
+                            .title = title,
                         });
                     }
                 } else {
@@ -3884,10 +3990,19 @@ const Action = struct {
                         while (i < n) : (i += 1) {
                             win.createTabInView(tv, ws_dir);
                         }
+                        // Apply saved titles to the pages in this TabView.
+                        var j: c_int = 0;
+                        while (j < tv.getNPages()) : (j += 1) {
+                            const idx: usize = @intCast(j);
+                            if (idx < titles.len) {
+                                tv.getNthPage(j).setTitle(titles[idx]);
+                            }
+                        }
                     }
                 }
             }
             self.clearRestoreTabCounts();
+            self.clearRestoreTabTitles();
         } else {
             // Normal startup: create a single initial tab.
             win.newTabForWindow(parent, .{
@@ -4438,7 +4553,7 @@ fn setGtkEnv(config: *const CoreConfig) error{NoSpaceLeft}!void {
     var gdk_debug: struct {
         /// output OpenGL debug information
         opengl: bool = false,
-        /// disable GLES, Ghostty can't use GLES
+        /// disable GLES, Termplex can't use GLES
         @"gl-disable-gles": bool = false,
         // GTK's new renderer can cause blurry font when using fractional scaling.
         @"gl-no-fractional": bool = false,
@@ -4493,7 +4608,7 @@ fn setGtkEnv(config: *const CoreConfig) error{NoSpaceLeft}!void {
             break :environment;
         }
 
-        // Versions prior to 4.14 are a bit of an unknown for Ghostty. It
+        // Versions prior to 4.14 are a bit of an unknown for Termplex. It
         // is an environment that isn't tested well and we don't have a
         // good understanding of what we may need to do.
         gdk_debug.@"vulkan-disable" = true;

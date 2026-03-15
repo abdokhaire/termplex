@@ -18,6 +18,15 @@
   border-right: 1px solid #243447;
 }
 
+.termplex-sidebar list,
+.termplex-sidebar list row {
+  background-color: transparent;
+}
+
+.termplex-sidebar list row:selected {
+  background-color: rgba(0, 212, 255, 0.06);
+}
+
 .termplex-sidebar-active {
   background-color: #00d4ff;
   min-width: 3px;

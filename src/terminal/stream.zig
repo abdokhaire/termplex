@@ -230,7 +230,7 @@ pub const Action = union(Key) {
     const c_union = lib.TaggedUnion(
         lib_target,
         @This(),
-        // TODO: Before shipping an ABI-compatible libghostty, verify this.
+        // TODO: Before shipping an ABI-compatible libtermplex, verify this.
         // This was just arbitrarily chosen for now.
         [16]u64,
     );

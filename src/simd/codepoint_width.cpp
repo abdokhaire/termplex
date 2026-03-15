@@ -8,7 +8,7 @@
 #include <cassert>
 
 HWY_BEFORE_NAMESPACE();
-namespace ghostty {
+namespace termplex {
 namespace HWY_NAMESPACE {
 
 namespace hn = hwy::HWY_NAMESPACE;
@@ -460,13 +460,13 @@ int8_t CodepointWidth(uint32_t input) {
 }
 
 }  // namespace HWY_NAMESPACE
-}  // namespace ghostty
+}  // namespace termplex
 HWY_AFTER_NAMESPACE();
 
 // HWY_ONCE is true for only one of the target passes
 #if HWY_ONCE
 
-namespace ghostty {
+namespace termplex {
 
 HWY_EXPORT(CodepointWidth);
 
@@ -474,12 +474,12 @@ int8_t CodepointWidth(uint32_t cp) {
   return HWY_DYNAMIC_DISPATCH(CodepointWidth)(cp);
 }
 
-}  // namespace ghostty
+}  // namespace termplex
 
 extern "C" {
 
-int8_t ghostty_simd_codepoint_width(uint32_t cp) {
-  return ghostty::CodepointWidth(cp);
+int8_t termplex_simd_codepoint_width(uint32_t cp) {
+  return termplex::CodepointWidth(cp);
 }
 
 }  // extern "C"

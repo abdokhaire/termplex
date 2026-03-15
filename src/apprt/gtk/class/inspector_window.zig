@@ -13,15 +13,15 @@ const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const InspectorWidget = @import("inspector_widget.zig").InspectorWidget;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
-const log = std.log.scoped(.gtk_ghostty_inspector_window);
+const log = std.log.scoped(.gtk_termplex_inspector_window);
 
-/// Window for displaying the Ghostty inspector.
+/// Window for displaying the Termplex inspector.
 pub const InspectorWindow = extern struct {
     const Self = @This();
     parent_instance: Parent,
     pub const Parent = adw.ApplicationWindow;
     pub const getGObjectType = gobject.ext.defineClass(Self, .{
-        .name = "GhosttyInspectorWindow",
+        .name = "TermplexInspectorWindow",
         .instanceInit = &init,
         .classInit = &Class.init,
         .parent_class = &Class.parent,

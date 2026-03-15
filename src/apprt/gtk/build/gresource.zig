@@ -1,15 +1,15 @@
 //! This file contains a binary helper that builds our gresource XML
 //! file that we can then use with `glib-compile-resources`.
 //!
-//! This binary is expected to be run from the Ghostty source root.
+//! This binary is expected to be run from the Termplex source root.
 //! Litmus test: `src/apprt/gtk` should exist relative to the pwd.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 /// Prefix/appid for the gresource file.
-pub const prefix = "/com/mitchellh/ghostty";
-pub const app_id = "com.mitchellh.ghostty";
+pub const prefix = "/com/mitchellh/termplex";
+pub const app_id = "com.termplex.app";
 
 /// The path to the Blueprint files. The folder structure is expected to be
 /// `{version}/{name}.blp` where `version` is the major and minor

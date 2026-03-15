@@ -35,7 +35,7 @@ pub const Mode = enum {
     /// uucode implementation
     uucode,
 
-    /// Ghostty's table-based approach.
+    /// Termplex's table-based approach.
     table,
 };
 

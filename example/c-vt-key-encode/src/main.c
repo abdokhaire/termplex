@@ -2,23 +2,23 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
-#include <ghostty/vt.h>
+#include <termplex/vt.h>
 
 int main() {
-  GhosttyKeyEncoder encoder;
-  GhosttyResult result = ghostty_key_encoder_new(NULL, &encoder);
-  assert(result == GHOSTTY_SUCCESS);
+  TermplexKeyEncoder encoder;
+  TermplexResult result = termplex_key_encoder_new(NULL, &encoder);
+  assert(result == TERMPLEX_SUCCESS);
 
   // Set kitty flags with all features enabled
-  ghostty_key_encoder_setopt(encoder, GHOSTTY_KEY_ENCODER_OPT_KITTY_FLAGS, &(uint8_t){GHOSTTY_KITTY_KEY_ALL});
+  termplex_key_encoder_setopt(encoder, TERMPLEX_KEY_ENCODER_OPT_KITTY_FLAGS, &(uint8_t){TERMPLEX_KITTY_KEY_ALL});
 
   // Create key event
-  GhosttyKeyEvent event;
-  result = ghostty_key_event_new(NULL, &event);
-  assert(result == GHOSTTY_SUCCESS);
-  ghostty_key_event_set_action(event, GHOSTTY_KEY_ACTION_RELEASE);
-  ghostty_key_event_set_key(event, GHOSTTY_KEY_CONTROL_LEFT);
-  ghostty_key_event_set_mods(event, GHOSTTY_MODS_CTRL);
+  TermplexKeyEvent event;
+  result = termplex_key_event_new(NULL, &event);
+  assert(result == TERMPLEX_SUCCESS);
+  termplex_key_event_set_action(event, TERMPLEX_KEY_ACTION_RELEASE);
+  termplex_key_event_set_key(event, TERMPLEX_KEY_CONTROL_LEFT);
+  termplex_key_event_set_mods(event, TERMPLEX_MODS_CTRL);
   printf("Encoding event: left ctrl release with all Kitty flags enabled\n");
 
   // Optionally, encode with null buffer to get required size. You can
@@ -26,16 +26,16 @@ int main() {
   // If there isn't enoug hspace, the function will return an out of memory
   // error.
   size_t required = 0;
-  result = ghostty_key_encoder_encode(encoder, event, NULL, 0, &required);
-  assert(result == GHOSTTY_OUT_OF_MEMORY);
+  result = termplex_key_encoder_encode(encoder, event, NULL, 0, &required);
+  assert(result == TERMPLEX_OUT_OF_MEMORY);
   printf("Required buffer size: %zu bytes\n", required);
 
   // Encode the key event. We don't use our required size above because
   // that was just an example; we know 128 bytes is enough.
   char buf[128];
   size_t written = 0;
-  result = ghostty_key_encoder_encode(encoder, event, buf, sizeof(buf), &written);
-  assert(result == GHOSTTY_SUCCESS);
+  result = termplex_key_encoder_encode(encoder, event, buf, sizeof(buf), &written);
+  assert(result == TERMPLEX_SUCCESS);
   printf("Encoded %zu bytes\n", written);
 
   // Print the encoded sequence (hex and string)
@@ -53,7 +53,7 @@ int main() {
   }
   printf("\n");
 
-  ghostty_key_event_free(event);
-  ghostty_key_encoder_free(encoder);
+  termplex_key_event_free(event);
+  termplex_key_encoder_free(encoder);
   return 0;
 }

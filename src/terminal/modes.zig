@@ -177,14 +177,14 @@ const ModeEntry = struct {
     /// True if this is an ANSI mode, false if its a DEC mode (?-prefixed).
     ansi: bool = false,
 
-    /// If true, this mode is disabled and Ghostty will not allow it to be
-    /// set or queried. The mode enum still has it, allowing Ghostty developers
+    /// If true, this mode is disabled and Termplex will not allow it to be
+    /// set or queried. The mode enum still has it, allowing Termplex developers
     /// to develop a mode without exposing it to real users.
     disabled: bool = false,
 };
 
 /// The full list of available entries. For documentation see how
-/// they're used within Ghostty or google their values. It is not
+/// they're used within Termplex or google their values. It is not
 /// valuable to redocument them all here.
 const entries: []const ModeEntry = &.{
     // ANSI

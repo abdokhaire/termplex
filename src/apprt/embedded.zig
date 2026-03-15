@@ -1,7 +1,7 @@
-//! Application runtime for the embedded version of Ghostty. The embedded
-//! version is when Ghostty is embedded within a parent host application,
+//! Application runtime for the embedded version of Termplex. The embedded
+//! version is when Termplex is embedded within a parent host application,
 //! rather than owning the application lifecycle itself. This is used for
-//! example for the macOS build of Ghostty so that we can use a native
+//! example for the macOS build of Termplex so that we can use a native
 //! Swift+XCode-based application.
 
 const std = @import("std");
@@ -30,7 +30,7 @@ pub const App = struct {
     /// environments, the options are extern so that we can expose it
     /// directly to a C callconv and not pay for any translation costs.
     ///
-    /// C type: ghostty_runtime_config_s
+    /// C type: termplex_runtime_config_s
     pub const Options = extern struct {
         /// These are just aliases to make the function signatures below
         /// more obvious what values will be sent.
@@ -79,8 +79,8 @@ pub const App = struct {
         close_surface: ?*const fn (SurfaceUD, bool) callconv(.c) void = null,
     };
 
-    /// This is the key event sent for ghostty_surface_key and
-    /// ghostty_app_key.
+    /// This is the key event sent for termplex_surface_key and
+    /// termplex_app_key.
     pub const KeyEvent = struct {
         action: input.Action,
         mods: input.Mods,
@@ -90,7 +90,7 @@ pub const App = struct {
         unshifted_codepoint: u32,
         composing: bool,
 
-        /// Convert a libghostty key event into a core key event.
+        /// Convert a libtermplex key event into a core key event.
         fn core(self: KeyEvent) ?input.KeyEvent {
             const text: []const u8 = if (self.text) |v| v else "";
             const unshifted_codepoint: u21 = std.math.cast(
@@ -185,7 +185,7 @@ pub const App = struct {
         const input_event: input.KeyEvent = event.core() orelse
             return false;
 
-        // Invoke the core Ghostty logic to handle this input.
+        // Invoke the core Termplex logic to handle this input.
         const effect: CoreSurface.InputEffect = switch (target) {
             .app => if (self.core_app.keyEvent(
                 self,
@@ -321,11 +321,11 @@ pub const App = struct {
         }
     }
 
-    /// Send the given IPC to a running Ghostty. Returns `true` if the action was
+    /// Send the given IPC to a running Termplex. Returns `true` if the action was
     /// able to be performed, `false` otherwise.
     ///
     /// Note that this is a static function. Since this is called from a CLI app (or
-    /// some other process that is not Ghostty) there is no full-featured apprt App
+    /// some other process that is not Termplex) there is no full-featured apprt App
     /// to use.
     pub fn performIpc(
         _: Allocator,
@@ -339,12 +339,12 @@ pub const App = struct {
     }
 };
 
-/// Platform-specific configuration for libghostty.
+/// Platform-specific configuration for libtermplex.
 pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
 
-    // If our build target for libghostty is not darwin then we do
+    // If our build target for libtermplex is not darwin then we do
     // not include macos support at all.
     pub const MacOS = if (builtin.target.os.tag.isDarwin()) struct {
         /// The view to render the surface on.
@@ -443,7 +443,7 @@ pub const Surface = struct {
         /// since this is used for scripting.
         ///
         /// This command always run in a shell (e.g. via `/bin/sh -c`),
-        /// despite Ghostty allowing directly executed commands via config.
+        /// despite Termplex allowing directly executed commands via config.
         /// This is a legacy thing and we should probably change it in the
         /// future once we have a concrete use case.
         command: ?[*:0]const u8 = null,
@@ -965,12 +965,12 @@ pub const Surface = struct {
                 env.remove("XPC_SERVICE_NAME");
             }
 
-            // Remove this so that running `ghostty` within Ghostty works.
-            env.remove("GHOSTTY_MAC_LAUNCH_SOURCE");
+            // Remove this so that running `termplex` within Termplex works.
+            env.remove("TERMPLEX_MAC_LAUNCH_SOURCE");
 
             // If we were launched from the desktop then we want to
             // remove the LANGUAGE env var so that we don't inherit
-            // our translation settings for Ghostty. If we aren't from
+            // our translation settings for Termplex. If we aren't from
             // the desktop then we didn't set our LANGUAGE var so we
             // don't need to remove it.
             if (internal_os.launchedFromDesktop()) env.remove("LANGUAGE");
@@ -1015,7 +1015,7 @@ pub const Inspector = struct {
         errdefer cimgui.c.ImGui_DestroyContext(ig_ctx);
         cimgui.c.ImGui_SetCurrentContext(ig_ctx);
         const io: *cimgui.c.ImGuiIO = cimgui.c.ImGui_GetIO();
-        io.BackendPlatformName = "ghostty_embedded";
+        io.BackendPlatformName = "termplex_embedded";
 
         // Setup our core inspector
         CoreInspector.setup();
@@ -1281,13 +1281,13 @@ pub const CAPI = struct {
         cell_height_px: u32,
     };
 
-    // ghostty_clipboard_content_s
+    // termplex_clipboard_content_s
     const ClipboardContent = extern struct {
         mime: [*:0]const u8,
         data: [*:0]const u8,
     };
 
-    // ghostty_text_s
+    // termplex_text_s
     const Text = extern struct {
         tl_px_x: f64,
         tl_px_y: f64,
@@ -1303,7 +1303,7 @@ pub const CAPI = struct {
         }
     };
 
-    // ghostty_point_s
+    // termplex_point_s
     const Point = extern struct {
         tag: Tag,
         coord_tag: CoordTag,
@@ -1365,7 +1365,7 @@ pub const CAPI = struct {
         }
     };
 
-    // ghostty_selection_s
+    // termplex_selection_s
     const Selection = extern struct {
         tl: Point,
         br: Point,
@@ -1394,7 +1394,7 @@ pub const CAPI = struct {
     }
 
     /// Create a new app.
-    export fn ghostty_app_new(
+    export fn termplex_app_new(
         opts: *const apprt.runtime.App.Options,
         config: *const Config,
     ) ?*App {
@@ -1422,18 +1422,18 @@ pub const CAPI = struct {
 
     /// Tick the event loop. This should be called whenever the "wakeup"
     /// callback is invoked for the runtime.
-    export fn ghostty_app_tick(v: *App) void {
+    export fn termplex_app_tick(v: *App) void {
         v.core_app.tick(v) catch |err| {
             log.err("error app tick err={}", .{err});
         };
     }
 
     /// Return the userdata associated with the app.
-    export fn ghostty_app_userdata(v: *App) ?*anyopaque {
+    export fn termplex_app_userdata(v: *App) ?*anyopaque {
         return v.opts.userdata;
     }
 
-    export fn ghostty_app_free(v: *App) void {
+    export fn termplex_app_free(v: *App) void {
         const core_app = v.core_app;
         v.terminate();
         global.alloc.destroy(v);
@@ -1441,7 +1441,7 @@ pub const CAPI = struct {
     }
 
     /// Update the focused state of the app.
-    export fn ghostty_app_set_focus(
+    export fn termplex_app_set_focus(
         app: *App,
         focused: bool,
     ) void {
@@ -1451,7 +1451,7 @@ pub const CAPI = struct {
     /// Notify the app of a global keypress capture. This will return
     /// true if the key was captured by the app, in which case the caller
     /// should not process the key.
-    export fn ghostty_app_key(
+    export fn termplex_app_key(
         app: *App,
         event: KeyEvent,
     ) bool {
@@ -1465,7 +1465,7 @@ pub const CAPI = struct {
     /// if it were sent to the surface right now. The "right now"
     /// is important because things like trigger sequences are only
     /// valid until the next key event.
-    export fn ghostty_app_key_is_binding(
+    export fn termplex_app_key_is_binding(
         app: *App,
         event: KeyEvent,
     ) bool {
@@ -1479,7 +1479,7 @@ pub const CAPI = struct {
 
     /// Notify the app that the keyboard was changed. This causes the
     /// keyboard layout to be reloaded from the OS.
-    export fn ghostty_app_keyboard_changed(v: *App) void {
+    export fn termplex_app_keyboard_changed(v: *App) void {
         v.reloadKeymap() catch |err| {
             log.err("error reloading keyboard map err={}", .{err});
             return;
@@ -1487,7 +1487,7 @@ pub const CAPI = struct {
     }
 
     /// Open the configuration.
-    export fn ghostty_app_open_config(v: *App) void {
+    export fn termplex_app_open_config(v: *App) void {
         _ = v.performAction(.app, .open_config, {}) catch |err| {
             log.err("error reloading config err={}", .{err});
             return;
@@ -1496,7 +1496,7 @@ pub const CAPI = struct {
 
     /// Update the configuration to the provided config. This will propagate
     /// to all surfaces as well.
-    export fn ghostty_app_update_config(
+    export fn termplex_app_update_config(
         v: *App,
         config: *const Config,
     ) void {
@@ -1507,20 +1507,20 @@ pub const CAPI = struct {
     }
 
     /// Returns true if the app needs to confirm quitting.
-    export fn ghostty_app_needs_confirm_quit(v: *App) bool {
+    export fn termplex_app_needs_confirm_quit(v: *App) bool {
         return v.core_app.needsConfirmQuit();
     }
 
     /// Returns true if the app has global keybinds.
-    export fn ghostty_app_has_global_keybinds(v: *App) bool {
+    export fn termplex_app_has_global_keybinds(v: *App) bool {
         return v.hasGlobalKeybinds();
     }
 
     /// Update the color scheme of the app.
-    export fn ghostty_app_set_color_scheme(v: *App, scheme_raw: c_int) void {
+    export fn termplex_app_set_color_scheme(v: *App, scheme_raw: c_int) void {
         const scheme = std.meta.intToEnum(apprt.ColorScheme, scheme_raw) catch {
             log.warn(
-                "invalid color scheme to ghostty_surface_set_color_scheme value={}",
+                "invalid color scheme to termplex_surface_set_color_scheme value={}",
                 .{scheme_raw},
             );
             return;
@@ -1533,12 +1533,12 @@ pub const CAPI = struct {
     }
 
     /// Returns initial surface options.
-    export fn ghostty_surface_config_new() apprt.Surface.Options {
+    export fn termplex_surface_config_new() apprt.Surface.Options {
         return .{};
     }
 
     /// Create a new surface as part of an app.
-    export fn ghostty_surface_new(
+    export fn termplex_surface_new(
         app: *App,
         opts: *const apprt.Surface.Options,
     ) ?*Surface {
@@ -1555,22 +1555,22 @@ pub const CAPI = struct {
         return try app.newSurface(opts.*);
     }
 
-    export fn ghostty_surface_free(ptr: *Surface) void {
+    export fn termplex_surface_free(ptr: *Surface) void {
         ptr.app.closeSurface(ptr);
     }
 
     /// Returns the userdata associated with the surface.
-    export fn ghostty_surface_userdata(surface: *Surface) ?*anyopaque {
+    export fn termplex_surface_userdata(surface: *Surface) ?*anyopaque {
         return surface.userdata;
     }
 
     /// Returns the app associated with a surface.
-    export fn ghostty_surface_app(surface: *Surface) *App {
+    export fn termplex_surface_app(surface: *Surface) *App {
         return surface.app;
     }
 
     /// Returns the config to use for surfaces that inherit from this one.
-    export fn ghostty_surface_inherited_config(
+    export fn termplex_surface_inherited_config(
         surface: *Surface,
         source: apprt.surface.NewSurfaceContext,
     ) Surface.Options {
@@ -1578,7 +1578,7 @@ pub const CAPI = struct {
     }
 
     /// Update the configuration to the provided config for only this surface.
-    export fn ghostty_surface_update_config(
+    export fn termplex_surface_update_config(
         surface: *Surface,
         config: *const Config,
     ) void {
@@ -1589,23 +1589,23 @@ pub const CAPI = struct {
     }
 
     /// Returns true if the surface needs to confirm quitting.
-    export fn ghostty_surface_needs_confirm_quit(surface: *Surface) bool {
+    export fn termplex_surface_needs_confirm_quit(surface: *Surface) bool {
         return surface.core_surface.needsConfirmQuit();
     }
 
     /// Returns true if the surface process has exited.
-    export fn ghostty_surface_process_exited(surface: *Surface) bool {
+    export fn termplex_surface_process_exited(surface: *Surface) bool {
         return surface.core_surface.child_exited;
     }
 
     /// Returns true if the surface has a selection.
-    export fn ghostty_surface_has_selection(surface: *Surface) bool {
+    export fn termplex_surface_has_selection(surface: *Surface) bool {
         return surface.core_surface.hasSelection();
     }
 
-    /// Same as ghostty_surface_read_text but reads from the user selection,
+    /// Same as termplex_surface_read_text but reads from the user selection,
     /// if any.
-    export fn ghostty_surface_read_selection(
+    export fn termplex_surface_read_selection(
         surface: *Surface,
         result: *Text,
     ) bool {
@@ -1625,7 +1625,7 @@ pub const CAPI = struct {
     /// This is an expensive operation so it shouldn't be called too
     /// often. We recommend that callers cache the result and throttle
     /// calls to this function.
-    export fn ghostty_surface_read_text(
+    export fn termplex_surface_read_text(
         surface: *Surface,
         sel: Selection,
         result: *Text,
@@ -1675,29 +1675,29 @@ pub const CAPI = struct {
         return true;
     }
 
-    export fn ghostty_surface_free_text(ptr: *Text) void {
+    export fn termplex_surface_free_text(ptr: *Text) void {
         ptr.deinit();
     }
 
     /// Tell the surface that it needs to schedule a render
-    export fn ghostty_surface_refresh(surface: *Surface) void {
+    export fn termplex_surface_refresh(surface: *Surface) void {
         surface.refresh();
     }
 
     /// Tell the surface that it needs to schedule a render
     /// call as soon as possible (NOW if possible).
-    export fn ghostty_surface_draw(surface: *Surface) void {
+    export fn termplex_surface_draw(surface: *Surface) void {
         surface.draw();
     }
 
     /// Update the size of a surface. This will trigger resize notifications
     /// to the pty and the renderer.
-    export fn ghostty_surface_set_size(surface: *Surface, w: u32, h: u32) void {
+    export fn termplex_surface_set_size(surface: *Surface, w: u32, h: u32) void {
         surface.updateSize(w, h);
     }
 
     /// Return the size information a surface has.
-    export fn ghostty_surface_size(surface: *Surface) SurfaceSize {
+    export fn termplex_surface_size(surface: *Surface) SurfaceSize {
         const grid_size = surface.core_surface.size.grid();
         return .{
             .columns = grid_size.columns,
@@ -1710,10 +1710,10 @@ pub const CAPI = struct {
     }
 
     /// Update the color scheme of the surface.
-    export fn ghostty_surface_set_color_scheme(surface: *Surface, scheme_raw: c_int) void {
+    export fn termplex_surface_set_color_scheme(surface: *Surface, scheme_raw: c_int) void {
         const scheme = std.meta.intToEnum(apprt.ColorScheme, scheme_raw) catch {
             log.warn(
-                "invalid color scheme to ghostty_surface_set_color_scheme value={}",
+                "invalid color scheme to termplex_surface_set_color_scheme value={}",
                 .{scheme_raw},
             );
             return;
@@ -1723,17 +1723,17 @@ pub const CAPI = struct {
     }
 
     /// Update the content scale of the surface.
-    export fn ghostty_surface_set_content_scale(surface: *Surface, x: f64, y: f64) void {
+    export fn termplex_surface_set_content_scale(surface: *Surface, x: f64, y: f64) void {
         surface.updateContentScale(x, y);
     }
 
     /// Update the focused state of a surface.
-    export fn ghostty_surface_set_focus(surface: *Surface, focused: bool) void {
+    export fn termplex_surface_set_focus(surface: *Surface, focused: bool) void {
         surface.focusCallback(focused);
     }
 
     /// Update the occlusion state of a surface.
-    export fn ghostty_surface_set_occlusion(surface: *Surface, visible: bool) void {
+    export fn termplex_surface_set_occlusion(surface: *Surface, visible: bool) void {
         surface.occlusionCallback(visible);
     }
 
@@ -1741,7 +1741,7 @@ pub const CAPI = struct {
     /// `macos-option-as-alt`. The filtered mods should be used for
     /// key translation but should NOT be sent back via the `_key`
     /// function -- the original mods should be used for that.
-    export fn ghostty_surface_key_translation_mods(
+    export fn termplex_surface_key_translation_mods(
         surface: *Surface,
         mods_raw: c_int,
     ) c_int {
@@ -1759,7 +1759,7 @@ pub const CAPI = struct {
     /// Send this for raw keypresses (i.e. the keyDown event on macOS).
     /// This will handle the keymap translation and send the appropriate
     /// key and char events.
-    export fn ghostty_surface_key(
+    export fn termplex_surface_key(
         surface: *Surface,
         event: KeyEvent,
     ) bool {
@@ -1776,7 +1776,7 @@ pub const CAPI = struct {
     /// if it were sent to the surface right now. The "right now"
     /// is important because things like trigger sequences are only
     /// valid until the next key event.
-    export fn ghostty_surface_key_is_binding(
+    export fn termplex_surface_key_is_binding(
         surface: *Surface,
         event: KeyEvent,
         c_flags: ?*input.Binding.Flags.C,
@@ -1796,7 +1796,7 @@ pub const CAPI = struct {
     /// Send raw text to the terminal. This is treated like a paste
     /// so this isn't useful for sending escape sequences. For that,
     /// individual key input should be used.
-    export fn ghostty_surface_text(
+    export fn termplex_surface_text(
         surface: *Surface,
         ptr: [*]const u8,
         len: usize,
@@ -1806,7 +1806,7 @@ pub const CAPI = struct {
 
     /// Set the preedit text for the surface. This is used for IME
     /// composition. If the length is 0, then the preedit text is cleared.
-    export fn ghostty_surface_preedit(
+    export fn termplex_surface_preedit(
         surface: *Surface,
         ptr: [*]const u8,
         len: usize,
@@ -1816,12 +1816,12 @@ pub const CAPI = struct {
 
     /// Returns true if the surface currently has mouse capturing
     /// enabled.
-    export fn ghostty_surface_mouse_captured(surface: *Surface) bool {
+    export fn termplex_surface_mouse_captured(surface: *Surface) bool {
         return surface.core_surface.mouseCaptured();
     }
 
     /// Tell the surface that it needs to schedule a render
-    export fn ghostty_surface_mouse_button(
+    export fn termplex_surface_mouse_button(
         surface: *Surface,
         action: input.MouseButtonState,
         button: input.MouseButton,
@@ -1838,7 +1838,7 @@ pub const CAPI = struct {
     }
 
     /// Update the mouse position within the view.
-    export fn ghostty_surface_mouse_pos(
+    export fn termplex_surface_mouse_pos(
         surface: *Surface,
         x: f64,
         y: f64,
@@ -1854,7 +1854,7 @@ pub const CAPI = struct {
         );
     }
 
-    export fn ghostty_surface_mouse_scroll(
+    export fn termplex_surface_mouse_scroll(
         surface: *Surface,
         x: f64,
         y: f64,
@@ -1867,7 +1867,7 @@ pub const CAPI = struct {
         );
     }
 
-    export fn ghostty_surface_mouse_pressure(
+    export fn termplex_surface_mouse_pressure(
         surface: *Surface,
         stage_raw: u32,
         pressure: f64,
@@ -1886,7 +1886,7 @@ pub const CAPI = struct {
         surface.mousePressureCallback(stage, pressure);
     }
 
-    export fn ghostty_surface_ime_point(
+    export fn termplex_surface_ime_point(
         surface: *Surface,
         x: *f64,
         y: *f64,
@@ -1902,12 +1902,12 @@ pub const CAPI = struct {
 
     /// Request that the surface become closed. This will go through the
     /// normal trigger process that a close surface input binding would.
-    export fn ghostty_surface_request_close(ptr: *Surface) void {
+    export fn termplex_surface_request_close(ptr: *Surface) void {
         ptr.core_surface.close();
     }
 
     /// Request that the surface split in the given direction.
-    export fn ghostty_surface_split(ptr: *Surface, direction: apprt.action.SplitDirection) void {
+    export fn termplex_surface_split(ptr: *Surface, direction: apprt.action.SplitDirection) void {
         _ = ptr.app.performAction(
             .{ .surface = &ptr.core_surface },
             .new_split,
@@ -1919,7 +1919,7 @@ pub const CAPI = struct {
     }
 
     /// Focus on the next split (if any).
-    export fn ghostty_surface_split_focus(
+    export fn termplex_surface_split_focus(
         ptr: *Surface,
         direction: apprt.action.GotoSplit,
     ) void {
@@ -1937,7 +1937,7 @@ pub const CAPI = struct {
     /// direction. `direction` specifies which direction the split divider will
     /// move relative to the focused split. `amount` is a fractional value
     /// between 0 and 1 that specifies by how much the divider will move.
-    export fn ghostty_surface_split_resize(
+    export fn termplex_surface_split_resize(
         ptr: *Surface,
         direction: apprt.action.ResizeSplit.Direction,
         amount: u16,
@@ -1953,7 +1953,7 @@ pub const CAPI = struct {
     }
 
     /// Equalize the size of all splits in the current window.
-    export fn ghostty_surface_split_equalize(ptr: *Surface) void {
+    export fn termplex_surface_split_equalize(ptr: *Surface) void {
         _ = ptr.app.performAction(
             .{ .surface = &ptr.core_surface },
             .equalize_splits,
@@ -1965,7 +1965,7 @@ pub const CAPI = struct {
     }
 
     /// Invoke an action on the surface.
-    export fn ghostty_surface_binding_action(
+    export fn termplex_surface_binding_action(
         ptr: *Surface,
         action_ptr: [*]const u8,
         action_len: usize,
@@ -1985,7 +1985,7 @@ pub const CAPI = struct {
     /// Complete a clipboard read request started via the read callback.
     /// This can only be called once for a given request. Once it is called
     /// with a request the request pointer will be invalidated.
-    export fn ghostty_surface_complete_clipboard_request(
+    export fn termplex_surface_complete_clipboard_request(
         ptr: *Surface,
         str: [*:0]const u8,
         state: *apprt.ClipboardRequest,
@@ -1998,26 +1998,26 @@ pub const CAPI = struct {
         );
     }
 
-    export fn ghostty_surface_inspector(ptr: *Surface) ?*Inspector {
+    export fn termplex_surface_inspector(ptr: *Surface) ?*Inspector {
         return ptr.initInspector() catch |err| {
             log.err("error initializing inspector err={}", .{err});
             return null;
         };
     }
 
-    export fn ghostty_inspector_free(ptr: *Surface) void {
+    export fn termplex_inspector_free(ptr: *Surface) void {
         ptr.freeInspector();
     }
 
-    export fn ghostty_inspector_set_size(ptr: *Inspector, w: u32, h: u32) void {
+    export fn termplex_inspector_set_size(ptr: *Inspector, w: u32, h: u32) void {
         ptr.updateSize(w, h);
     }
 
-    export fn ghostty_inspector_set_content_scale(ptr: *Inspector, x: f64, y: f64) void {
+    export fn termplex_inspector_set_content_scale(ptr: *Inspector, x: f64, y: f64) void {
         ptr.updateContentScale(x, y);
     }
 
-    export fn ghostty_inspector_mouse_button(
+    export fn termplex_inspector_mouse_button(
         ptr: *Inspector,
         action: input.MouseButtonState,
         button: input.MouseButton,
@@ -2033,11 +2033,11 @@ pub const CAPI = struct {
         );
     }
 
-    export fn ghostty_inspector_mouse_pos(ptr: *Inspector, x: f64, y: f64) void {
+    export fn termplex_inspector_mouse_pos(ptr: *Inspector, x: f64, y: f64) void {
         ptr.cursorPosCallback(x, y);
     }
 
-    export fn ghostty_inspector_mouse_scroll(
+    export fn termplex_inspector_mouse_scroll(
         ptr: *Inspector,
         x: f64,
         y: f64,
@@ -2050,7 +2050,7 @@ pub const CAPI = struct {
         );
     }
 
-    export fn ghostty_inspector_key(
+    export fn termplex_inspector_key(
         ptr: *Inspector,
         action: input.Action,
         key: input.Key,
@@ -2069,14 +2069,14 @@ pub const CAPI = struct {
         };
     }
 
-    export fn ghostty_inspector_text(
+    export fn termplex_inspector_text(
         ptr: *Inspector,
         str: [*:0]const u8,
     ) void {
         ptr.textCallback(std.mem.sliceTo(str, 0));
     }
 
-    export fn ghostty_inspector_set_focus(ptr: *Inspector, focused: bool) void {
+    export fn termplex_inspector_set_focus(ptr: *Inspector, focused: bool) void {
         ptr.focusCallback(focused);
     }
 
@@ -2086,7 +2086,7 @@ pub const CAPI = struct {
     ///
     /// This uses an undocumented, non-public API because this is what
     /// every terminal appears to use, including Terminal.app.
-    export fn ghostty_set_window_background_blur(
+    export fn termplex_set_window_background_blur(
         app: *App,
         window: *anyopaque,
     ) void {
@@ -2106,13 +2106,13 @@ pub const CAPI = struct {
         );
     }
 
-    /// See ghostty_set_window_background_blur
+    /// See termplex_set_window_background_blur
     extern "c" fn CGSSetWindowBackgroundBlurRadius(*anyopaque, usize, c_int) i32;
     extern "c" fn CGSDefaultConnectionForThread() *anyopaque;
 
     // Darwin-only C APIs.
     const Darwin = struct {
-        export fn ghostty_surface_set_display_id(ptr: *Surface, display_id: u32) void {
+        export fn termplex_surface_set_display_id(ptr: *Surface, display_id: u32) void {
             const surface = &ptr.core_surface;
             _ = surface.renderer_thread.mailbox.push(
                 .{ .macos_display_id = display_id },
@@ -2125,7 +2125,7 @@ pub const CAPI = struct {
         /// highlighted text. This is always the primary font in use
         /// regardless of the selected text. If coretext is not in use
         /// then this will return nothing.
-        export fn ghostty_surface_quicklook_font(ptr: *Surface) ?*anyopaque {
+        export fn termplex_surface_quicklook_font(ptr: *Surface) ?*anyopaque {
             // For non-CoreText we just return null.
             if (comptime font.options.backend != .coretext) {
                 return null;
@@ -2171,7 +2171,7 @@ pub const CAPI = struct {
         /// info so that quicklook can be rendered.
         ///
         /// This does not modify the selection active on the surface (if any).
-        export fn ghostty_surface_quicklook_word(
+        export fn termplex_surface_quicklook_word(
             ptr: *Surface,
             result: *Text,
         ) bool {
@@ -2203,11 +2203,11 @@ pub const CAPI = struct {
             return readTextLocked(ptr, sel, result);
         }
 
-        export fn ghostty_inspector_metal_init(ptr: *Inspector, device: objc.c.id) bool {
+        export fn termplex_inspector_metal_init(ptr: *Inspector, device: objc.c.id) bool {
             return ptr.initMetal(.fromId(device));
         }
 
-        export fn ghostty_inspector_metal_render(
+        export fn termplex_inspector_metal_render(
             ptr: *Inspector,
             command_buffer: objc.c.id,
             descriptor: objc.c.id,
@@ -2221,7 +2221,7 @@ pub const CAPI = struct {
             };
         }
 
-        export fn ghostty_inspector_metal_shutdown(ptr: *Inspector) void {
+        export fn termplex_inspector_metal_shutdown(ptr: *Inspector) void {
             if (ptr.backend) |v| {
                 v.deinit();
                 ptr.backend = null;

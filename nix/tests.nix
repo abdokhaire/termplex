@@ -73,20 +73,20 @@
 
     security.pam.services.sshd.allowNullPassword = true;
 
-    users.groups.ghostty = {
+    users.groups.termplex = {
       gid = 1000;
     };
 
-    users.users.ghostty = {
+    users.users.termplex = {
       uid = 1000;
     };
 
     home-manager = {
       users = {
-        ghostty = {
+        termplex = {
           home = {
-            username = config.users.users.ghostty.name;
-            homeDirectory = config.users.users.ghostty.home;
+            username = config.users.users.termplex.name;
+            homeDirectory = config.users.users.termplex.home;
             stateVersion = nixos-version;
           };
           programs.ssh = {
@@ -140,29 +140,29 @@ in {
     name = "basic-version-check";
     nodes = {
       machine = {pkgs, ...}: {
-        users.groups.ghostty = {};
-        users.users.ghostty = {
+        users.groups.termplex = {};
+        users.users.termplex = {
           isNormalUser = true;
-          group = "ghostty";
+          group = "termplex";
           extraGroups = ["wheel"];
           hashedPassword = "";
           packages = [
-            pkgs.ghostty
+            pkgs.termplex
           ];
         };
       };
     };
     testScript = {...}: ''
-      machine.succeed("su - ghostty -c 'ghostty +version'")
+      machine.succeed("su - termplex -c 'termplex +version'")
     '';
   };
 
   basic-window-check-gnome = mkTestGnome {
     name = "basic-window-check-gnome";
     settings = {
-      home-manager.users.ghostty = {
+      home-manager.users.termplex = {
         xdg.configFile = {
-          "ghostty/config".text = ''
+          "termplex/config".text = ''
             background = ${pink_value}
           '';
         };
@@ -170,11 +170,11 @@ in {
     };
     ocr = true;
     testScript = {nodes, ...}: let
-      user = nodes.machine.users.users.ghostty;
+      user = nodes.machine.users.users.termplex;
       bus_path = "/run/user/${toString user.uid}/bus";
       bus = "DBUS_SESSION_BUS_ADDRESS=unix:path=${bus_path}";
       gdbus = "${bus} gdbus";
-      ghostty = "${bus} ghostty";
+      termplex = "${bus} termplex";
       su = command: "su - ${user.name} -c '${command}'";
       gseval = "call --session -d org.gnome.Shell -o /org/gnome/Shell -m org.gnome.Shell.Eval";
       wm_class = su "${gdbus} ${gseval} global.display.focus_window.wm_class";
@@ -192,9 +192,9 @@ in {
               check_for_pink() == False
           ), "Pink was present on the screen before we even launched a terminal!"
 
-      machine.systemctl("enable app-com.mitchellh.ghostty-debug.service", user="${user.name}")
-      machine.succeed("${su "${ghostty} +new-window"}")
-      machine.wait_until_succeeds("${wm_class} | grep -q 'com.mitchellh.ghostty-debug'")
+      machine.systemctl("enable app-com.termplex.app-debug.service", user="${user.name}")
+      machine.succeed("${su "${termplex} +new-window"}")
+      machine.wait_until_succeeds("${wm_class} | grep -q 'com.termplex.app-debug'")
 
       machine.sleep(2)
 
@@ -203,7 +203,7 @@ in {
               check_for_pink() == True
           ), "Pink was not found on the screen!"
 
-      machine.systemctl("stop app-com.mitchellh.ghostty-debug.service", user="${user.name}")
+      machine.systemctl("stop app-com.termplex.app-debug.service", user="${user.name}")
     '';
   };
 
@@ -216,10 +216,10 @@ in {
     };
     nodes = {
       server = {...}: {
-        users.groups.ghostty = {};
-        users.users.ghostty = {
+        users.groups.termplex = {};
+        users.users.termplex = {
           isNormalUser = true;
-          group = "ghostty";
+          group = "termplex";
           extraGroups = ["wheel"];
           hashedPassword = "";
           packages = [];
@@ -241,9 +241,9 @@ in {
         mkNodeGnome {
           inherit config pkgs;
           settings = {
-            home-manager.users.ghostty = {
+            home-manager.users.termplex = {
               xdg.configFile = {
-                "ghostty/config".text = let
+                "termplex/config".text = let
                 in ''
                   shell-integration-features = ssh-terminfo
                 '';
@@ -254,11 +254,11 @@ in {
         };
     };
     testScript = {nodes, ...}: let
-      user = nodes.client.users.users.ghostty;
+      user = nodes.client.users.users.termplex;
       bus_path = "/run/user/${toString user.uid}/bus";
       bus = "DBUS_SESSION_BUS_ADDRESS=unix:path=${bus_path}";
       gdbus = "${bus} gdbus";
-      ghostty = "${bus} ghostty";
+      termplex = "${bus} termplex";
       su = command: "su - ${user.name} -c '${command}'";
       gseval = "call --session -d org.gnome.Shell -o /org/gnome/Shell -m org.gnome.Shell.Eval";
       wm_class = su "${gdbus} ${gseval} global.display.focus_window.wm_class";
@@ -267,18 +267,18 @@ in {
           server.start()
           server.wait_for_open_port(22)
 
-      with subtest("Start client and wait for ghostty window."):
+      with subtest("Start client and wait for termplex window."):
           client.start()
           client.wait_for_x()
           client.wait_for_file("${bus_path}")
-          client.systemctl("enable app-com.mitchellh.ghostty-debug.service", user="${user.name}")
-          client.succeed("${su "${ghostty} +new-window"}")
-          client.wait_until_succeeds("${wm_class} | grep -q 'com.mitchellh.ghostty-debug'")
+          client.systemctl("enable app-com.termplex.app-debug.service", user="${user.name}")
+          client.succeed("${su "${termplex} +new-window"}")
+          client.wait_until_succeeds("${wm_class} | grep -q 'com.termplex.app-debug'")
 
-      with subtest("SSH from client to server and verify that the Ghostty terminfo is copied."):
+      with subtest("SSH from client to server and verify that the Termplex terminfo is copied."):
           client.sleep(2)
-          client.send_chars("ssh ghostty@server\n")
-          server.wait_for_file("${user.home}/.terminfo/x/xterm-ghostty", timeout=30)
+          client.send_chars("ssh termplex@server\n")
+          server.wait_for_file("${user.home}/.terminfo/x/xterm-termplex", timeout=30)
     '';
   };
 }

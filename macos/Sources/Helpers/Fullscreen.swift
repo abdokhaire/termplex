@@ -1,5 +1,5 @@
 import Cocoa
-import GhosttyKit
+import TermplexKit
 
 /// The fullscreen modes we support define how the fullscreen behaves.
 enum FullscreenMode: String, Codable {
@@ -195,7 +195,7 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
 
         // Get our current first responder on this window. For non-native fullscreen
         // we have to restore this because for some reason the operations below
-        // lose it (see: https://github.com/ghostty-org/ghostty/issues/6999).
+        // lose it (see: https://github.com/termplex-org/termplex/issues/6999).
         // I don't know the root cause here so if we can figure that out there may
         // be a nicer way than this.
         let firstResponder = window.firstResponder
@@ -233,7 +233,7 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
         // Set frame to screen size, accounting for any elements such as the menu bar.
         // We do this async so that all the style edits above (title removal, dock
         // hide, menu hide, etc.) take effect. This fixes:
-        // https://github.com/ghostty-org/ghostty/issues/1996
+        // https://github.com/termplex-org/termplex/issues/1996
         DispatchQueue.main.async {
             self.window.setFrame(self.fullscreenFrame(screen), display: true)
             if let firstResponder {
@@ -337,7 +337,7 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
             // didn't account for the notch. I reported this as a radar and it
             // was fixed at some point. I don't know when that was so I can't
             // put an #available check, but it was in a bug fix release so I think
-            // if a bug is reported to Ghostty we can just advise the user to
+            // if a bug is reported to Termplex we can just advise the user to
             // update.
         } else if properties.paddedNotch {
             // We are hiding the menu, we may need to avoid the notch.

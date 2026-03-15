@@ -26,11 +26,11 @@ in
           overlay
         ];
 
-        users.groups.ghostty = {
+        users.groups.termplex = {
           gid = gid;
         };
 
-        users.users.ghostty = {
+        users.users.termplex = {
           uid = uid;
         };
 

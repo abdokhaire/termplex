@@ -1,5 +1,5 @@
 import SwiftUI
-import GhosttyKit
+import TermplexKit
 import os
 
 /// This delegate is notified of actions and property changes regarding the terminal view. This
@@ -7,7 +7,7 @@ import os
 /// titles being set, cell sizes being changed, etc.
 protocol TerminalViewDelegate: AnyObject {
     /// Called when the currently focused surface changed. This can be nil.
-    func focusedSurfaceDidChange(to: Ghostty.SurfaceView?)
+    func focusedSurfaceDidChange(to: Termplex.SurfaceView?)
 
     /// The URL of the pwd should change.
     func pwdDidChange(to: URL?)
@@ -16,7 +16,7 @@ protocol TerminalViewDelegate: AnyObject {
     func cellSizeDidChange(to: NSSize)
 
     /// Perform an action. At the time of writing this is only triggered by the command palette.
-    func performAction(_ action: String, on: Ghostty.SurfaceView)
+    func performAction(_ action: String, on: Termplex.SurfaceView)
 
     /// A split tree operation
     func performSplitAction(_ action: TerminalSplitOperation)
@@ -28,7 +28,7 @@ protocol TerminalViewDelegate: AnyObject {
 protocol TerminalViewModel: ObservableObject {
     /// The tree of terminal surfaces (splits) within the view. This is mutated by TerminalView
     /// and children. This should be @Published.
-    var surfaceTree: SplitTree<Ghostty.SurfaceView> { get set }
+    var surfaceTree: SplitTree<Termplex.SurfaceView> { get set }
 
     /// The command palette state.
     var commandPaletteIsShowing: Bool { get set }
@@ -39,7 +39,7 @@ protocol TerminalViewModel: ObservableObject {
 
 /// The main terminal view. This terminal view supports splits.
 struct TerminalView<ViewModel: TerminalViewModel>: View {
-    @ObservedObject var ghostty: Ghostty.App
+    @ObservedObject var termplex: Termplex.App
 
     // The required view model
     @ObservedObject var viewModel: ViewModel
@@ -48,15 +48,15 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
     weak var delegate: (any TerminalViewDelegate)?
 
     /// The most recently focused surface, equal to `focusedSurface` when it is non-nil.
-    @State private var lastFocusedSurface: Weak<Ghostty.SurfaceView>?
+    @State private var lastFocusedSurface: Weak<Termplex.SurfaceView>?
 
     // This seems like a crutch after switching from SwiftUI to AppKit lifecycle.
     @FocusState private var focused: Bool
 
     // Various state values sent back up from the currently focused terminals.
-    @FocusedValue(\.ghosttySurfaceView) private var focusedSurface
-    @FocusedValue(\.ghosttySurfacePwd) private var surfacePwd
-    @FocusedValue(\.ghosttySurfaceCellSize) private var cellSize
+    @FocusedValue(\.termplexSurfaceView) private var focusedSurface
+    @FocusedValue(\.termplexSurfacePwd) private var surfacePwd
+    @FocusedValue(\.termplexSurfaceCellSize) private var cellSize
 
     // The pwd of the focused surface as a URL
     private var pwdURL: URL? {
@@ -65,7 +65,7 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
     }
 
     var body: some View {
-        switch ghostty.readiness {
+        switch termplex.readiness {
         case .loading:
             Text("Loading")
         case .error:
@@ -75,15 +75,15 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                 VStack(spacing: 0) {
                     // If we're running in debug mode we show a warning so that users
                     // know that performance will be degraded.
-                    if Ghostty.info.mode == GHOSTTY_BUILD_MODE_DEBUG || Ghostty.info.mode == GHOSTTY_BUILD_MODE_RELEASE_SAFE {
+                    if Termplex.info.mode == TERMPLEX_BUILD_MODE_DEBUG || Termplex.info.mode == TERMPLEX_BUILD_MODE_RELEASE_SAFE {
                         DebugBuildWarningView()
                     }
 
                     TerminalSplitTreeView(
                         tree: viewModel.surfaceTree,
                         action: { delegate?.performSplitAction($0) })
-                        .environmentObject(ghostty)
-                        .ghosttyLastFocusedSurface(lastFocusedSurface)
+                        .environmentObject(termplex)
+                        .termplexLastFocusedSurface(lastFocusedSurface)
                         .focused($focused)
                         .onAppear { self.focused = true }
                         .onChange(of: focusedSurface) { newValue in
@@ -105,13 +105,13 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                                idealHeight: lastFocusedSurface?.value?.initialSize?.height)
                 }
                 // Ignore safe area to extend up in to the titlebar region if we have the "hidden" titlebar style
-                .ignoresSafeArea(.container, edges: ghostty.config.macosTitlebarStyle == .hidden ? .top : [])
+                .ignoresSafeArea(.container, edges: termplex.config.macosTitlebarStyle == .hidden ? .top : [])
 
                 if let surfaceView = lastFocusedSurface?.value {
                     TerminalCommandPaletteView(
                         surfaceView: surfaceView,
                         isPresented: $viewModel.commandPaletteIsShowing,
-                        ghosttyConfig: ghostty.config,
+                        termplexConfig: termplex.config,
                         updateViewModel: (NSApp.delegate as? AppDelegate)?.updateViewModel) { action in
                         self.delegate?.performAction(action, on: surfaceView)
                     }
@@ -154,11 +154,11 @@ struct DebugBuildWarningView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundColor(.yellow)
 
-            Text("You're running a debug build of Ghostty! Performance will be degraded.")
+            Text("You're running a debug build of Termplex! Performance will be degraded.")
                 .padding(.all, 8)
                 .popover(isPresented: $isPopover, arrowEdge: .bottom) {
                     Text("""
-                    Debug builds of Ghostty are very slow and you may experience
+                    Debug builds of Termplex are very slow and you may experience
                     performance problems. Debug builds are only recommended during
                     development.
                     """)
@@ -171,7 +171,7 @@ struct DebugBuildWarningView: View {
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Debug build warning")
-        .accessibilityValue("Debug builds of Ghostty are very slow and you may experience performance problems. Debug builds are only recommended during development.")
+        .accessibilityValue("Debug builds of Termplex are very slow and you may experience performance problems. Debug builds are only recommended during development.")
         .accessibilityAddTraits(.isStaticText)
         .onTapGesture {
             isPopover = true

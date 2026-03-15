@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   setup:
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     outputs:
       version: ${{ steps.extract_version.outputs.version }}
       build: ${{ steps.extract_build_info.outputs.build }}
@@ -64,19 +64,19 @@ jobs:
       - name: Extract build info
         id: extract_build_info
         run: |
-          GHOSTTY_BUILD=$(git rev-list --count HEAD)
-          GHOSTTY_COMMIT=$(git rev-parse --short HEAD)
-          GHOSTTY_COMMIT_LONG=$(git rev-parse HEAD)
-          echo "build=$GHOSTTY_BUILD" >> $GITHUB_OUTPUT
-          echo "commit=$GHOSTTY_COMMIT" >> $GITHUB_OUTPUT
-          echo "commit_long=$GHOSTTY_COMMIT_LONG" >> $GITHUB_OUTPUT
+          TERMPLEX_BUILD=$(git rev-list --count HEAD)
+          TERMPLEX_COMMIT=$(git rev-parse --short HEAD)
+          TERMPLEX_COMMIT_LONG=$(git rev-parse HEAD)
+          echo "build=$TERMPLEX_BUILD" >> $GITHUB_OUTPUT
+          echo "commit=$TERMPLEX_COMMIT" >> $GITHUB_OUTPUT
+          echo "commit_long=$TERMPLEX_COMMIT_LONG" >> $GITHUB_OUTPUT
           cat $GITHUB_OUTPUT
 
   source-tarball:
-    runs-on: namespace-profile-ghostty-md
+    runs-on: namespace-profile-termplex-md
     needs: [setup]
     env:
-      GHOSTTY_VERSION: ${{ needs.setup.outputs.version }}
+      TERMPLEX_VERSION: ${{ needs.setup.outputs.version }}
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
       ZIG_GLOBAL_CACHE_DIR: /zig/global-cache
     steps:
@@ -95,41 +95,41 @@ jobs:
 
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Create Tarball
         run: |
           rm -rf zig-out/dist
           nix develop -c zig build distcheck
-          cp zig-out/dist/ghostty-${GHOSTTY_VERSION}.tar.gz .
-          cp zig-out/dist/ghostty-${GHOSTTY_VERSION}.tar.gz ghostty-source.tar.gz
+          cp zig-out/dist/termplex-${TERMPLEX_VERSION}.tar.gz .
+          cp zig-out/dist/termplex-${TERMPLEX_VERSION}.tar.gz termplex-source.tar.gz
 
       - name: Sign Tarball
         run: |
           echo -n "${{ secrets.MINISIGN_KEY }}" > minisign.key
           echo -n "${{ secrets.MINISIGN_PASSWORD }}" > minisign.password
-          nix develop -c minisign -S -m "ghostty-${GHOSTTY_VERSION}.tar.gz" -s minisign.key < minisign.password
-          nix develop -c minisign -S -m "ghostty-source.tar.gz" -s minisign.key < minisign.password
+          nix develop -c minisign -S -m "termplex-${TERMPLEX_VERSION}.tar.gz" -s minisign.key < minisign.password
+          nix develop -c minisign -S -m "termplex-source.tar.gz" -s minisign.key < minisign.password
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: source-tarball
           path: |-
-            ghostty-${{ env.GHOSTTY_VERSION }}.tar.gz
-            ghostty-${{ env.GHOSTTY_VERSION }}.tar.gz.minisig
-            ghostty-source.tar.gz
-            ghostty-source.tar.gz.minisig
+            termplex-${{ env.TERMPLEX_VERSION }}.tar.gz
+            termplex-${{ env.TERMPLEX_VERSION }}.tar.gz.minisig
+            termplex-source.tar.gz
+            termplex-source.tar.gz.minisig
 
   build-macos:
     needs: [setup]
-    runs-on: namespace-profile-ghostty-macos-tahoe
+    runs-on: namespace-profile-termplex-macos-tahoe
     timeout-minutes: 90
     env:
-      GHOSTTY_VERSION: ${{ needs.setup.outputs.version }}
-      GHOSTTY_BUILD: ${{ needs.setup.outputs.build }}
-      GHOSTTY_COMMIT: ${{ needs.setup.outputs.commit }}
+      TERMPLEX_VERSION: ${{ needs.setup.outputs.version }}
+      TERMPLEX_BUILD: ${{ needs.setup.outputs.build }}
+      TERMPLEX_COMMIT: ${{ needs.setup.outputs.commit }}
       ZIG_LOCAL_CACHE_DIR: /Users/runner/zig/local-cache
       ZIG_GLOBAL_CACHE_DIR: /Users/runner/zig/global-cache
     steps:
@@ -149,7 +149,7 @@ jobs:
           determinate: true
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: XCode Select
@@ -168,23 +168,23 @@ jobs:
           unzip sparkle.zip
           echo "$(pwd)/bin" >> $GITHUB_PATH
 
-      # GhosttyKit is the framework that is built from Zig for our native
+      # TermplexKit is the framework that is built from Zig for our native
       # Mac app to access. Build this in release mode.
-      - name: Build GhosttyKit
+      - name: Build TermplexKit
         run: |
           nix develop -c \
             zig build \
             -Doptimize=ReleaseFast \
             -Demit-macos-app=false \
-            -Dversion-string=${GHOSTTY_VERSION}
+            -Dversion-string=${TERMPLEX_VERSION}
 
       # The native app is built with native XCode tooling. This also does
       # codesigning. IMPORTANT: this must NOT run in a Nix environment.
       # Nix breaks xcodebuild so this has to be run outside.
-      - name: Build Ghostty.app
+      - name: Build Termplex.app
         run: |
           cd macos
-          xcodebuild -target Ghostty -configuration Release \
+          xcodebuild -target Termplex -configuration Release \
             COMPILATION_CACHE_CAS_PATH=/Users/runner/Library/Developer/Xcode/DerivedData/CompilationCache.noindex \
             COMPILATION_CACHE_KEEP_CAS_DIRECTORY=YES
 
@@ -194,13 +194,13 @@ jobs:
           SPARKLE_KEY_PUB: ${{ secrets.PROD_MACOS_SPARKLE_KEY_PUB }}
         run: |
           # Version Info
-          /usr/libexec/PlistBuddy -c "Set :GhosttyCommit $GHOSTTY_COMMIT" "macos/build/Release/Ghostty.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GHOSTTY_BUILD" "macos/build/Release/Ghostty.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $GHOSTTY_VERSION" "macos/build/Release/Ghostty.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :TermplexCommit $TERMPLEX_COMMIT" "macos/build/Release/Termplex.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $TERMPLEX_BUILD" "macos/build/Release/Termplex.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $TERMPLEX_VERSION" "macos/build/Release/Termplex.app/Contents/Info.plist"
 
           # Updater
-          /usr/libexec/PlistBuddy -c "Set :SUPublicEDKey $SPARKLE_KEY_PUB" "macos/build/Release/Ghostty.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Delete :SUEnableAutomaticChecks" "macos/build/Release/Ghostty.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :SUPublicEDKey $SPARKLE_KEY_PUB" "macos/build/Release/Termplex.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Delete :SUEnableAutomaticChecks" "macos/build/Release/Termplex.app/Contents/Info.plist"
 
       - name: Codesign app bundle
         env:
@@ -222,19 +222,19 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_CI_KEYCHAIN_PWD" build.keychain
 
           # Codesign Sparkle. Some notes here:
-          #   - The XPC services aren't used since we don't sandbox Ghostty,
+          #   - The XPC services aren't used since we don't sandbox Termplex,
           #     but since they're part of the build, they still need to be
           #     codesigned.
           #   - The binaries in the "Versions" folders need to NOT be symlinks.
-          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Ghostty.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc"
-          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Ghostty.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc"
-          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Ghostty.app/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
-          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Ghostty.app/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app"
-          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Ghostty.app/Contents/Frameworks/Sparkle.framework"
-          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Ghostty.app/Contents/PlugIns/DockTilePlugin.plugin"
+          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Termplex.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc"
+          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Termplex.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc"
+          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Termplex.app/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
+          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Termplex.app/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app"
+          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Termplex.app/Contents/Frameworks/Sparkle.framework"
+          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime "macos/build/Release/Termplex.app/Contents/PlugIns/DockTilePlugin.plugin"
 
           # Codesign the app bundle
-          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime --entitlements "macos/Ghostty.entitlements" macos/build/Release/Ghostty.app
+          /usr/bin/codesign --verbose -f -s "$MACOS_CERTIFICATE_NAME" -o runtime --entitlements "macos/Termplex.entitlements" macos/build/Release/Termplex.app
 
       - name: Create DMG
         env:
@@ -243,9 +243,9 @@ jobs:
           npm install --global create-dmg
           create-dmg \
             --identity="$MACOS_CERTIFICATE_NAME" \
-            ./macos/build/Release/Ghostty.app \
+            ./macos/build/Release/Termplex.app \
             ./
-          mv ./Ghostty*.dmg ./Ghostty.dmg
+          mv ./Termplex*.dmg ./Termplex.dmg
 
       - name: "Notarize DMG"
         env:
@@ -265,33 +265,33 @@ jobs:
           # characteristics. Visit the Notarization docs for more information and strategies on how to optimize it if
           # you're curious
           echo "Notarize dmg"
-          xcrun notarytool submit "Ghostty.dmg" --keychain-profile "notarytool-profile" --wait
+          xcrun notarytool submit "Termplex.dmg" --keychain-profile "notarytool-profile" --wait
 
           # Finally, we need to "attach the staple" to our executable, which will allow our app to be
           # validated by macOS even when an internet connection is not available. We do this to
           # both the app and the dmg
           echo "Attach staple"
-          xcrun stapler staple "Ghostty.dmg"
-          xcrun stapler staple "macos/build/Release/Ghostty.app"
+          xcrun stapler staple "Termplex.dmg"
+          xcrun stapler staple "macos/build/Release/Termplex.app"
 
       # Zip up the app and symbols
       - name: Zip App
         run: |
           cd macos/build/Release
-          zip -9 -r --symlinks ../../../ghostty-macos-universal.zip Ghostty.app
-          zip -9 -r --symlinks ../../../ghostty-macos-universal-dsym.zip Ghostty.app.dSYM/
+          zip -9 -r --symlinks ../../../termplex-macos-universal.zip Termplex.app
+          zip -9 -r --symlinks ../../../termplex-macos-universal-dsym.zip Termplex.app.dSYM/
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: macos
           path: |-
-            Ghostty.dmg
-            ghostty-macos-universal.zip
-            ghostty-macos-universal-dsym.zip
+            Termplex.dmg
+            termplex-macos-universal.zip
+            termplex-macos-universal-dsym.zip
 
   sentry-dsym:
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     needs: [build-macos]
     steps:
       - name: Install sentry-cli
@@ -307,16 +307,16 @@ jobs:
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: |
-          sentry-cli dif upload --project ghostty --wait ghostty-macos-universal-dsym.zip
+          sentry-cli dif upload --project termplex --wait termplex-macos-universal-dsym.zip
 
   appcast:
     needs: [setup, build-macos]
-    runs-on: namespace-profile-ghostty-macos-tahoe
+    runs-on: namespace-profile-termplex-macos-tahoe
     env:
-      GHOSTTY_VERSION: ${{ needs.setup.outputs.version }}
-      GHOSTTY_BUILD: ${{ needs.setup.outputs.build }}
-      GHOSTTY_COMMIT: ${{ needs.setup.outputs.commit }}
-      GHOSTTY_COMMIT_LONG: ${{ needs.setup.outputs.commit_long }}
+      TERMPLEX_VERSION: ${{ needs.setup.outputs.version }}
+      TERMPLEX_BUILD: ${{ needs.setup.outputs.build }}
+      TERMPLEX_COMMIT: ${{ needs.setup.outputs.commit }}
+      TERMPLEX_COMMIT_LONG: ${{ needs.setup.outputs.commit_long }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -340,14 +340,14 @@ jobs:
         env:
           SPARKLE_KEY: ${{ secrets.PROD_MACOS_SPARKLE_KEY }}
         run: |
-          echo "GHOSTTY_VERSION=$GHOSTTY_VERSION"
-          echo "GHOSTTY_BUILD=$GHOSTTY_BUILD"
-          echo "GHOSTTY_COMMIT=$GHOSTTY_COMMIT"
-          echo "GHOSTTY_COMMIT_LONG=$GHOSTTY_COMMIT_LONG"
+          echo "TERMPLEX_VERSION=$TERMPLEX_VERSION"
+          echo "TERMPLEX_BUILD=$TERMPLEX_BUILD"
+          echo "TERMPLEX_COMMIT=$TERMPLEX_COMMIT"
+          echo "TERMPLEX_COMMIT_LONG=$TERMPLEX_COMMIT_LONG"
 
           echo $SPARKLE_KEY > signing.key
-          sign_update -f signing.key Ghostty.dmg > sign_update.txt
-          curl -L https://release.files.ghostty.org/appcast.xml > appcast.xml
+          sign_update -f signing.key Termplex.dmg > sign_update.txt
+          curl -L https://release.files.termplex.org/appcast.xml > appcast.xml
           python3 ./dist/macos/update_appcast_tag.py
           test -f appcast_new.xml
           mv appcast_new.xml appcast.xml
@@ -365,9 +365,9 @@ jobs:
         github.event.inputs.upload == 'true') ||
       github.event_name == 'push'
     needs: [setup, source-tarball, build-macos, appcast]
-    runs-on: namespace-profile-ghostty-sm
+    runs-on: namespace-profile-termplex-sm
     env:
-      GHOSTTY_VERSION: ${{ needs.setup.outputs.version }}
+      TERMPLEX_VERSION: ${{ needs.setup.outputs.version }}
     steps:
       - name: Download macOS Artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -390,21 +390,21 @@ jobs:
       - name: Prep Files
         run: |
           mkdir blob
-          mkdir -p blob/${GHOSTTY_VERSION}
-          mv "ghostty-${GHOSTTY_VERSION}.tar.gz" blob/${GHOSTTY_VERSION}/ghostty-${GHOSTTY_VERSION}.tar.gz
-          mv "ghostty-${GHOSTTY_VERSION}.tar.gz.minisig" blob/${GHOSTTY_VERSION}/ghostty-${GHOSTTY_VERSION}.tar.gz.minisig
-          mv ghostty-source.tar.gz blob/${GHOSTTY_VERSION}/ghostty-source.tar.gz
-          mv ghostty-source.tar.gz.minisig blob/${GHOSTTY_VERSION}/ghostty-source.tar.gz.minisig
-          mv ghostty-macos-universal.zip blob/${GHOSTTY_VERSION}/ghostty-macos-universal.zip
-          mv ghostty-macos-universal-dsym.zip blob/${GHOSTTY_VERSION}/ghostty-macos-universal-dsym.zip
-          mv Ghostty.dmg blob/${GHOSTTY_VERSION}/Ghostty.dmg
-          mv appcast.xml blob/${GHOSTTY_VERSION}/appcast-staged.xml
+          mkdir -p blob/${TERMPLEX_VERSION}
+          mv "termplex-${TERMPLEX_VERSION}.tar.gz" blob/${TERMPLEX_VERSION}/termplex-${TERMPLEX_VERSION}.tar.gz
+          mv "termplex-${TERMPLEX_VERSION}.tar.gz.minisig" blob/${TERMPLEX_VERSION}/termplex-${TERMPLEX_VERSION}.tar.gz.minisig
+          mv termplex-source.tar.gz blob/${TERMPLEX_VERSION}/termplex-source.tar.gz
+          mv termplex-source.tar.gz.minisig blob/${TERMPLEX_VERSION}/termplex-source.tar.gz.minisig
+          mv termplex-macos-universal.zip blob/${TERMPLEX_VERSION}/termplex-macos-universal.zip
+          mv termplex-macos-universal-dsym.zip blob/${TERMPLEX_VERSION}/termplex-macos-universal-dsym.zip
+          mv Termplex.dmg blob/${TERMPLEX_VERSION}/Termplex.dmg
+          mv appcast.xml blob/${TERMPLEX_VERSION}/appcast-staged.xml
       - name: Upload to R2
         uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
         with:
           r2-account-id: ${{ secrets.CF_R2_RELEASE_ACCOUNT_ID }}
           r2-access-key-id: ${{ secrets.CF_R2_RELEASE_AWS_KEY }}
           r2-secret-access-key: ${{ secrets.CF_R2_RELEASE_SECRET_KEY }}
-          r2-bucket: ghostty-release
+          r2-bucket: termplex-release
           source-dir: blob
           destination-dir: ./

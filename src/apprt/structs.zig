@@ -30,7 +30,7 @@ pub const IMEPos = struct {
 
 /// The clipboard type.
 ///
-/// If this is changed, you must also update ghostty.h
+/// If this is changed, you must also update termplex.h
 pub const Clipboard = enum(Backing) {
     standard = 0, // ctrl+c/v
     selection = 1,
@@ -47,7 +47,7 @@ pub const Clipboard = enum(Backing) {
     pub const getGObjectType = switch (build_config.app_runtime) {
         .gtk => @import("gobject").ext.defineEnum(
             Clipboard,
-            .{ .name = "GhosttyApprtClipboard" },
+            .{ .name = "TermplexApprtClipboard" },
         ),
 
         .none => void,
@@ -81,7 +81,7 @@ pub const ClipboardRequest = union(ClipboardRequestType) {
     pub const getGObjectType = switch (build_config.app_runtime) {
         .gtk => @import("gobject").ext.defineBoxed(
             ClipboardRequest,
-            .{ .name = "GhosttyClipboardRequest" },
+            .{ .name = "TermplexClipboardRequest" },
         ),
 
         .none => void,

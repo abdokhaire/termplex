@@ -3,13 +3,13 @@ import SwiftUI
 import UserNotifications
 import OSLog
 import Sparkle
-import GhosttyKit
+import TermplexKit
 
 class AppDelegate: NSObject,
                     ObservableObject,
                     NSApplicationDelegate,
                     UNUserNotificationCenterDelegate,
-                    GhosttyAppDelegate {
+                    TermplexAppDelegate {
     // The application logger. We should probably move this at some point to a dedicated
     // class/struct but for now it lives here! 🤷‍♂️
     static let logger = Logger(
@@ -17,7 +17,7 @@ class AppDelegate: NSObject,
         category: String(describing: AppDelegate.self)
     )
 
-    /// Various menu items so that we can programmatically sync the keyboard shortcut with the Ghostty config
+    /// Various menu items so that we can programmatically sync the keyboard shortcut with the Termplex config
     @IBOutlet private var menuAbout: NSMenuItem?
     @IBOutlet private var menuServices: NSMenu?
     @IBOutlet private var menuCheckForUpdates: NSMenuItem?
@@ -92,11 +92,11 @@ class AppDelegate: NSObject,
     /// seconds since the process was launched.
     private var applicationLaunchTime: TimeInterval = 0
 
-    /// This is the current configuration from the Ghostty configuration that we need.
+    /// This is the current configuration from the Termplex configuration that we need.
     private var derivedConfig: DerivedConfig = DerivedConfig()
 
-    /// The ghostty global state. Only one per process.
-    let ghostty: Ghostty.App
+    /// The termplex global state. Only one per process.
+    let termplex: Termplex.App
 
     /// The global undo manager for app-level state such as window restoration.
     lazy var undoManager = ExpiringUndoManager()
@@ -112,7 +112,7 @@ class AppDelegate: NSObject,
 
         case .pendingRestore(let state):
             let controller = QuickTerminalController(
-                ghostty,
+                termplex,
                 position: derivedConfig.quickTerminalPosition,
                 baseConfig: state.baseConfig,
                 restorationState: state
@@ -122,7 +122,7 @@ class AppDelegate: NSObject,
 
         case .uninitialized:
             let controller = QuickTerminalController(
-                ghostty,
+                termplex,
                 position: derivedConfig.quickTerminalPosition,
                 restorationState: nil
             )
@@ -154,7 +154,7 @@ class AppDelegate: NSObject,
     /// The custom app icon image that is currently in use.
     @Published private(set) var appIcon: NSImage?
 
-    /// Ghostty menu items indexed by their normalized shortcut. This avoids traversing
+    /// Termplex menu items indexed by their normalized shortcut. This avoids traversing
     /// the entire menu tree on every key equivalent event.
     ///
     /// We store a weak reference so this cache can never be the owner of menu items.
@@ -163,13 +163,13 @@ class AppDelegate: NSObject,
 
     override init() {
 #if DEBUG
-        ghostty = Ghostty.App(configPath: ProcessInfo.processInfo.environment["GHOSTTY_CONFIG_PATH"])
+        termplex = Termplex.App(configPath: ProcessInfo.processInfo.environment["TERMPLEX_CONFIG_PATH"])
 #else
-        ghostty = Ghostty.App()
+        termplex = Termplex.App()
 #endif
         super.init()
 
-        ghostty.delegate = self
+        termplex.delegate = self
     }
 
     // MARK: - NSApplicationDelegate
@@ -177,13 +177,13 @@ class AppDelegate: NSObject,
     func applicationWillFinishLaunching(_ notification: Notification) {
         #if DEBUG
         if
-            let suite = UserDefaults.ghosttySuite,
-            let clear = ProcessInfo.processInfo.environment["GHOSTTY_CLEAR_USER_DEFAULTS"],
+            let suite = UserDefaults.termplexSuite,
+            let clear = ProcessInfo.processInfo.environment["TERMPLEX_CLEAR_USER_DEFAULTS"],
             (clear as NSString).boolValue {
-            UserDefaults.ghostty.removePersistentDomain(forName: suite)
+            UserDefaults.termplex.removePersistentDomain(forName: suite)
         }
         #endif
-        UserDefaults.ghostty.register(defaults: [
+        UserDefaults.termplex.register(defaults: [
             // Disable the automatic full screen menu item because we handle
             // it manually.
             "NSFullScreenMenuItemEverywhere": false,
@@ -202,7 +202,7 @@ class AppDelegate: NSObject,
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // System settings overrides
-        UserDefaults.ghostty.register(defaults: [
+        UserDefaults.termplex.register(defaults: [
             // Disable this so that repeated key events make it through to our terminal views.
             "ApplePressAndHoldEnabled": false,
         ])
@@ -211,12 +211,12 @@ class AppDelegate: NSObject,
         applicationLaunchTime = ProcessInfo.processInfo.systemUptime
 
         // Check if secure input was enabled when we last quit.
-        if UserDefaults.ghostty.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
+        if UserDefaults.termplex.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
             toggleSecureInput(self)
         }
 
         // Initial config loading
-        ghosttyConfigDidChange(config: ghostty.config)
+        termplexConfigDidChange(config: termplex.config)
 
         // Start our update checker.
         updateController.startUpdater()
@@ -224,7 +224,7 @@ class AppDelegate: NSObject,
         // Register our service provider. This must happen after everything is initialized.
         NSApp.servicesProvider = ServiceProvider()
 
-        // This registers the Ghostty => Services menu to exist.
+        // This registers the Termplex => Services menu to exist.
         NSApp.servicesMenu = menuServices
 
         // Setup a local event monitor for app-level keyboard shortcuts. See
@@ -248,14 +248,14 @@ class AppDelegate: NSObject,
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(ghosttyConfigDidChange(_:)),
-            name: .ghosttyConfigDidChange,
+            selector: #selector(termplexConfigDidChange(_:)),
+            name: .termplexConfigDidChange,
             object: nil
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(ghosttyBellDidRing(_:)),
-            name: .ghosttyBellDidRing,
+            selector: #selector(termplexBellDidRing(_:)),
+            name: .termplexBellDidRing,
             object: nil
         )
         NotificationCenter.default.addObserver(
@@ -266,25 +266,25 @@ class AppDelegate: NSObject,
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(ghosttyNewWindow(_:)),
-            name: Ghostty.Notification.ghosttyNewWindow,
+            selector: #selector(termplexNewWindow(_:)),
+            name: Termplex.Notification.termplexNewWindow,
             object: nil)
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(ghosttyNewTab(_:)),
-            name: Ghostty.Notification.ghosttyNewTab,
+            selector: #selector(termplexNewTab(_:)),
+            name: Termplex.Notification.termplexNewTab,
             object: nil)
 
         // Configure user notifications
         let actions = [
-            UNNotificationAction(identifier: Ghostty.userNotificationActionShow, title: "Show")
+            UNNotificationAction(identifier: Termplex.userNotificationActionShow, title: "Show")
         ]
 
         let center = UNUserNotificationCenter.current()
 
         center.setNotificationCategories([
             UNNotificationCategory(
-                identifier: Ghostty.userNotificationCategory,
+                identifier: Termplex.userNotificationCategory,
                 actions: actions,
                 intentIdentifiers: [],
                 options: [.customDismissAction]
@@ -292,21 +292,21 @@ class AppDelegate: NSObject,
         ])
         center.delegate = self
 
-        // Observe our appearance so we can report the correct value to libghostty.
+        // Observe our appearance so we can report the correct value to libtermplex.
         self.appearanceObserver = NSApplication.shared.observe(
             \.effectiveAppearance,
              options: [.new, .initial]
         ) { _, change in
             guard let appearance = change.newValue else { return }
-            guard let app = self.ghostty.app else { return }
-            let scheme: ghostty_color_scheme_e
+            guard let app = self.termplex.app else { return }
+            let scheme: termplex_color_scheme_e
             if appearance.isDark {
-                scheme = GHOSTTY_COLOR_SCHEME_DARK
+                scheme = TERMPLEX_COLOR_SCHEME_DARK
             } else {
-                scheme = GHOSTTY_COLOR_SCHEME_LIGHT
+                scheme = TERMPLEX_COLOR_SCHEME_LIGHT
             }
 
-            ghostty_app_set_color_scheme(app, scheme)
+            termplex_app_set_color_scheme(app, scheme)
         }
 
         // Setup our menu
@@ -315,7 +315,7 @@ class AppDelegate: NSObject,
         // Setup signal handlers
         setupSignals()
 
-        switch Ghostty.launchSource {
+        switch Termplex.launchSource {
         case .app:
             // Don't have to do anything.
             break
@@ -358,7 +358,7 @@ class AppDelegate: NSObject,
             //   - if we're restoring from persisted state
             if TerminalController.all.isEmpty && derivedConfig.initialWindow {
                 undoManager.disableUndoRegistration()
-                _ = TerminalController.newWindow(ghostty)
+                _ = TerminalController.newWindow(termplex)
                 undoManager.enableUndoRegistration()
             }
         }
@@ -391,7 +391,7 @@ class AppDelegate: NSObject,
 
         // If the user is shutting down, restarting, or logging out, we don't confirm quit.
         why: if let event = NSAppleEventManager.shared().currentAppleEvent {
-            // If all Ghostty windows are in the background (i.e. you Cmd-Q from the Cmd-Tab
+            // If all Termplex windows are in the background (i.e. you Cmd-Q from the Cmd-Tab
             // view), then this is null. I don't know why (pun intended) but we have to
             // guard against it.
             guard let keyword = AEKeyword("why?") else { break why }
@@ -408,13 +408,13 @@ class AppDelegate: NSObject,
         }
 
         // If our app says we don't need to confirm, we can exit now.
-        if !ghostty.needsConfirmQuit { return .terminateNow }
+        if !termplex.needsConfirmQuit { return .terminateNow }
 
         // We have some visible window. Show an app-wide modal to confirm quitting.
         let alert = NSAlert()
-        alert.messageText = "Quit Ghostty?"
+        alert.messageText = "Quit Termplex?"
         alert.informativeText = "All terminal sessions will be terminated."
-        alert.addButton(withTitle: "Close Ghostty")
+        alert.addButton(withTitle: "Close Termplex")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         switch alert.runModal() {
@@ -452,12 +452,12 @@ class AppDelegate: NSObject,
         guard applicationHasBecomeActive else { return true }
 
         // No visible windows, open a new one.
-        _ = TerminalController.newWindow(ghostty)
+        _ = TerminalController.newWindow(termplex)
         return false
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
-        // Ghostty will validate as well but we can avoid creating an entirely new
+        // Termplex will validate as well but we can avoid creating an entirely new
         // surface by doing our own validation here. We can also show a useful error
         // this way.
 
@@ -469,7 +469,7 @@ class AppDelegate: NSObject,
         var requiresConfirm: Bool = false
 
         // Initialize the surface config which will be used to create the tab or window for the opened file.
-        var config = Ghostty.SurfaceConfiguration()
+        var config = Termplex.SurfaceConfiguration()
 
         if isDirectory.boolValue {
             // When opening a directory, check the configuration to decide
@@ -488,7 +488,7 @@ class AppDelegate: NSObject,
             // profile/rc files for the shell, which is super important on macOS
             // due to things like Homebrew. Instead, we set the command to
             // `<filename>; exit` which is what Terminal and iTerm2 do.
-            config.initialInput = "\(Ghostty.Shell.quote(filename)); exit\n"
+            config.initialInput = "\(Termplex.Shell.quote(filename)); exit\n"
 
             // For commands executed directly, we want to ensure we wait after exit
             // because in most cases scripts don't block on exit and we don't want
@@ -505,7 +505,7 @@ class AppDelegate: NSObject,
             // may want to show this as a sheet on the focused window (especially if we're
             // opening a tab). I'm not sure.
             let alert = NSAlert()
-            alert.messageText = "Allow Ghostty to execute \"\(filename)\"?"
+            alert.messageText = "Allow Termplex to execute \"\(filename)\"?"
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Cancel")
             alert.alertStyle = .warning
@@ -518,14 +518,14 @@ class AppDelegate: NSObject,
             }
         }
 
-        switch ghostty.config.macosDockDropBehavior {
+        switch termplex.config.macosDockDropBehavior {
         case .new_tab:
             _ = TerminalController.newTab(
-                ghostty,
+                termplex,
                 from: TerminalController.preferredParent?.window,
                 withBaseConfig: config
             )
-        case .new_window: _ = TerminalController.newWindow(ghostty, withBaseConfig: config)
+        case .new_window: _ = TerminalController.newWindow(termplex, withBaseConfig: config)
         }
 
         return true
@@ -547,8 +547,8 @@ class AppDelegate: NSObject,
         let sigusr2 = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
         sigusr2.setEventHandler { [weak self] in
             guard let self else { return }
-            Ghostty.logger.info("reloading configuration in response to SIGUSR2")
-            self.ghostty.reloadConfig()
+            Termplex.logger.info("reloading configuration in response to SIGUSR2")
+            self.termplex.reloadConfig()
         }
 
         // The signal source starts unactivated, so we have to resume it once
@@ -591,18 +591,18 @@ class AppDelegate: NSObject,
         guard NSApp.mainWindow == nil else { return event }
 
         // If this event as-is would result in a key binding then we send it.
-        if let app = ghostty.app {
-            var ghosttyEvent = event.ghosttyKeyEvent(GHOSTTY_ACTION_PRESS)
+        if let app = termplex.app {
+            var termplexEvent = event.termplexKeyEvent(TERMPLEX_ACTION_PRESS)
             let match = (event.characters ?? "").withCString { ptr in
-                ghosttyEvent.text = ptr
-                if !ghostty_app_key_is_binding(app, ghosttyEvent) {
+                termplexEvent.text = ptr
+                if !termplex_app_key_is_binding(app, termplexEvent) {
                     return false
                 }
 
-                return ghostty_app_key(app, ghosttyEvent)
+                return termplex_app_key(app, termplexEvent)
             }
 
-            // If the key was handled by Ghostty we stop the event chain. If
+            // If the key was handled by Termplex we stop the event chain. If
             // the key wasn't handled then we let it fall through and continue
             // processing. This is important because some bindings may have no
             // affect at this scope.
@@ -618,15 +618,15 @@ class AppDelegate: NSObject,
         }
 
         // If we reach this point then we try to process the key event
-        // through the Ghostty key mechanism.
+        // through the Termplex key mechanism.
 
-        // Ghostty must be loaded
-        guard let ghostty = self.ghostty.app else { return event }
+        // Termplex must be loaded
+        guard let termplex = self.termplex.app else { return event }
 
-        // Build our event input and call ghostty
-        if ghostty_app_key(ghostty, event.ghosttyKeyEvent(GHOSTTY_ACTION_PRESS)) {
+        // Build our event input and call termplex
+        if termplex_app_key(termplex, event.termplexKeyEvent(TERMPLEX_ACTION_PRESS)) {
             // The key was used so we want to stop it from going to our Mac app
-            Ghostty.logger.debug("local key event handled event=\(event)")
+            Termplex.logger.debug("local key event handled event=\(event)")
             return nil
         }
 
@@ -642,32 +642,32 @@ class AppDelegate: NSObject,
         self.menuQuickTerminal?.state = if quickController.visible { .on } else { .off }
     }
 
-    @objc private func ghosttyConfigDidChange(_ notification: Notification) {
+    @objc private func termplexConfigDidChange(_ notification: Notification) {
         // We only care if the configuration is a global configuration, not a surface one.
         guard notification.object == nil else { return }
 
         // Get our managed configuration object out
         guard let config = notification.userInfo?[
-            Notification.Name.GhosttyConfigChangeKey
-        ] as? Ghostty.Config else { return }
+            Notification.Name.TermplexConfigChangeKey
+        ] as? Termplex.Config else { return }
 
-        ghosttyConfigDidChange(config: config)
+        termplexConfigDidChange(config: config)
     }
 
-    @objc private func ghosttyBellDidRing(_ notification: Notification) {
-        if ghostty.config.bellFeatures.contains(.system) {
+    @objc private func termplexBellDidRing(_ notification: Notification) {
+        if termplex.config.bellFeatures.contains(.system) {
             NSSound.beep()
         }
 
-        if ghostty.config.bellFeatures.contains(.audio) {
-            if let configPath = ghostty.config.bellAudioPath,
+        if termplex.config.bellFeatures.contains(.audio) {
+            if let configPath = termplex.config.bellAudioPath,
                let sound = NSSound(contentsOfFile: configPath.path, byReference: false) {
-                sound.volume = ghostty.config.bellAudioVolume
+                sound.volume = termplex.config.bellAudioVolume
                 sound.play()
             }
         }
 
-        if ghostty.config.bellFeatures.contains(.attention) {
+        if termplex.config.bellFeatures.contains(.attention) {
             // Bounce the dock icon if we're not focused.
             NSApp.requestUserAttention(.informationalRequest)
         }
@@ -717,37 +717,37 @@ class AppDelegate: NSObject,
         }
     }
 
-    @objc private func ghosttyNewWindow(_ notification: Notification) {
-        let configAny = notification.userInfo?[Ghostty.Notification.NewSurfaceConfigKey]
-        let config = configAny as? Ghostty.SurfaceConfiguration
-        _ = TerminalController.newWindow(ghostty, withBaseConfig: config)
+    @objc private func termplexNewWindow(_ notification: Notification) {
+        let configAny = notification.userInfo?[Termplex.Notification.NewSurfaceConfigKey]
+        let config = configAny as? Termplex.SurfaceConfiguration
+        _ = TerminalController.newWindow(termplex, withBaseConfig: config)
     }
 
-    @objc private func ghosttyNewTab(_ notification: Notification) {
-        guard let surfaceView = notification.object as? Ghostty.SurfaceView else { return }
+    @objc private func termplexNewTab(_ notification: Notification) {
+        guard let surfaceView = notification.object as? Termplex.SurfaceView else { return }
         guard let window = surfaceView.window else { return }
 
         // We only want to listen to new tabs if the focused parent is
         // a regular terminal controller.
         guard window.windowController is TerminalController else { return }
 
-        let configAny = notification.userInfo?[Ghostty.Notification.NewSurfaceConfigKey]
-        let config = configAny as? Ghostty.SurfaceConfiguration
+        let configAny = notification.userInfo?[Termplex.Notification.NewSurfaceConfigKey]
+        let config = configAny as? Termplex.SurfaceConfiguration
 
-        _ = TerminalController.newTab(ghostty, from: window, withBaseConfig: config)
+        _ = TerminalController.newTab(termplex, from: window, withBaseConfig: config)
     }
 
     private func setDockBadge() {
         let bellCount = NSApp.windows
             .compactMap { $0.windowController as? BaseTerminalController }
             .reduce(0) { $0 + ($1.bell ? 1 : 0) }
-        let wantsBadge = ghostty.config.bellFeatures.contains(.attention) && bellCount > 0
+        let wantsBadge = termplex.config.bellFeatures.contains(.attention) && bellCount > 0
         let label = wantsBadge ? (bellCount > 99 ? "99+" : String(bellCount)) : nil
         NSApp.dockTile.badgeLabel = label
         NSApp.dockTile.display()
     }
 
-    private func ghosttyConfigDidChange(config: Ghostty.Config) {
+    private func termplexConfigDidChange(config: Termplex.Config) {
         // Update the config we need to store
         self.derivedConfig = DerivedConfig(config)
 
@@ -755,10 +755,10 @@ class AppDelegate: NSObject,
         // configuration. This is the only way to carefully control whether macOS invokes the
         // state restoration system.
         switch config.windowSaveState {
-        case "never": UserDefaults.ghostty.setValue(false, forKey: "NSQuitAlwaysKeepsWindows")
-        case "always": UserDefaults.ghostty.setValue(true, forKey: "NSQuitAlwaysKeepsWindows")
+        case "never": UserDefaults.termplex.setValue(false, forKey: "NSQuitAlwaysKeepsWindows")
+        case "always": UserDefaults.termplex.setValue(true, forKey: "NSQuitAlwaysKeepsWindows")
         case "default": fallthrough
-        default: UserDefaults.ghostty.removeObject(forKey: "NSQuitAlwaysKeepsWindows")
+        default: UserDefaults.termplex.removeObject(forKey: "NSQuitAlwaysKeepsWindows")
         }
 
         // Sync our auto-update settings. If SUEnableAutomaticChecks (in our Info.plist) is
@@ -775,7 +775,7 @@ class AppDelegate: NSObject,
                 autoUpdate == .download
             /*
              To test `auto-update` easily, uncomment the line below and
-             delete `SUEnableAutomaticChecks` in Ghostty-Info.plist.
+             delete `SUEnableAutomaticChecks` in Termplex-Info.plist.
 
              Note: When `auto-update = download`, you may need to
              `Clean Build Folder` if a background install has already begun.
@@ -814,8 +814,8 @@ class AppDelegate: NSObject,
         }
 
         // We need to handle our global event tap depending on if there are global
-        // events that we care about in Ghostty.
-        if ghostty_app_has_global_keybinds(ghostty.app!) {
+        // events that we care about in Termplex.
+        if termplex_app_has_global_keybinds(termplex.app!) {
             if timeSinceLaunch > 5 {
                 // If the process has been running for awhile we enable right away
                 // because no windows are likely to pop up.
@@ -836,18 +836,18 @@ class AppDelegate: NSObject,
     }
 
     /// Sync the appearance of our app with the theme specified in the config.
-    private func syncAppearance(config: Ghostty.Config) {
-        NSApplication.shared.appearance = .init(ghosttyConfig: config)
+    private func syncAppearance(config: Termplex.Config) {
+        NSApplication.shared.appearance = .init(termplexConfig: config)
     }
 
-    private func updateAppIcon(from config: Ghostty.Config) {
+    private func updateAppIcon(from config: Termplex.Config) {
         // Since this is called after `DockTilePlugin` has been running,
         // clean it up here to trigger a correct update of the current config.
-        UserDefaults.ghostty.removeObject(forKey: "CustomGhosttyIcon")
+        UserDefaults.termplex.removeObject(forKey: "CustomTermplexIcon")
         DispatchQueue.global().async {
-            UserDefaults.ghostty.appIcon = AppIcon(config: config)
+            UserDefaults.termplex.appIcon = AppIcon(config: config)
             DistributedNotificationCenter.default()
-                .postNotificationName(.ghosttyIconDidChange, object: nil, userInfo: nil, deliverImmediately: true)
+                .postNotificationName(.termplexIconDidChange, object: nil, userInfo: nil, deliverImmediately: true)
         }
     }
 
@@ -861,7 +861,7 @@ class AppDelegate: NSObject,
     func application(_ app: NSApplication, willEncodeRestorableState coder: NSCoder) {
         Self.logger.debug("application will save window state")
 
-        guard ghostty.config.windowSaveState != "never" else { return }
+        guard termplex.config.windowSaveState != "never" else { return }
 
         // Encode our quick terminal state if we have it.
         switch quickTerminalControllerState {
@@ -881,7 +881,7 @@ class AppDelegate: NSObject,
         Self.logger.debug("application will restore window state")
 
         // Decode our quick terminal state.
-        if ghostty.config.windowSaveState != "never",
+        if termplex.config.windowSaveState != "never",
             let state = QuickTerminalRestorableState(coder: coder) {
             quickTerminalControllerState = .pendingRestore(state)
         }
@@ -894,7 +894,7 @@ class AppDelegate: NSObject,
         didReceive: UNNotificationResponse,
         withCompletionHandler: () -> Void
     ) {
-        ghostty.handleUserNotification(response: didReceive)
+        termplex.handleUserNotification(response: didReceive)
         withCompletionHandler()
     }
 
@@ -903,14 +903,14 @@ class AppDelegate: NSObject,
         willPresent: UNNotification,
         withCompletionHandler: (UNNotificationPresentationOptions) -> Void
     ) {
-        let shouldPresent = ghostty.shouldPresentNotification(notification: willPresent)
+        let shouldPresent = termplex.shouldPresentNotification(notification: willPresent)
         let options: UNNotificationPresentationOptions = shouldPresent ? [.banner, .sound] : []
         withCompletionHandler(options)
     }
 
-    // MARK: - GhosttyAppDelegate
+    // MARK: - TermplexAppDelegate
 
-    func findSurface(forUUID uuid: UUID) -> Ghostty.SurfaceView? {
+    func findSurface(forUUID uuid: UUID) -> Termplex.SurfaceView? {
         for c in TerminalController.all {
             for view in c.surfaceTree where view.id == uuid {
                 return view
@@ -922,7 +922,7 @@ class AppDelegate: NSObject,
 
     // MARK: - Global State
 
-    func setSecureInput(_ mode: Ghostty.SetSecureInput) {
+    func setSecureInput(_ mode: Termplex.SetSecureInput) {
         let input = SecureInput.shared
         switch mode {
         case .on:
@@ -935,17 +935,17 @@ class AppDelegate: NSObject,
             input.global.toggle()
         }
         self.menuSecureInput?.state = if input.global { .on } else { .off }
-        UserDefaults.ghostty.set(input.global, forKey: "SecureInput")
+        UserDefaults.termplex.set(input.global, forKey: "SecureInput")
     }
 
     // MARK: - IB Actions
 
     @IBAction func openConfig(_ sender: Any?) {
-        Ghostty.App.openConfig()
+        Termplex.App.openConfig()
     }
 
     @IBAction func reloadConfig(_ sender: Any?) {
-        ghostty.reloadConfig()
+        termplex.reloadConfig()
     }
 
     @IBAction func checkForUpdates(_ sender: Any?) {
@@ -954,12 +954,12 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func newWindow(_ sender: Any?) {
-        _ = TerminalController.newWindow(ghostty)
+        _ = TerminalController.newWindow(termplex)
     }
 
     @IBAction func newTab(_ sender: Any?) {
         _ = TerminalController.newTab(
-            ghostty,
+            termplex,
             from: TerminalController.preferredParent?.window
         )
     }
@@ -974,7 +974,7 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func showHelp(_ sender: Any) {
-        guard let url = URL(string: "https://ghostty.org/docs") else { return }
+        guard let url = URL(string: "https://termplex.org/docs") else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -986,12 +986,12 @@ class AppDelegate: NSObject,
         quickController.toggle()
     }
 
-    /// Toggles visibility of all Ghosty Terminal windows. When hidden, activates Ghostty as the frontmost application
+    /// Toggles visibility of all Ghosty Terminal windows. When hidden, activates Termplex as the frontmost application
     @IBAction func toggleVisibility(_ sender: Any) {
         // If we have focus, then we hide all windows.
         if NSApp.isActive {
             // Toggle visibility doesn't do anything if the focused window is native
-            // fullscreen. This is only relevant if Ghostty is active.
+            // fullscreen. This is only relevant if Termplex is active.
             guard let keyWindow = NSApp.keyWindow,
                   !keyWindow.styleMask.contains(.fullScreen) else { return }
 
@@ -1036,7 +1036,7 @@ class AppDelegate: NSObject,
             self.quickTerminalPosition = .top
         }
 
-        init(_ config: Ghostty.Config) {
+        init(_ config: Termplex.Config) {
             self.initialWindow = config.initialWindow
             self.shouldQuitAfterLastWindowClosed = config.shouldQuitAfterLastWindowClosed
             self.quickTerminalPosition = config.quickTerminalPosition
@@ -1143,9 +1143,9 @@ extension AppDelegate {
         self.menuFindParent?.setImageIfDesired(systemSymbolName: "text.page.badge.magnifyingglass")
     }
 
-    /// Sync all of our menu item keyboard shortcuts with the Ghostty configuration.
-    private func syncMenuShortcuts(_ config: Ghostty.Config) {
-        guard ghostty.readiness == .ready else { return }
+    /// Sync all of our menu item keyboard shortcuts with the Termplex configuration.
+    private func syncMenuShortcuts(_ config: Termplex.Config) {
+        guard termplex.readiness == .ready else { return }
 
         // Reset our shortcut index since we're about to rebuild all menu bindings.
         menuItemsByShortcut.removeAll(keepingCapacity: true)
@@ -1206,7 +1206,7 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "toggle_secure_input", menuItem: self.menuSecureInput)
 
         // This menu item is NOT synced with the configuration because it disables macOS
-        // global fullscreen keyboard shortcut. The shortcut in the Ghostty config will continue
+        // global fullscreen keyboard shortcut. The shortcut in the Termplex config will continue
         // to work but it won't be reflected in the menu item.
         //
         // syncMenuShortcut(config, action: "toggle_fullscreen", menuItem: self.menuToggleFullScreen)
@@ -1216,8 +1216,8 @@ extension AppDelegate {
     }
 
     /// Syncs a single menu shortcut for the given action. The action string is the same
-    /// action string used for the Ghostty configuration.
-    private func syncMenuShortcut(_ config: Ghostty.Config, action: String, menuItem: NSMenuItem?) {
+    /// action string used for the Termplex configuration.
+    private func syncMenuShortcut(_ config: Termplex.Config, action: String, menuItem: NSMenuItem?) {
         guard let menu = menuItem else { return }
 
         guard let shortcut = config.keyboardShortcut(for: action) else {
@@ -1246,17 +1246,17 @@ extension AppDelegate {
     }
 
     /// Attempts to perform a menu key equivalent only for menu items that represent
-    /// Ghostty keybind actions. This is important because it lets our surface dispatch
+    /// Termplex keybind actions. This is important because it lets our surface dispatch
     /// bindings through the menu so they flash but also lets our surface override macOS built-ins
     /// like Cmd+H.
-    func performGhosttyBindingMenuKeyEquivalent(with event: NSEvent) -> Bool {
+    func performTermplexBindingMenuKeyEquivalent(with event: NSEvent) -> Bool {
         // Convert this event into the same normalized lookup key we use when
         // syncing menu shortcuts from configuration.
         guard let key = MenuShortcutKey(event: event) else {
             return false
         }
 
-        // If we don't have an entry for this key combo, no Ghostty-owned
+        // If we don't have an entry for this key combo, no Termplex-owned
         // menu shortcut exists for this event.
         guard let weakItem = menuItemsByShortcut[key] else {
             return false
@@ -1329,7 +1329,7 @@ extension AppDelegate {
     }
 
     @IBAction func useAsDefault(_ sender: NSMenuItem) {
-        let ud = UserDefaults.ghostty
+        let ud = UserDefaults.termplex
         let key = TerminalWindow.defaultLevelKey
         if menuFloatOnTop?.state == .on {
             ud.set(NSWindow.Level.floating, forKey: key)
@@ -1345,7 +1345,7 @@ extension AppDelegate {
                 let alert = NSAlert()
                 alert.messageText = "Failed to Set Default Terminal"
                 alert.informativeText = """
-                Ghostty could not be set as the default terminal application.
+                Termplex could not be set as the default terminal application.
 
                 Error: \(error.localizedDescription)
                 """

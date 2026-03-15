@@ -48,8 +48,8 @@ pub const Health = enum(c_int) {
     healthy,
     unhealthy,
 
-    test "ghostty.h Health" {
-        try lib.checkGhosttyHEnum(Health, "GHOSTTY_RENDERER_HEALTH_");
+    test "termplex.h Health" {
+        try lib.checkTermplexHEnum(Health, "TERMPLEX_RENDERER_HEALTH_");
     }
 };
 

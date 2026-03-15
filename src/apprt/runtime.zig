@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// Runtime is the runtime to use for Ghostty. All runtimes do not provide
+/// Runtime is the runtime to use for Termplex. All runtimes do not provide
 /// equivalent feature sets.
 pub const Runtime = enum {
     /// Will not produce an executable at all when `zig build` is called.
@@ -17,8 +17,8 @@ pub const Runtime = enum {
             // featured application.
             .linux, .freebsd => .gtk,
             // Otherwise, we do NONE so we don't create an exe and we create
-            // libghostty. On macOS, Xcode is used to build the app that links
-            // to libghostty.
+            // libtermplex. On macOS, Xcode is used to build the app that links
+            // to libtermplex.
             else => .none,
         };
     }

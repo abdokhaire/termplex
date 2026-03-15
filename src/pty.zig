@@ -277,7 +277,7 @@ const WindowsPty = struct {
         var pipe_path_buf_w: [128]u16 = undefined;
         const pipe_path = std.fmt.bufPrintZ(
             &pipe_path_buf,
-            "\\\\.\\pipe\\LOCAL\\ghostty-pty-{d}-{d}",
+            "\\\\.\\pipe\\LOCAL\\termplex-pty-{d}-{d}",
             .{
                 windows.GetCurrentProcessId(),
                 pipe_name_counter.fetchAdd(1, .monotonic),

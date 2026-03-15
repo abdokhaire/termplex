@@ -1,22 +1,22 @@
 import AppKit
 import Cocoa
-import GhosttyKit
+import TermplexKit
 
-// Initialize Ghostty global state. We do this once right away because the
+// Initialize Termplex global state. We do this once right away because the
 // CLI APIs require it and it lets us ensure it is done immediately for the
 // rest of the app.
-if ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) != GHOSTTY_SUCCESS {
-    Ghostty.logger.critical("ghostty_init failed")
+if termplex_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) != TERMPLEX_SUCCESS {
+    Termplex.logger.critical("termplex_init failed")
 
     // We also write to stderr if this is executed from the CLI or zig run
-    switch Ghostty.launchSource {
+    switch Termplex.launchSource {
     case .cli, .zig_run:
         let stderrHandle = FileHandle.standardError
         stderrHandle.write(
-            "Ghostty failed to initialize! If you're executing Ghostty from the command line\n" +
+            "Termplex failed to initialize! If you're executing Termplex from the command line\n" +
             "then this is usually because an invalid action or multiple actions were specified.\n" +
             "Actions start with the `+` character.\n\n" +
-            "View all available actions by running `ghostty +help`.\n")
+            "View all available actions by running `termplex +help`.\n")
         exit(1)
 
     case .app:
@@ -27,7 +27,7 @@ if ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) != GHOSTTY_SUCCE
 }
 
 // This will run the CLI action and exit if one was specified. A CLI
-// action is a command starting with a `+`, such as `ghostty +boo`.
-ghostty_cli_try_action()
+// action is a command starting with a `+`, such as `termplex +boo`.
+termplex_cli_try_action()
 
 _ = NSApplicationMain(CommandLine.argc, CommandLine.unsafeArgv)

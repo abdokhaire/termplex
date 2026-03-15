@@ -29,7 +29,7 @@
   strip = optimize != "Debug" && optimize != "ReleaseSafe";
 in
   stdenv.mkDerivation (finalAttrs: {
-    pname = "ghostty";
+    pname = "termplex";
     version = "1.3.2-dev";
 
     # We limit source like this to try and reduce the amount of rebuilds as possible
@@ -55,7 +55,7 @@ in
       );
     };
 
-    deps = callPackage ../build.zig.zon.nix {name = "ghostty-cache-${finalAttrs.version}";};
+    deps = callPackage ../build.zig.zon.nix {name = "termplex-cache-${finalAttrs.version}";};
 
     nativeBuildInputs =
       [
@@ -104,7 +104,7 @@ in
     postInstall = ''
       terminfo_src=${
         if stdenv.hostPlatform.isDarwin
-        then ''"$out/Applications/Ghostty.app/Contents/Resources/terminfo"''
+        then ''"$out/Applications/Termplex.app/Contents/Resources/terminfo"''
         else "$out/share/terminfo"
       }
 
@@ -116,8 +116,8 @@ in
       echo "$terminfo" >> "$out/nix-support/propagated-user-env-packages"
 
       mkdir -p "$shell_integration"
-      mv "$out/share/ghostty/shell-integration" "$shell_integration/shell-integration"
-      ln -sf "$shell_integration/shell-integration" "$out/share/ghostty/shell-integration"
+      mv "$out/share/termplex/shell-integration" "$shell_integration/shell-integration"
+      ln -sf "$shell_integration/shell-integration" "$out/share/termplex/shell-integration"
       echo "$shell_integration" >> "$out/nix-support/propagated-user-env-packages"
 
       mv $out/share/vim/vimfiles "$vim"
@@ -130,12 +130,12 @@ in
     '';
 
     meta = {
-      homepage = "https://ghostty.org";
+      homepage = "https://termplex.org";
       license = lib.licenses.mit;
       platforms = [
         "x86_64-linux"
         "aarch64-linux"
       ];
-      mainProgram = "ghostty";
+      mainProgram = "termplex";
     };
   })

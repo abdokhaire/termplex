@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const Config = @import("../config/Config.zig");
-const Action = @import("../cli.zig").ghostty.Action;
+const Action = @import("../cli.zig").termplex.Action;
 
 /// A bash completions configuration that contains all the available commands
 /// and options.
@@ -38,7 +38,7 @@ fn writeBashCompletions(writer: *std.Io.Writer) !void {
     const pad5 = pad4 ++ pad1;
 
     try writer.writeAll(
-        \\_ghostty() {
+        \\_termplex() {
         \\
         \\  # compat: mapfile -t COMPREPLY < <( "$@" )
         \\  _compreply() {
@@ -57,13 +57,13 @@ fn writeBashCompletions(writer: *std.Io.Writer) !void {
         \\  _fonts() {
         \\    local IFS=$'\n'
         \\    COMPREPLY=()
-        \\    while read -r line; do COMPREPLY+=("$line"); done < <( compgen -P '"' -S '"' -W "$($ghostty +list-fonts | grep '^[A-Z]' )" -- "$cur")
+        \\    while read -r line; do COMPREPLY+=("$line"); done < <( compgen -P '"' -S '"' -W "$($termplex +list-fonts | grep '^[A-Z]' )" -- "$cur")
         \\  }
         \\
         \\  _themes() {
         \\    local IFS=$'\n'
         \\    COMPREPLY=()
-        \\    while read -r line; do COMPREPLY+=("$line"); done < <( compgen -P '"' -S '"' -W "$($ghostty +list-themes | sed -E 's/^(.*) \(.*$/\1/')" -- "$cur")
+        \\    while read -r line; do COMPREPLY+=("$line"); done < <( compgen -P '"' -S '"' -W "$($termplex +list-themes | sed -E 's/^(.*) \(.*$/\1/')" -- "$cur")
         \\  }
         \\
         \\  _files() {
@@ -280,12 +280,12 @@ fn writeBashCompletions(writer: *std.Io.Writer) !void {
     try writer.writeAll(
         \\
         \\  local cur=""; local prev=""; local prevWasEq=false; COMPREPLY=()
-        \\  local ghostty="$1"
+        \\  local termplex="$1"
         \\
         \\  # script assumes default COMP_WORDBREAKS of roughly $' \t\n"\'><=;|&(:'
         \\  # if = is missing this script will degrade to matching on keys only.
         \\  # eg: --key=
-        \\  # this can be improved if needed see: https://github.com/ghostty-org/ghostty/discussions/2994
+        \\  # this can be improved if needed see: https://github.com/termplex-org/termplex/discussions/2994
         \\
         \\  if [ "$2" = "=" ]; then cur=""
         \\  else                    cur="$2"
@@ -331,7 +331,7 @@ fn writeBashCompletions(writer: *std.Io.Writer) !void {
         \\  return 0
         \\}
         \\
-        \\complete -o nospace -o bashdefault -F _ghostty ghostty
+        \\complete -o nospace -o bashdefault -F _termplex termplex
         \\
     );
 }

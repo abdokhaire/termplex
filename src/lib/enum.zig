@@ -93,9 +93,9 @@ test "abi by removing a key" {
 }
 
 /// Verify that for every key in enum T, there is a matching declaration in
-/// `ghostty.h` with the correct value. This should only ever be called inside a `test`
-/// because the `ghostty.h` module is only available then.
-pub fn checkGhosttyHEnum(comptime T: type, comptime prefix: []const u8) !void {
+/// `termplex.h` with the correct value. This should only ever be called inside a `test`
+/// because the `termplex.h` module is only available then.
+pub fn checkTermplexHEnum(comptime T: type, comptime prefix: []const u8) !void {
     const info = @typeInfo(T);
 
     try std.testing.expect(info == .@"enum");
@@ -104,7 +104,7 @@ pub fn checkGhosttyHEnum(comptime T: type, comptime prefix: []const u8) !void {
 
     @setEvalBranchQuota(1000000);
 
-    const c = @import("ghostty.h");
+    const c = @import("termplex.h");
 
     var set: std.EnumSet(T) = .initFull();
 
@@ -138,7 +138,7 @@ pub fn checkGhosttyHEnum(comptime T: type, comptime prefix: []const u8) !void {
         while (it.next()) |v| {
             var buf: [128]u8 = undefined;
             const upper_string = std.ascii.upperString(&buf, @tagName(v));
-            std.log.err("ghostty.h is missing value for {s}{s}", .{ prefix, upper_string });
+            std.log.err("termplex.h is missing value for {s}{s}", .{ prefix, upper_string });
         }
         return e;
     };

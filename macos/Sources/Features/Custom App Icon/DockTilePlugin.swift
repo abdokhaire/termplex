@@ -1,7 +1,7 @@
 import AppKit
 
 class DockTilePlugin: NSObject, NSDockTilePlugIn {
-    // WARNING: An instance of this class is alive as long as Ghostty's icon is
+    // WARNING: An instance of this class is alive as long as Termplex's icon is
     // in the doc (running or not!), so keep any state and processing to a
     // minimum to respect resource usage.
 
@@ -10,22 +10,22 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
     // Separate defaults based on debug vs release builds so we can test icons
     // without messing up releases.
     #if DEBUG
-    private let ghosttyUserDefaults = UserDefaults(suiteName: "com.mitchellh.ghostty.debug")
+    private let termplexUserDefaults = UserDefaults(suiteName: "com.mitchellh.termplex.debug")
     #else
-    private let ghosttyUserDefaults = UserDefaults(suiteName: "com.mitchellh.ghostty")
+    private let termplexUserDefaults = UserDefaults(suiteName: "com.mitchellh.termplex")
     #endif
 
     private var iconChangeObserver: Any?
 
     /// The URL to the enclosing app bundle, determined from the plugin bundle path.
-    var ghosttyAppURL: URL? {
+    var termplexAppURL: URL? {
         Self.appBundleURL(for: pluginBundle.bundleURL)
     }
 
     /// Determine the enclosing app bundle for the dock tile plugin bundle.
     ///
     /// We intentionally avoid matching a specific bundle name (such as
-    /// "Ghostty.app") so renaming the app in Finder still works.
+    /// "Termplex.app") so renaming the app in Finder still works.
     static func appBundleURL(for pluginBundleURL: URL) -> URL? {
         var url = pluginBundleURL
         while true {
@@ -45,21 +45,21 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
 
     /// The primary NSDockTilePlugin function.
     func setDockTile(_ dockTile: NSDockTile?) {
-        // If no dock tile or no access to Ghostty defaults, we can't do anything.
-        guard let dockTile, let ghosttyUserDefaults else {
+        // If no dock tile or no access to Termplex defaults, we can't do anything.
+        guard let dockTile, let termplexUserDefaults else {
             iconChangeObserver = nil
             return
         }
 
         // Try to restore the previous icon on launch.
-        iconDidChange(ghosttyUserDefaults.appIcon, dockTile: dockTile)
+        iconDidChange(termplexUserDefaults.appIcon, dockTile: dockTile)
 
         // Setup a new observer for when the icon changes so we can update. This message
-        // is sent by the primary Ghostty app.
+        // is sent by the primary Termplex app.
         iconChangeObserver = DistributedNotificationCenter
             .default()
-            .publisher(for: .ghosttyIconDidChange)
-            .map { [weak self] _ in self?.ghosttyUserDefaults?.appIcon }
+            .publisher(for: .termplexIconDidChange)
+            .map { [weak self] _ in self?.termplexUserDefaults?.appIcon }
             .receive(on: DispatchQueue.global())
             .sink { [weak self] newIcon in self?.iconDidChange(newIcon, dockTile: dockTile) }
     }
@@ -70,7 +70,7 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
             return
         }
 
-        if let appBundleURL = self.ghosttyAppURL {
+        if let appBundleURL = self.termplexAppURL {
             let appBundlePath = appBundleURL.path
             NSWorkspace.shared.setIcon(appIcon, forFile: appBundlePath)
             NSWorkspace.shared.noteFileSystemChanged(appBundlePath)
@@ -81,7 +81,7 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
 
     /// Reset the application icon and dock tile icon to the default.
     private func resetIcon(dockTile: NSDockTile) {
-        let appBundlePath = self.ghosttyAppURL?.path
+        let appBundlePath = self.termplexAppURL?.path
         let appIcon: NSImage
         if #available(macOS 26.0, *) {
             // Reset to the default (glassy) icon.

@@ -13,10 +13,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    if (b.lazyDependency("ghostty", .{})) |dep| {
+    if (b.lazyDependency("termplex", .{})) |dep| {
         exe_mod.addImport(
-            "ghostty-vt",
-            dep.module("ghostty-vt"),
+            "termplex-vt",
+            dep.module("termplex-vt"),
         );
     }
 

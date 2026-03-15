@@ -1,33 +1,33 @@
-name: ghostty
+name: termplex
 base: core24
 summary: A terminal emulator
 description: |
-  Ghostty is a fast, feature-rich, and cross-platform terminal emulator that
+  Termplex is a fast, feature-rich, and cross-platform terminal emulator that
   uses platform-native UI and GPU acceleration.
 grade: stable
 confinement: classic
-contact: https://github.com/ghostty-org/ghostty/discussions
-issues: https://github.com/ghostty-org/ghostty/issues
-website: https://ghostty.org
+contact: https://github.com/termplex-org/termplex/discussions
+issues: https://github.com/termplex-org/termplex/issues
+website: https://termplex.org
 license: MIT
 icon: images/icons/icon_512.png
-adopt-info: ghostty
+adopt-info: termplex
 
 platforms:
   amd64:
   arm64:
 
 apps:
-  ghostty:
-    command: bin/ghostty
+  termplex:
+    command: bin/termplex
     command-chain: [app/launcher]
-    completer: share/bash-completion/completions/ghostty.bash
-    desktop: share/applications/com.mitchellh.ghostty.desktop
+    completer: share/bash-completion/completions/termplex.bash
+    desktop: share/applications/com.termplex.app.desktop
     #refresh-mode: ignore-running # Store rejects this, needs fix in review-tools
     environment:
-      PATH: /snap/ghostty/current/bin:/snap/ghostty/current/usr/bin:$PATH
+      PATH: /snap/termplex/current/bin:/snap/termplex/current/usr/bin:$PATH
       LC_ALL: C.UTF-8
-      GHOSTTY_RESOURCES_DIR: /snap/ghostty/current/share/ghostty
+      TERMPLEX_RESOURCES_DIR: /snap/termplex/current/share/termplex
 
 parts:
   launcher:
@@ -64,7 +64,7 @@ parts:
     prime:
       - -*
 
-  ghostty:
+  termplex:
     source: .
     after: [zig]
     plugin: nil
@@ -86,7 +86,7 @@ parts:
         -Dcpu=baseline \
         -fno-sys=gtk4-layer-shell
       cp -rp zig-out/* $CRAFT_PART_INSTALL/
-      sed -i 's|Icon=com.mitchellh.ghostty|Icon=${SNAP}/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png|g' $CRAFT_PART_INSTALL/share/applications/com.mitchellh.ghostty.desktop
+      sed -i 's|Icon=com.termplex.app|Icon=${SNAP}/share/icons/hicolor/512x512/apps/com.termplex.app.png|g' $CRAFT_PART_INSTALL/share/applications/com.termplex.app.desktop
 
   libs:
     plugin: nil

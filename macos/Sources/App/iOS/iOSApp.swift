@@ -1,40 +1,40 @@
 import SwiftUI
-import GhosttyKit
+import TermplexKit
 
 @main
-struct Ghostty_iOSApp: App {
-    @StateObject private var ghostty_app: Ghostty.App
+struct Termplex_iOSApp: App {
+    @StateObject private var termplex_app: Termplex.App
 
     init() {
-        if ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) != GHOSTTY_SUCCESS {
-            preconditionFailure("Initialize ghostty backend failed")
+        if termplex_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) != TERMPLEX_SUCCESS {
+            preconditionFailure("Initialize termplex backend failed")
         }
-        _ghostty_app = StateObject(wrappedValue: Ghostty.App())
+        _termplex_app = StateObject(wrappedValue: Termplex.App())
     }
 
     var body: some Scene {
         WindowGroup {
-            iOS_GhosttyTerminal()
-                .environmentObject(ghostty_app)
+            iOS_TermplexTerminal()
+                .environmentObject(termplex_app)
         }
     }
 }
 
-struct iOS_GhosttyTerminal: View {
-    @EnvironmentObject private var ghostty_app: Ghostty.App
+struct iOS_TermplexTerminal: View {
+    @EnvironmentObject private var termplex_app: Termplex.App
 
     var body: some View {
         ZStack {
             // Make sure that our background color extends to all parts of the screen
-            Color(ghostty_app.config.backgroundColor).ignoresSafeArea()
+            Color(termplex_app.config.backgroundColor).ignoresSafeArea()
 
-            Ghostty.Terminal()
+            Termplex.Terminal()
         }
     }
 }
 
-struct iOS_GhosttyInitView: View {
-    @EnvironmentObject private var ghostty_app: Ghostty.App
+struct iOS_TermplexInitView: View {
+    @EnvironmentObject private var termplex_app: Termplex.App
 
     var body: some View {
         VStack {
@@ -42,8 +42,8 @@ struct iOS_GhosttyInitView: View {
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(maxHeight: 96)
-            Text("Ghostty")
-            Text("State: \(ghostty_app.readiness.rawValue)")
+            Text("Termplex")
+            Text("State: \(termplex_app.readiness.rawValue)")
         }
         .padding()
     }

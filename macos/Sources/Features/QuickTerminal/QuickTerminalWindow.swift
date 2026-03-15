@@ -15,7 +15,7 @@ class QuickTerminalWindow: NSPanel {
 
         // Add a custom identifier so third party apps can use the Accessibility
         // API to apply special rules to the quick terminal. 
-        self.identifier = .init(rawValue: "com.mitchellh.ghostty.quickTerminal")
+        self.identifier = .init(rawValue: "com.mitchellh.termplex.quickTerminal")
 
         // Set the correct AXSubrole of kAXFloatingWindowSubrole (allows
         // AeroSpace to treat the Quick Terminal as a floating window)
@@ -31,7 +31,7 @@ class QuickTerminalWindow: NSPanel {
     }
 
     /// This is set to the frame prior to setting `contentView`. This is purely a hack to workaround
-    /// bugs in older macOS versions (Ventura): https://github.com/ghostty-org/ghostty/pull/8026
+    /// bugs in older macOS versions (Ventura): https://github.com/termplex-org/termplex/pull/8026
     var initialFrame: NSRect?
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
@@ -41,7 +41,7 @@ class QuickTerminalWindow: NSPanel {
         // If we find we have cached the "initial" frame, use that instead
         // the propagated one through the framework
         //
-        // https://github.com/ghostty-org/ghostty/pull/8026
+        // https://github.com/termplex-org/termplex/pull/8026
         super.setFrame(initialFrame ?? frameRect, display: flag)
     }
 }

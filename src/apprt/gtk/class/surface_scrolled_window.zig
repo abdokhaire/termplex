@@ -8,7 +8,7 @@ const Common = @import("../class.zig").Common;
 const Surface = @import("surface.zig").Surface;
 const Config = @import("config.zig").Config;
 
-const log = std.log.scoped(.gtk_ghostty_surface_scrolled_window);
+const log = std.log.scoped(.gtk_termplex_surface_scrolled_window);
 
 /// A wrapper widget that embeds a Surface inside a GtkScrolledWindow.
 /// This provides scrollbar functionality for the terminal surface.

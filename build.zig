@@ -22,12 +22,12 @@ pub fn build(b: *std.Build) !void {
         "Filter for test. Only applies to Zig tests.",
     ) orelse &[0][]const u8{};
 
-    // Ghostty dependencies used by many artifacts.
+    // Termplex dependencies used by many artifacts.
     const deps = try buildpkg.SharedDeps.init(b, &config);
 
-    // The modules exported for Zig consumers of libghostty. If you're
-    // writing a Zig program that uses libghostty, read this file.
-    const mod = try buildpkg.GhosttyZig.init(
+    // The modules exported for Zig consumers of libtermplex. If you're
+    // writing a Zig program that uses libtermplex, read this file.
+    const mod = try buildpkg.TermplexZig.init(
         b,
         &config,
         &deps,
@@ -35,7 +35,7 @@ pub fn build(b: *std.Build) !void {
 
     // All our steps which we'll hook up later. The steps are shown
     // up here just so that they are more self-documenting.
-    const libvt_step = b.step("lib-vt", "Build libghostty-vt");
+    const libvt_step = b.step("lib-vt", "Build libtermplex-vt");
     const run_step = b.step("run", "Run the app");
     const run_valgrind_step = b.step(
         "run-valgrind",
@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) !void {
     const test_step = b.step("test", "Run tests");
     const test_lib_vt_step = b.step(
         "test-lib-vt",
-        "Run libghostty-vt tests",
+        "Run libtermplex-vt tests",
     );
     const test_valgrind_step = b.step(
         "test-valgrind",
@@ -55,15 +55,15 @@ pub fn build(b: *std.Build) !void {
         "Update translation files",
     );
 
-    // Ghostty resources like terminfo, shell integration, themes, etc.
-    const resources = try buildpkg.GhosttyResources.init(b, &config, &deps);
-    const i18n = if (config.i18n) try buildpkg.GhosttyI18n.init(b, &config) else null;
+    // Termplex resources like terminfo, shell integration, themes, etc.
+    const resources = try buildpkg.TermplexResources.init(b, &config, &deps);
+    const i18n = if (config.i18n) try buildpkg.TermplexI18n.init(b, &config) else null;
 
-    // Ghostty executable, the actual runnable Ghostty program.
-    const exe = try buildpkg.GhosttyExe.init(b, &config, &deps);
+    // Termplex executable, the actual runnable Termplex program.
+    const exe = try buildpkg.TermplexExe.init(b, &config, &deps);
 
-    // Ghostty docs
-    const docs = try buildpkg.GhosttyDocs.init(b, &deps);
+    // Termplex docs
+    const docs = try buildpkg.TermplexDocs.init(b, &deps);
     if (config.emit_docs) {
         docs.install();
     } else if (config.target.result.os.tag.isDarwin()) {
@@ -73,16 +73,16 @@ pub fn build(b: *std.Build) !void {
         docs.installDummy(b.getInstallStep());
     }
 
-    // Ghostty webdata
-    const webdata = try buildpkg.GhosttyWebdata.init(b, &deps);
+    // Termplex webdata
+    const webdata = try buildpkg.TermplexWebdata.init(b, &deps);
     if (config.emit_webdata) webdata.install();
 
-    // Ghostty bench tools
-    const bench = try buildpkg.GhosttyBench.init(b, &deps);
+    // Termplex bench tools
+    const bench = try buildpkg.TermplexBench.init(b, &deps);
     if (config.emit_bench) bench.install();
 
-    // Ghostty dist tarball
-    const dist = try buildpkg.GhosttyDist.init(b, &config);
+    // Termplex dist tarball
+    const dist = try buildpkg.TermplexDist.init(b, &config);
     {
         const step = b.step("dist", "Build the dist tarball");
         step.dependOn(dist.install_step);
@@ -91,37 +91,37 @@ pub fn build(b: *std.Build) !void {
         check_step.dependOn(dist.install_step);
     }
 
-    // libghostty (internal, big)
-    const libghostty_shared = try buildpkg.GhosttyLib.initShared(
+    // libtermplex (internal, big)
+    const libtermplex_shared = try buildpkg.TermplexLib.initShared(
         b,
         &deps,
     );
-    const libghostty_static = try buildpkg.GhosttyLib.initStatic(
+    const libtermplex_static = try buildpkg.TermplexLib.initStatic(
         b,
         &deps,
     );
 
-    // libghostty-vt
-    const libghostty_vt_shared = shared: {
+    // libtermplex-vt
+    const libtermplex_vt_shared = shared: {
         if (config.target.result.cpu.arch.isWasm()) {
-            break :shared try buildpkg.GhosttyLibVt.initWasm(
+            break :shared try buildpkg.TermplexLibVt.initWasm(
                 b,
                 &mod,
             );
         }
 
-        break :shared try buildpkg.GhosttyLibVt.initShared(
+        break :shared try buildpkg.TermplexLibVt.initShared(
             b,
             &mod,
         );
     };
-    libghostty_vt_shared.install(libvt_step);
-    libghostty_vt_shared.install(b.getInstallStep());
+    libtermplex_vt_shared.install(libvt_step);
+    libtermplex_vt_shared.install(b.getInstallStep());
 
     // Helpgen
     if (config.emit_helpgen) deps.help_strings.install();
 
-    // Runtime "none" is libghostty, anything else is an executable.
+    // Runtime "none" is libtermplex, anything else is an executable.
     if (config.app_runtime != .none) {
         if (config.emit_exe) {
             exe.install();
@@ -129,27 +129,27 @@ pub fn build(b: *std.Build) !void {
             if (i18n) |v| v.install();
         }
     } else {
-        // Libghostty
+        // Libtermplex
         //
-        // Note: libghostty is not stable for general purpose use. It is used
-        // heavily by Ghostty on macOS but it isn't built to be reusable yet.
+        // Note: libtermplex is not stable for general purpose use. It is used
+        // heavily by Termplex on macOS but it isn't built to be reusable yet.
         // As such, these build steps are lacking. For example, the Darwin
         // build only produces an xcframework.
 
         // We shouldn't have this guard but we don't currently
         // build on macOS this way ironically so we need to fix that.
         if (!config.target.result.os.tag.isDarwin()) {
-            libghostty_shared.installHeader(); // Only need one header
-            libghostty_shared.install("libghostty.so");
-            libghostty_static.install("libghostty.a");
+            libtermplex_shared.installHeader(); // Only need one header
+            libtermplex_shared.install("libtermplex.so");
+            libtermplex_static.install("libtermplex.a");
         }
     }
 
     // macOS only artifacts. These will error if they're initialized for
     // other targets.
     if (config.target.result.os.tag.isDarwin()) {
-        // Ghostty xcframework
-        const xcframework = try buildpkg.GhosttyXCFramework.init(
+        // Termplex xcframework
+        const xcframework = try buildpkg.TermplexXCFramework.init(
             b,
             &deps,
             config.xcframework_target,
@@ -163,8 +163,8 @@ pub fn build(b: *std.Build) !void {
             if (i18n) |v| v.install();
         }
 
-        // Ghostty macOS app
-        const macos_app = try buildpkg.GhosttyXcodebuild.init(
+        // Termplex macOS app
+        const macos_app = try buildpkg.TermplexXcodebuild.init(
             b,
             &config,
             .{
@@ -186,12 +186,12 @@ pub fn build(b: *std.Build) !void {
             if (b.args) |args| run_cmd.addArgs(args);
 
             // Set the proper resources dir so things like shell integration
-            // work correctly. If we're running `zig build run` in Ghostty,
+            // work correctly. If we're running `zig build run` in Termplex,
             // this also ensures it overwrites the release one with our debug
             // build.
             run_cmd.setEnvironmentVariable(
-                "GHOSTTY_RESOURCES_DIR",
-                b.getInstallPath(.prefix, "share/ghostty"),
+                "TERMPLEX_RESOURCES_DIR",
+                b.getInstallPath(.prefix, "share/termplex"),
             );
 
             run_step.dependOn(&run_cmd.step);
@@ -203,12 +203,12 @@ pub fn build(b: *std.Build) !void {
         // On macOS we can run the macOS app. For "run" we always force
         // a native-only build so that we can run as quickly as possible.
         if (config.target.result.os.tag.isDarwin()) {
-            const xcframework_native = try buildpkg.GhosttyXCFramework.init(
+            const xcframework_native = try buildpkg.TermplexXCFramework.init(
                 b,
                 &deps,
                 .native,
             );
-            const macos_app_native_only = try buildpkg.GhosttyXcodebuild.init(
+            const macos_app_native_only = try buildpkg.TermplexXcodebuild.init(
                 b,
                 &config,
                 .{
@@ -231,11 +231,11 @@ pub fn build(b: *std.Build) !void {
 
     // Valgrind
     if (config.app_runtime != .none) {
-        // We need to rebuild Ghostty with a baseline CPU target.
+        // We need to rebuild Termplex with a baseline CPU target.
         const valgrind_exe = exe: {
             var valgrind_config = config;
             valgrind_config.target = valgrind_config.baselineTarget();
-            break :exe try buildpkg.GhosttyExe.init(
+            break :exe try buildpkg.TermplexExe.init(
                 b,
                 &valgrind_config,
                 &deps,
@@ -275,7 +275,7 @@ pub fn build(b: *std.Build) !void {
     {
         // Full unit tests
         const test_exe = b.addTest(.{
-            .name = "ghostty-test",
+            .name = "termplex-test",
             .filters = test_filters,
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
@@ -291,19 +291,19 @@ pub fn build(b: *std.Build) !void {
         if (config.emit_test_exe) b.installArtifact(test_exe);
         _ = try deps.add(test_exe);
 
-        // Verify our internal libghostty header.
-        const ghostty_h = b.addTranslateC(.{
-            .root_source_file = b.path("include/ghostty.h"),
+        // Verify our internal libtermplex header.
+        const termplex_h = b.addTranslateC(.{
+            .root_source_file = b.path("include/termplex.h"),
             .target = config.baselineTarget(),
             .optimize = .Debug,
         });
-        test_exe.root_module.addImport("ghostty.h", ghostty_h.createModule());
+        test_exe.root_module.addImport("termplex.h", termplex_h.createModule());
 
         // Normal test running
         const test_run = b.addRunArtifact(test_exe);
         test_step.dependOn(&test_run.step);
 
-        // Normal tests always test our libghostty modules
+        // Normal tests always test our libtermplex modules
         //test_step.dependOn(test_lib_vt_step);
 
         // Valgrind test running

@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 jobs:
   update-iterm2-schemes:
-    if: github.repository == 'ghostty-org/ghostty'
-    runs-on: namespace-profile-ghostty-sm
+    if: github.repository == 'termplex-org/termplex'
+    runs-on: namespace-profile-termplex-sm
     permissions:
       # Needed for create-pull-request action
       contents: write
@@ -34,7 +34,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
-          name: ghostty
+          name: termplex
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Download colorschemes
@@ -45,9 +45,9 @@ jobs:
           # Get the latest release from iTerm2-Color-Schemes
           RELEASE_INFO=$(gh api repos/mbadolato/iTerm2-Color-Schemes/releases/latest)
           TAG_NAME=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
-          FILENAME="ghostty-themes-${TAG_NAME}.tgz"
+          FILENAME="termplex-themes-${TAG_NAME}.tgz"
           mkdir -p upload
-          curl -L -o "upload/${FILENAME}" "https://github.com/mbadolato/iTerm2-Color-Schemes/releases/download/${TAG_NAME}/ghostty-themes.tgz"
+          curl -L -o "upload/${FILENAME}" "https://github.com/mbadolato/iTerm2-Color-Schemes/releases/download/${TAG_NAME}/termplex-themes.tgz"
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "filename=$FILENAME" >> $GITHUB_OUTPUT
 
@@ -57,13 +57,13 @@ jobs:
           r2-account-id: ${{ secrets.CF_R2_DEPS_ACCOUNT_ID }}
           r2-access-key-id: ${{ secrets.CF_R2_DEPS_AWS_KEY }}
           r2-secret-access-key: ${{ secrets.CF_R2_DEPS_SECRET_KEY }}
-          r2-bucket: ghostty-deps
+          r2-bucket: termplex-deps
           source-dir: upload
           destination-dir: ./
 
       - name: Run zig fetch
         run: |
-          nix develop -c zig fetch --save="iterm2_themes" "https://deps.files.ghostty.org/${{ steps.download.outputs.filename }}"
+          nix develop -c zig fetch --save="iterm2_themes" "https://deps.files.termplex.org/${{ steps.download.outputs.filename }}"
 
       - name: Update zig cache hash
         run: |
@@ -76,7 +76,7 @@ jobs:
       # Verify the build still works. We choose an arbitrary build type
       # as a canary instead of testing all build types.
       - name: Test Build
-        run: nix build .#ghostty
+        run: nix build .#termplex
 
       - name: Create pull request
         uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8.1.0

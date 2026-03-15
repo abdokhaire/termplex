@@ -53,7 +53,7 @@
     # Our supported systems are the same supported systems as the Zig binaries.
     platforms = lib.attrNames zig.packages;
 
-    # It's not always possible to build Ghostty with Nix for each system,
+    # It's not always possible to build Termplex with Nix for each system,
     # one such example being macOS due to missing Swift 6 and xcodebuild
     # support in the Nix ecosystem. Therefore for things like package outputs
     # we need to limit the attributes we expose.
@@ -90,12 +90,12 @@
         deps = pkgs.callPackage ./build.zig.zon.nix {};
       })
       // forBuildablePlatforms (pkgs: rec {
-        ghostty-debug = pkgs.callPackage ./nix/package.nix (mkPkgArgs "Debug");
-        ghostty-releasesafe = pkgs.callPackage ./nix/package.nix (mkPkgArgs "ReleaseSafe");
-        ghostty-releasefast = pkgs.callPackage ./nix/package.nix (mkPkgArgs "ReleaseFast");
+        termplex-debug = pkgs.callPackage ./nix/package.nix (mkPkgArgs "Debug");
+        termplex-releasesafe = pkgs.callPackage ./nix/package.nix (mkPkgArgs "ReleaseSafe");
+        termplex-releasefast = pkgs.callPackage ./nix/package.nix (mkPkgArgs "ReleaseFast");
 
-        ghostty = ghostty-releasefast;
-        default = ghostty;
+        termplex = termplex-releasefast;
+        default = termplex;
       });
 
     formatter = forAllPlatforms (pkgs: pkgs.alejandra);
@@ -107,7 +107,7 @@
           inherit module nixpkgs;
           overlay = self.overlays.debug;
         };
-        program = pkgs.writeShellScript "run-ghostty-vm" ''
+        program = pkgs.writeShellScript "run-termplex-vm" ''
           SHARED_DIR=$(pwd)
           export SHARED_DIR
 
@@ -136,16 +136,16 @@
     overlays = {
       default = self.overlays.releasefast;
       releasefast = final: prev: {
-        ghostty = final.callPackage ./nix/package.nix (mkPkgArgs "ReleaseFast");
+        termplex = final.callPackage ./nix/package.nix (mkPkgArgs "ReleaseFast");
       };
       debug = final: prev: {
-        ghostty = final.callPackage ./nix/package.nix (mkPkgArgs "Debug");
+        termplex = final.callPackage ./nix/package.nix (mkPkgArgs "Debug");
       };
     };
   };
 
   nixConfig = {
-    extra-substituters = ["https://ghostty.cachix.org"];
-    extra-trusted-public-keys = ["ghostty.cachix.org-1:QB389yTa6gTyneehvqG58y0WnHjQOqgnA+wBnpWWxns="];
+    extra-substituters = ["https://termplex.cachix.org"];
+    extra-trusted-public-keys = ["termplex.cachix.org-1:QB389yTa6gTyneehvqG58y0WnHjQOqgnA+wBnpWWxns="];
   };
 }

@@ -1520,7 +1520,7 @@ test "layoutForCapacity no overflow for large capacity" {
     // Test that layoutForCapacity correctly handles large capacities without overflow.
     // Prior to the fix, new_capacity (u32) was multiplied before widening to usize,
     // causing overflow when new_capacity * @sizeOf(K) exceeded 2^32.
-    // See: https://github.com/ghostty-org/ghostty/issues/9862
+    // See: https://github.com/termplex-org/termplex/issues/9862
     const Map = AutoHashMapUnmanaged(u64, u64);
 
     // Use 2^30 capacity - this would overflow in u32 when multiplied by @sizeOf(u64)=8
