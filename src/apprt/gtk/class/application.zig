@@ -236,6 +236,13 @@ pub const Application = extern struct {
         /// unparented when workspace switching occurs.
         workspace_tab_views: std.ArrayListUnmanaged(*adw.TabView) = .empty,
 
+        /// Per-workspace git branch name. Null if not a git repo.
+        /// Parallel to workspace_names.
+        workspace_git_branches: std.ArrayListUnmanaged(?[:0]const u8) = .empty,
+
+        /// Per-workspace dirty flag. Parallel to workspace_names.
+        workspace_git_dirty: std.ArrayListUnmanaged(bool) = .empty,
+
         /// Index of the currently active workspace (0-based). Only
         /// meaningful when workspace_names is non-empty.
         active_workspace_idx: u32 = 0,
@@ -583,6 +590,13 @@ pub const Application = extern struct {
         }
         priv.workspace_tab_views.deinit(alloc);
 
+        // Termplex: free per-workspace git state.
+        for (priv.workspace_git_branches.items) |branch_opt| {
+            if (branch_opt) |b| alloc.free(b);
+        }
+        priv.workspace_git_branches.deinit(alloc);
+        priv.workspace_git_dirty.deinit(alloc);
+
         // Termplex: free any unconsumed restore tab counts.
         if (priv.restore_tab_counts) |counts| {
             alloc.free(counts);
@@ -794,6 +808,25 @@ pub const Application = extern struct {
             tab_view.as(gobject.Object).unref();
             return null;
         };
+        priv.workspace_git_branches.append(alloc, null) catch {
+            _ = priv.workspace_tab_views.pop();
+            _ = priv.workspace_dirs.pop();
+            _ = priv.workspace_names.pop();
+            alloc.free(name);
+            alloc.free(resolved_dir);
+            tab_view.as(gobject.Object).unref();
+            return null;
+        };
+        priv.workspace_git_dirty.append(alloc, false) catch {
+            _ = priv.workspace_git_branches.pop();
+            _ = priv.workspace_tab_views.pop();
+            _ = priv.workspace_dirs.pop();
+            _ = priv.workspace_names.pop();
+            alloc.free(name);
+            alloc.free(resolved_dir);
+            tab_view.as(gobject.Object).unref();
+            return null;
+        };
 
         priv.next_workspace_number += 1;
         return @intCast(priv.workspace_names.items.len - 1);
@@ -912,6 +945,11 @@ pub const Application = extern struct {
         tab_view.as(gobject.Object).unref();
         _ = priv.workspace_tab_views.orderedRemove(index);
 
+        // Free per-workspace git state.
+        if (priv.workspace_git_branches.items[index]) |b| alloc.free(b);
+        _ = priv.workspace_git_branches.orderedRemove(index);
+        _ = priv.workspace_git_dirty.orderedRemove(index);
+
         // Clamp active_workspace_idx so it stays valid.
         const new_len = priv.workspace_names.items.len;
         if (new_len > 0 and priv.active_workspace_idx >= @as(u32, @intCast(new_len))) {
@@ -1002,8 +1040,8 @@ pub const Application = extern struct {
         priv.socket_path_buf = path;
         priv.socket_poll_timer = glib.timeoutAdd(100, pollSocketCallback, self);
 
-        // Termplex: start the 30-second recurring port scan.
-        priv.port_scan_timer = glib.timeoutAdd(30000, portScanCallback, self);
+        // Termplex: start the 10-second combined git+port probe timer.
+        priv.port_scan_timer = glib.timeoutAdd(10000, combinedProbeCallback, self);
 
         // Termplex: start the 5-second autosave timer.
         priv.autosave_timer = glib.timeoutAdd(5000, autosaveCallback, self);
@@ -2612,6 +2650,11 @@ pub const Application = extern struct {
         priv.workspace_dirs.clearRetainingCapacity();
         for (priv.workspace_tab_views.items) |tv| tv.as(gobject.Object).unref();
         priv.workspace_tab_views.clearRetainingCapacity();
+        for (priv.workspace_git_branches.items) |branch_opt| {
+            if (branch_opt) |b| alloc.free(b);
+        }
+        priv.workspace_git_branches.clearRetainingCapacity();
+        priv.workspace_git_dirty.clearRetainingCapacity();
         // Reset counter so addWorkspaceWithDir assigns correct numbers below.
         priv.next_workspace_number = 1;
         priv.orchestration_workspace_idx = null;
@@ -2774,6 +2817,27 @@ pub const Application = extern struct {
                 log.warn("session restore: OOM appending workspace tab_view", .{});
                 continue;
             };
+            priv.workspace_git_branches.append(alloc, null) catch {
+                _ = priv.workspace_tab_views.pop();
+                _ = priv.workspace_dirs.pop();
+                _ = priv.workspace_names.pop();
+                alloc.free(name);
+                alloc.free(dir);
+                tab_view.as(gobject.Object).unref();
+                log.warn("session restore: OOM appending git_branches", .{});
+                continue;
+            };
+            priv.workspace_git_dirty.append(alloc, false) catch {
+                _ = priv.workspace_git_branches.pop();
+                _ = priv.workspace_tab_views.pop();
+                _ = priv.workspace_dirs.pop();
+                _ = priv.workspace_names.pop();
+                alloc.free(name);
+                alloc.free(dir);
+                tab_view.as(gobject.Object).unref();
+                log.warn("session restore: OOM appending git_dirty", .{});
+                continue;
+            };
             // Non-fatal if tab_count/title tracking fails; window will fall back to defaults.
             tab_counts.append(alloc, tab_count) catch {};
             // Store the collected tab titles (may be empty for v1/v2).
@@ -2915,6 +2979,17 @@ pub const Application = extern struct {
             null;
         priv.git_dirty = result.dirty;
 
+        // Also update per-workspace arrays for the active workspace.
+        const active_idx = priv.active_workspace_idx;
+        if (active_idx < priv.workspace_git_branches.items.len) {
+            if (priv.workspace_git_branches.items[active_idx]) |old_b| alloc.free(old_b);
+            priv.workspace_git_branches.items[active_idx] = if (result.branch) |b|
+                alloc.dupeZ(u8, b) catch null
+            else
+                null;
+            priv.workspace_git_dirty.items[active_idx] = result.dirty;
+        }
+
         log.debug(
             "git probe: branch={s} dirty={}",
             .{ priv.git_branch orelse "<none>", priv.git_dirty },
@@ -2957,15 +3032,52 @@ pub const Application = extern struct {
         return @intFromBool(glib.SOURCE_REMOVE);
     }
 
-    /// GLib timer callback: runs the recurring 30-second port scan.
-    fn portScanCallback(ud: ?*anyopaque) callconv(.c) c_int {
+    /// GLib timer callback: runs git probing for all workspaces and port
+    /// scanning for the active workspace every 10 seconds.
+    fn combinedProbeCallback(ud: ?*anyopaque) callconv(.c) c_int {
         const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
         const priv = self.private();
 
-        // If the timer has been cleared, stop recurring.
         if (priv.port_scan_timer == null) return @intFromBool(glib.SOURCE_REMOVE);
 
+        const alloc = self.allocator();
+
+        // 1. Probe git for all workspaces (skip orchestration).
+        for (priv.workspace_dirs.items, 0..) |dir, i| {
+            if (priv.orchestration_workspace_idx) |orch_idx| {
+                if (i == orch_idx) continue;
+            }
+
+            var result = git_probe.probe(alloc, dir);
+            defer result.deinit(alloc);
+
+            const old_branch = priv.workspace_git_branches.items[i];
+            const new_branch = result.branch;
+            const old_dirty = priv.workspace_git_dirty.items[i];
+            const new_dirty = result.dirty;
+
+            const branch_changed = blk: {
+                if (old_branch == null and new_branch == null) break :blk false;
+                if (old_branch == null or new_branch == null) break :blk true;
+                break :blk !std.mem.eql(u8, old_branch.?, new_branch.?);
+            };
+
+            if (branch_changed or old_dirty != new_dirty) {
+                if (old_branch) |b| alloc.free(b);
+                priv.workspace_git_branches.items[i] = if (new_branch) |b|
+                    alloc.dupeZ(u8, b) catch null
+                else
+                    null;
+                priv.workspace_git_dirty.items[i] = new_dirty;
+            }
+        }
+
+        // 2. Run port scan (active workspace only, uses app PID).
         runPortScan(self);
+
+        // 3. Always refresh all workspace sidebars.
+        self.refreshAllWorkspaceSidebars();
+
         return @intFromBool(glib.SOURCE_CONTINUE);
     }
 
@@ -3104,6 +3216,72 @@ pub const Application = extern struct {
                 win.getSidebar().updateWorkspace(c.active_idx, c.name, c.port_text, c.branch_text, c.dir_text, true, false);
             }
         }.cb, @ptrCast(&ctx));
+    }
+
+    /// Refresh all workspace tabs in the sidebar across all windows.
+    pub fn refreshAllWorkspaceSidebars(self: *Self) void {
+        const priv = self.private();
+        const workspace_count = priv.workspace_names.items.len;
+        const list = self.as(gtk.Application).getWindows();
+
+        var i: u32 = 0;
+        while (i < workspace_count) : (i += 1) {
+            const name = priv.workspace_names.items[i];
+            const is_active = (i == priv.active_workspace_idx);
+
+            // ORCHESTRATOR: show only name + dir, suppress git/ports.
+            const is_orchestrator = if (priv.orchestration_workspace_idx) |orch_idx| i == orch_idx else false;
+
+            // Port text: only for active workspace, never for orchestrator.
+            const port_text: ?[:0]const u8 = if (is_active and !is_orchestrator) priv.listening_ports_str else null;
+
+            // Branch text from per-workspace arrays (suppressed for orchestrator).
+            var branch_buf: [256]u8 = undefined;
+            const branch_z: ?[:0]const u8 = blk: {
+                if (is_orchestrator) break :blk null;
+                if (i >= priv.workspace_git_branches.items.len) break :blk null;
+                const b = priv.workspace_git_branches.items[i] orelse break :blk null;
+                const dirty = if (i < priv.workspace_git_dirty.items.len) priv.workspace_git_dirty.items[i] else false;
+                const label = std.fmt.bufPrintZ(
+                    &branch_buf,
+                    "{s}{s}",
+                    .{ b, if (dirty) "*" else "" },
+                ) catch break :blk null;
+                break :blk label;
+            };
+
+            // Dir text with ~ shorthand.
+            var dir_buf: [512]u8 = undefined;
+            const dir_z: ?[:0]const u8 = self.formatDirDisplay(i, &dir_buf);
+
+            // NOTE: branch_buf and dir_buf are stack-local but list.foreach
+            // runs synchronously on the GLib main thread, so pointers into
+            // these buffers are valid for the duration of the foreach call.
+            const Ctx = struct {
+                idx: u32,
+                name_val: ?[:0]const u8,
+                port_val: ?[:0]const u8,
+                branch_val: ?[:0]const u8,
+                dir_val: ?[:0]const u8,
+                active: bool,
+            };
+            var ctx = Ctx{
+                .idx = i,
+                .name_val = name,
+                .port_val = port_text,
+                .branch_val = branch_z,
+                .dir_val = dir_z,
+                .active = is_active,
+            };
+            list.foreach(struct {
+                fn cb(data: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
+                    const c: *Ctx = @ptrCast(@alignCast(userdata orelse return));
+                    const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
+                    const win = gobject.ext.cast(Window, ptr) orelse return;
+                    win.getSidebar().updateWorkspace(c.idx, c.name_val, c.port_val, c.branch_val, c.dir_val, c.active, false);
+                }
+            }.cb, @ptrCast(&ctx));
+        }
     }
 
     /// Run the application. This is a replacement for `gio.Application.run`
