@@ -363,7 +363,7 @@ pub const Window = extern struct {
             sidebar.setManagementCallbacks(
                 &termplexOnRenameWorkspace,
                 &termplexOnDeleteWorkspace,
-                null, // change-dir callback, wired in Task 8
+                &termplexOnChangeDirWorkspace,
             );
 
             // 2. Create a horizontal Gtk.Paned to hold sidebar + content.
@@ -1602,6 +1602,22 @@ pub const Window = extern struct {
 
         // Remove from application (closes tabs, frees resources).
         app.removeWorkspace(index);
+    }
+
+    /// Delegates inline directory change to the WorkspaceTab widget.
+    fn termplexOnChangeDirWorkspace(index: u32, userdata: ?*anyopaque) void {
+        const win: *Self = @ptrCast(@alignCast(userdata orelse return));
+        const priv = win.private();
+        const row = priv.sidebar.getWorkspaceRow(index) orelse return;
+        const child_widget = row.getChild() orelse return;
+        const tab: *WorkspaceTab = @ptrCast(@alignCast(child_widget));
+        tab.startChangeDir(index, &termplexOnChangeDirComplete, userdata);
+    }
+
+    fn termplexOnChangeDirComplete(index: u32, new_dir: [:0]const u8, userdata: ?*anyopaque) void {
+        _ = userdata;
+        const app = Application.default();
+        app.changeWorkspaceDir(index, new_dir);
     }
 
     //---------------------------------------------------------------

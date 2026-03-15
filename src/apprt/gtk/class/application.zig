@@ -969,6 +969,48 @@ pub const Application = extern struct {
         priv.workspace_names.items[index] = alloc.dupeZ(u8, new_name) catch return;
     }
 
+    /// Change the working directory for a workspace.
+    ///
+    /// Expands ~ to $HOME, updates workspace_dirs, probes git for
+    /// the new path, and refreshes all sidebars.
+    pub fn changeWorkspaceDir(self: *Self, index: u32, new_dir: [:0]const u8) void {
+        const alloc = self.allocator();
+        const priv = self.private();
+
+        if (index >= priv.workspace_dirs.items.len) return;
+
+        // Expand ~ to $HOME for storage.
+        const resolved_dir: [:0]const u8 = blk: {
+            if (std.mem.startsWith(u8, new_dir, "~")) {
+                const home = std.posix.getenv("HOME") orelse break :blk alloc.dupeZ(u8, new_dir) catch return;
+                const expanded = std.fmt.allocPrint(alloc, "{s}{s}", .{ home, new_dir[1..] }) catch return;
+                defer alloc.free(expanded);
+                break :blk alloc.dupeZ(u8, expanded) catch return;
+            }
+            break :blk alloc.dupeZ(u8, new_dir) catch return;
+        };
+
+        // Replace the old dir.
+        alloc.free(priv.workspace_dirs.items[index]);
+        priv.workspace_dirs.items[index] = resolved_dir;
+
+        // Trigger git probe for this workspace.
+        var result = git_probe.probe(alloc, resolved_dir);
+        defer result.deinit(alloc);
+
+        if (priv.workspace_git_branches.items[index]) |old_b| alloc.free(old_b);
+        priv.workspace_git_branches.items[index] = if (result.branch) |b|
+            alloc.dupeZ(u8, b) catch null
+        else
+            null;
+        priv.workspace_git_dirty.items[index] = result.dirty;
+
+        // Refresh sidebar to show new dir and git state.
+        self.refreshAllWorkspaceSidebars();
+
+        log.info("workspace {d} directory changed to: {s}", .{ index, resolved_dir });
+    }
+
     // -----------------------------------------------------------------
     // Termplex IPC socket server (inline, no termplex module import)
     // -----------------------------------------------------------------
