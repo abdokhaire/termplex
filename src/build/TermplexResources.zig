@@ -381,6 +381,12 @@ fn addLinuxAppResources(
         "share/nautilus-python/extensions/termplex.py",
     ).step);
 
+    // Install termplex-ctl CLI tool
+    try steps.append(b.allocator, &b.addInstallFile(
+        b.path("tools/termplex-ctl"),
+        "bin/termplex-ctl",
+    ).step);
+
     // Various icons that our application can use, including the icon
     // that will be used for the desktop.
     try steps.append(b.allocator, &b.addInstallFile(
