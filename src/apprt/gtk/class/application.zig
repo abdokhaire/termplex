@@ -1193,6 +1193,10 @@ pub const Application = extern struct {
             return ipcAgentTerminate(self, alloc, id, root.object);
         }
 
+        if (std.mem.eql(u8, method, "surface.send")) {
+            return ipcSurfaceSend(self, alloc, id, root.object);
+        }
+
         // Stubs for other known methods — return ok with null result.
         const known_stubs = [_][]const u8{
             "system.tree",
@@ -1677,6 +1681,92 @@ pub const Application = extern struct {
             },
             else => return priv.active_workspace_idx,
         }
+    }
+
+    /// Resolve workspace + tab index from IPC params to an AdwTabPage.
+    /// Returns the tab page, or null if the workspace or tab index is invalid.
+    fn resolveTabPage(self: *Self, params: std.json.ObjectMap) ?*adw.TabPage {
+        const priv = self.private();
+
+        const ws_idx = self.resolveWorkspaceIdx(params) orelse return null;
+        if (ws_idx >= priv.workspace_tab_views.items.len) return null;
+
+        const tab_view = priv.workspace_tab_views.items[ws_idx];
+
+        const tab_idx: c_int = blk: {
+            const tv = params.get("tab") orelse break :blk 0;
+            switch (tv) {
+                .integer => |n| {
+                    if (n >= 0 and n < @as(i64, tab_view.getNPages()))
+                        break :blk @intCast(n);
+                    return null;
+                },
+                else => break :blk 0,
+            }
+        };
+
+        if (tab_idx >= tab_view.getNPages()) return null;
+        return tab_view.getNthPage(tab_idx);
+    }
+
+    /// Handle surface.send — writes text to a terminal's PTY.
+    fn ipcSurfaceSend(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        if (params_val != .object) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params object required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+        const params = params_val.object;
+
+        const page = self.resolveTabPage(params) orelse {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace or tab not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        // Get the text to send.
+        const text: []const u8 = blk: {
+            const tv = params.get("text") orelse break :blk "";
+            switch (tv) {
+                .string => |s| break :blk s,
+                else => break :blk "",
+            }
+        };
+
+        // If text is empty, just return success — nothing to write.
+        if (text.len == 0) {
+            return std.fmt.allocPrint(alloc,
+                "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        // Write text to the terminal's PTY.
+        const child = page.getChild();
+        if (gobject.ext.cast(Tab, child)) |tab| {
+            if (tab.getActiveSurface()) |gtk_surface| {
+                if (gtk_surface.core()) |core_surface| {
+                    const msg = termio.Message.writeReq(
+                        core_surface.alloc,
+                        text,
+                    ) catch {
+                        return std.fmt.allocPrint(alloc,
+                            "{{\"ok\":false,\"error\":{{\"code\":\"write_error\",\"message\":\"failed to create write request\"}},\"id\":{d}}}",
+                            .{id},
+                        ) catch null;
+                    };
+                    core_surface.io.queueMessage(msg, .unlocked);
+                }
+            }
+        }
+
+        return std.fmt.allocPrint(alloc,
+            "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
+            .{id},
+        ) catch null;
     }
 
     /// Handle tab.list — returns tabs in a workspace.
