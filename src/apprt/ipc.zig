@@ -73,6 +73,23 @@ pub const Action = union(enum) {
     /// The arguments to pass to Termplex as the command.
     new_window: NewWindow,
 
+    /// Create a new split in the active window's focused surface.
+    new_split: NewSplit,
+
+    pub const NewSplit = struct {
+        /// The direction for the split: "right", "left", "up", "down".
+        /// Also accepts "horizontal" (→ right) and "vertical" (→ down).
+        direction: [:0]const u8,
+
+        pub const C = extern struct {
+            direction: [*:0]const u8,
+        };
+
+        pub fn cval(self: *NewSplit, _: Allocator) Allocator.Error!NewSplit.C {
+            return .{ .direction = self.direction.ptr };
+        }
+    };
+
     pub const NewWindow = struct {
         /// A list of command arguments to launch in the new window. If this is
         /// `null` the command configured in the config or the user's default
@@ -113,6 +130,7 @@ pub const Action = union(enum) {
     /// Sync with: termplex_ipc_action_tag_e
     pub const Key = enum(c_int) {
         new_window,
+        new_split,
 
         test "termplex.h Action.Key" {
             try lib.checkTermplexHEnum(Key, "TERMPLEX_IPC_ACTION_");

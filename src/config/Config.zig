@@ -591,7 +591,7 @@ theme: ?Theme = null,
 
 /// Background color for the window.
 /// Specified as either hex (`#RRGGBB` or `RRGGBB`) or a named X11 color.
-background: Color = .{ .r = 0x0f, .g = 0x19, .b = 0x23 },
+background: Color = .{ .r = 0x13, .g = 0x1d, .b = 0x2b },
 
 /// Foreground color for the window.
 /// Specified as either hex (`#RRGGBB` or `RRGGBB`) or a named X11 color.

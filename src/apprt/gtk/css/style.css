@@ -172,7 +172,24 @@ label.resize-overlay {
 
 .termplex-sidebar {
   background-color: #131d2b;
-  border-right: 1px solid #243447;
+  border-right: none;
+}
+
+/* Hide the paned separator (drag handle) next to the sidebar */
+.termplex-sidebar-paned > separator {
+  background-color: #131d2b;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  min-width: 1px;
+  padding: 0;
+  margin: 0;
+}
+
+/* Remove visible separators inside the sidebar */
+.termplex-sidebar > separator {
+  background-color: #131d2b;
+  min-height: 0px;
 }
 
 .termplex-sidebar list,
@@ -199,7 +216,7 @@ label.resize-overlay {
   color: #00d4ff;
   padding: 14px 16px;
   letter-spacing: 3px;
-  border-bottom: 1px solid #243447;
+  border-bottom: none;
 }
 
 .termplex-workspace-tab {
@@ -231,6 +248,28 @@ label.resize-overlay {
   font-size: 10px;
 }
 
+/*
+ * Termplex Workspace Tab Hover Action Icons
+ */
+.termplex-tab-action {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0px 2px;
+  font-size: 11px;
+  color: #7a8ba3;
+  border-radius: 4px;
+}
+
+.termplex-tab-action:hover {
+  color: #e2e8f0;
+  background-color: rgba(0, 212, 255, 0.1);
+}
+
+.termplex-tab-action-delete:hover {
+  color: #f87171;
+  background-color: rgba(248, 113, 113, 0.1);
+}
+
 .termplex-port-badge {
   background-color: #1a3a2a;
   color: #4ade80;
@@ -256,7 +295,7 @@ label.resize-overlay {
   border-radius: 0 6px 6px 0;
   background-color: #131d2b;
   color: #00d4ff;
-  border: 1px solid #243447;
+  border: 1px solid #131d2b;
   border-left: none;
 }
 
@@ -278,7 +317,7 @@ label.resize-overlay {
 
 /* Orchestrator workspace row — visual separation below orchestrator */
 .termplex-orchestrator-row {
-  border-bottom: 1px solid #243447;
+  border-bottom: 1px solid #131d2b;
   margin-bottom: 4px;
   padding-bottom: 4px;
 }
@@ -322,6 +361,9 @@ headerbar {
   min-height: 32px;
   padding-top: 0;
   padding-bottom: 0;
+  background-color: #131d2b;
+  border-bottom: none;
+  box-shadow: none;
 }
 
 /*

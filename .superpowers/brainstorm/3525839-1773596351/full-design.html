@@ -1,0 +1,95 @@
+<h2>Complete Sidebar Design</h2>
+<p class="subtitle">ORCHESTRATOR at top, directory + git for all workspaces, click "+N" to expand ports</p>
+
+<div class="cards">
+  <div class="card" style="cursor:default;">
+    <div class="card-image">
+      <div style="background:#0f1923;padding:8px;border-radius:6px;font-family:monospace;font-size:12px;color:#e2e8f0;min-width:240px;">
+
+        <!-- ORCHESTRATOR - always at top -->
+        <div style="border-left:3px solid transparent;padding:6px 8px;margin-bottom:4px;border-bottom:1px solid #243447;padding-bottom:8px;">
+          <div><span style="color:#00d4ff;font-weight:800;font-size:10px;letter-spacing:1.5px;">ORCHESTRATOR</span></div>
+          <div style="color:#94a3b8;font-size:10px;margin-top:2px;">~/.termplex/orchestration</div>
+        </div>
+
+        <!-- Workspace 1 - active, collapsed ports -->
+        <div style="border-left:3px solid #00d4ff;padding:6px 8px;margin-bottom:4px;background:#1a2736;border-radius:0 4px 4px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:bold;font-size:13px;">fullstack</span>
+            <span style="color:#4ade80;font-size:10px;">:3000 <span style="background:#1a3a2a;padding:1px 4px;border-radius:3px;cursor:pointer;">+2</span></span>
+          </div>
+          <div style="color:#94a3b8;font-size:10px;margin-top:2px;">~/projects/myapp</div>
+          <div style="color:#00d4ff;font-size:10px;margin-top:1px;">⎇ main*</div>
+        </div>
+
+        <!-- Workspace 2 - expanded ports (after clicking +2) -->
+        <div style="border-left:3px solid transparent;padding:6px 8px;margin-bottom:4px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:bold;font-size:13px;">backend</span>
+            <span style="color:#4ade80;font-size:10px;">:8080 <span style="background:#1a3a2a;padding:1px 4px;border-radius:3px;cursor:pointer;">+1</span></span>
+          </div>
+          <div style="color:#94a3b8;font-size:10px;margin-top:2px;">~/projects/api-server</div>
+          <div style="color:#00d4ff;font-size:10px;margin-top:1px;">⎇ feat/auth</div>
+          <!-- Expanded port list -->
+          <div style="background:#131d2b;border-radius:4px;padding:4px 6px;margin-top:3px;font-size:10px;">
+            <div style="color:#4ade80;">:8080 <span style="color:#64748b;">— api server</span></div>
+            <div style="color:#4ade80;">:5432 <span style="color:#64748b;">— postgres</span></div>
+          </div>
+        </div>
+
+        <!-- Workspace 3 - single port, no badge needed -->
+        <div style="border-left:3px solid transparent;padding:6px 8px;margin-bottom:4px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:bold;font-size:13px;">docs</span>
+            <span style="color:#4ade80;font-size:10px;">:4321</span>
+          </div>
+          <div style="color:#94a3b8;font-size:10px;margin-top:2px;">~/projects/docs</div>
+          <div style="color:#00d4ff;font-size:10px;margin-top:1px;">⎇ main</div>
+        </div>
+
+        <!-- Workspace 4 - no ports, no git -->
+        <div style="border-left:3px solid transparent;padding:6px 8px;">
+          <div>
+            <span style="font-weight:bold;font-size:13px;">scratch</span>
+          </div>
+          <div style="color:#94a3b8;font-size:10px;margin-top:2px;">~/tmp</div>
+        </div>
+
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Full sidebar layout</h3>
+      <p>Shows all states: ORCHESTRATOR at top, active workspace highlighted, expanded ports, single port, no ports, no git.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:24px;">
+  <h3>Behavior summary</h3>
+  <table style="width:100%;font-size:14px;border-collapse:collapse;">
+    <tr style="border-bottom:1px solid #333;">
+      <td style="padding:8px;color:#00d4ff;font-weight:bold;">Directory</td>
+      <td style="padding:8px;color:#94a3b8;">Shown for all workspaces, dim gray, ~ shorthand, ellipsized if long</td>
+    </tr>
+    <tr style="border-bottom:1px solid #333;">
+      <td style="padding:8px;color:#00d4ff;font-weight:bold;">Git branch</td>
+      <td style="padding:8px;color:#94a3b8;">Probed for all workspaces (not just active), shown with * if dirty</td>
+    </tr>
+    <tr style="border-bottom:1px solid #333;">
+      <td style="padding:8px;color:#00d4ff;font-weight:bold;">Ports (1)</td>
+      <td style="padding:8px;color:#94a3b8;">Single port shown inline, no badge</td>
+    </tr>
+    <tr style="border-bottom:1px solid #333;">
+      <td style="padding:8px;color:#00d4ff;font-weight:bold;">Ports (2+)</td>
+      <td style="padding:8px;color:#94a3b8;">First port + "+N" badge. Click badge to expand/collapse port list below</td>
+    </tr>
+    <tr style="border-bottom:1px solid #333;">
+      <td style="padding:8px;color:#00d4ff;font-weight:bold;">Change Dir</td>
+      <td style="padding:8px;color:#94a3b8;">Right-click menu → "Change Directory..." → inline text entry (like rename)</td>
+    </tr>
+    <tr>
+      <td style="padding:8px;color:#00d4ff;font-weight:bold;">No git/ports</td>
+      <td style="padding:8px;color:#94a3b8;">Rows hidden when empty — workspace just shows name + directory</td>
+    </tr>
+  </table>
+</div>

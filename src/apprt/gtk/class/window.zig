@@ -372,6 +372,7 @@ pub const Window = extern struct {
 
             // 2. Create a horizontal Gtk.Paned to hold sidebar + content.
             const paned = gtk.Paned.new(.horizontal);
+            paned.as(gtk.Widget).addCssClass("termplex-sidebar-paned");
             priv_.sidebar_paned = paned;
 
             // 3. Grab the current window content (the tab_overview) and

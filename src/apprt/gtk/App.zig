@@ -13,6 +13,7 @@ const CoreApp = @import("../../App.zig");
 const Application = @import("class/application.zig").Application;
 const Surface = @import("Surface.zig");
 const ipcNewWindow = @import("ipc/new_window.zig").newWindow;
+const ipcNewSplit = @import("ipc/new_split.zig").newSplit;
 
 const log = std.log.scoped(.gtk);
 
@@ -90,6 +91,7 @@ pub fn performIpc(
 ) !bool {
     switch (action) {
         .new_window => return try ipcNewWindow(alloc, target, value),
+        .new_split => return try ipcNewSplit(alloc, target, value),
     }
 }
 

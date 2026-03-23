@@ -250,7 +250,7 @@ const usage_text =
     \\
     \\  surface list
     \\  surface new
-    \\  surface split [--direction horizontal|vertical]
+    \\  surface split [--direction right|left|up|down|horizontal|vertical]
     \\  surface close [REF]
     \\  surface focus REF
     \\

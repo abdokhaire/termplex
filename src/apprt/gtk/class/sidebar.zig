@@ -26,8 +26,8 @@ const log = std.log.scoped(.gtk_termplex_sidebar);
 /// The sidebar communicates user interactions to its owner via callback
 /// function pointers set with `setCallbacks`.
 ///
-/// Right-clicking a workspace row shows a context menu with Rename and
-/// Delete options. Drag-to-reorder is not yet implemented.
+/// Hovering a workspace row reveals action icons (rename, change-dir,
+/// delete) on the right side. Drag-to-reorder is not yet implemented.
 pub const Sidebar = extern struct {
     const Self = @This();
     parent_instance: Parent,
@@ -64,12 +64,6 @@ pub const Sidebar = extern struct {
 
         /// Callback invoked when the user selects "Change Directory..." from the context menu.
         on_change_dir: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
-
-        /// The index of the workspace currently targeted by the context menu.
-        context_menu_index: u32 = 0,
-
-        /// Popover widget for the context menu (reused/cleaned up across invocations).
-        context_popover: ?*gtk.Popover = null,
 
         /// Index of the orchestration workspace (null if none). Set by Application.
         orchestration_idx: ?u32 = null,
@@ -125,18 +119,6 @@ pub const Sidebar = extern struct {
             .{},
         );
 
-        // Right-click gesture for context menu.
-        const gesture = gtk.GestureClick.new();
-        gesture.as(gtk.GestureSingle).setButton(3); // right-click
-        _ = gtk.GestureClick.signals.pressed.connect(
-            gesture,
-            *Self,
-            &onRightClick,
-            self,
-            .{},
-        );
-        workspace_list.as(gtk.Widget).addController(gesture.as(gtk.EventController));
-
         scrolled.setChild(workspace_list.as(gtk.Widget));
         outer.append(scrolled.as(gtk.Widget));
 
@@ -180,122 +162,6 @@ pub const Sidebar = extern struct {
         const priv = self.private();
         if (priv.on_new_workspace) |cb| {
             cb(priv.userdata);
-        }
-    }
-
-    fn onRightClick(
-        _: *gtk.GestureClick,
-        _: c_int, // n_press
-        _: f64, // x
-        y: f64, // y
-        self: *Self,
-    ) callconv(.c) void {
-        const priv = self.private();
-
-        // Dismiss and clean up any existing popover.
-        if (priv.context_popover) |old| {
-            old.popdown();
-            old.as(gtk.Widget).unparent();
-            priv.context_popover = null;
-        }
-
-        const row = priv.workspace_list.getRowAtY(@as(c_int, @intFromFloat(y))) orelse return;
-        const index: u32 = @intCast(row.getIndex());
-
-        // No context menu for the orchestration workspace.
-        if (priv.orchestration_idx) |orch_idx| {
-            if (index == orch_idx) return;
-        }
-
-        priv.context_menu_index = index;
-
-        log.debug("context menu: showing for workspace index={d}", .{index});
-
-        // Build a vertical box with Rename and Delete buttons.
-        const box = gtk.Box.new(.vertical, 4);
-        box.as(gtk.Widget).setMarginTop(8);
-        box.as(gtk.Widget).setMarginBottom(8);
-        box.as(gtk.Widget).setMarginStart(8);
-        box.as(gtk.Widget).setMarginEnd(8);
-
-        const rename_btn = gtk.Button.newWithLabel("Rename");
-        rename_btn.as(gtk.Widget).addCssClass("flat");
-        _ = gtk.Button.signals.clicked.connect(
-            rename_btn,
-            *Self,
-            &onContextRename,
-            self,
-            .{},
-        );
-        box.append(rename_btn.as(gtk.Widget));
-
-        const delete_btn = gtk.Button.newWithLabel("Delete");
-        delete_btn.as(gtk.Widget).addCssClass("destructive-action");
-        _ = gtk.Button.signals.clicked.connect(
-            delete_btn,
-            *Self,
-            &onContextDelete,
-            self,
-            .{},
-        );
-        box.append(delete_btn.as(gtk.Widget));
-
-        const chdir_btn = gtk.Button.newWithLabel("Change Directory...");
-        chdir_btn.as(gtk.Widget).addCssClass("flat");
-        _ = gtk.Button.signals.clicked.connect(
-            chdir_btn,
-            *Self,
-            &onContextChangeDir,
-            self,
-            .{},
-        );
-        box.append(chdir_btn.as(gtk.Widget));
-
-        // Ensure all children are visible.
-        rename_btn.as(gtk.Widget).setVisible(1);
-        delete_btn.as(gtk.Widget).setVisible(1);
-        chdir_btn.as(gtk.Widget).setVisible(1);
-        box.as(gtk.Widget).setVisible(1);
-
-        // Create a popover, parent it to the clicked row, and show it.
-        const popover = gtk.Popover.new();
-        popover.setChild(box.as(gtk.Widget));
-        popover.as(gtk.Widget).setParent(row.as(gtk.Widget));
-        popover.setAutohide(1);
-        popover.popup();
-
-        priv.context_popover = popover;
-    }
-
-    fn onContextRename(_: *gtk.Button, self: *Self) callconv(.c) void {
-        const priv = self.private();
-        // Dismiss the popover first.
-        if (priv.context_popover) |p| {
-            p.popdown();
-        }
-        if (priv.on_rename) |cb| {
-            cb(priv.context_menu_index, priv.userdata);
-        }
-    }
-
-    fn onContextDelete(_: *gtk.Button, self: *Self) callconv(.c) void {
-        const priv = self.private();
-        // Dismiss the popover first.
-        if (priv.context_popover) |p| {
-            p.popdown();
-        }
-        if (priv.on_delete) |cb| {
-            cb(priv.context_menu_index, priv.userdata);
-        }
-    }
-
-    fn onContextChangeDir(_: *gtk.Button, self: *Self) callconv(.c) void {
-        const priv = self.private();
-        if (priv.context_popover) |p| {
-            p.popdown();
-        }
-        if (priv.on_change_dir) |cb| {
-            cb(priv.context_menu_index, priv.userdata);
         }
     }
 
@@ -357,6 +223,26 @@ pub const Sidebar = extern struct {
 
         const tab = WorkspaceTab.new();
         tab.update(name, port_text, branch_text, dir_text, false, false);
+
+        // Wire hover action callbacks (rename/delete/change-dir).
+        // Skip for orchestrator workspace — callbacks stay null so icons won't appear.
+        const is_orchestrator = if (priv.orchestration_idx) |orch_idx| blk: {
+            // The new row will be appended at the end; compute its index.
+            var last_idx: c_int = 0;
+            while (priv.workspace_list.getRowAtIndex(last_idx) != null) {
+                last_idx += 1;
+            }
+            break :blk @as(u32, @intCast(last_idx)) == orch_idx;
+        } else false;
+
+        if (!is_orchestrator) {
+            tab.setActionCallbacks(
+                priv.on_rename,
+                priv.on_delete,
+                priv.on_change_dir,
+                priv.userdata,
+            );
+        }
 
         priv.workspace_list.append(tab.as(gtk.Widget));
 
@@ -485,13 +371,6 @@ pub const Sidebar = extern struct {
     // Virtual methods
 
     fn dispose(self: *Self) callconv(.c) void {
-        // Clean up the context popover if it's still parented.
-        const priv = self.private();
-        if (priv.context_popover) |popover| {
-            popover.as(gtk.Widget).unparent();
-            priv.context_popover = null;
-        }
-
         // Unparent all direct children so GTK can finalize them.
         const widget = self.as(gtk.Widget);
         while (widget.getFirstChild()) |child| {

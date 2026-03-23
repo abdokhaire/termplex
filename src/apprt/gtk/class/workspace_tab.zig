@@ -80,6 +80,27 @@ pub const WorkspaceTab = extern struct {
         chdir_userdata: ?*anyopaque = null,
         chdir_index: u32 = 0,
 
+        /// Horizontal box containing action icons (rename, dir, delete), shown on hover.
+        action_box: *gtk.Box = undefined,
+
+        /// Whether port_box should be visible (tracked for hover restore).
+        has_ports: bool = false,
+
+        /// Whether the pointer is currently hovering over this tab.
+        is_hovered: bool = false,
+
+        /// Callback invoked when the rename action icon is clicked.
+        on_action_rename: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
+        /// Callback invoked when the delete action icon is clicked.
+        on_action_delete: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
+        /// Callback invoked when the change-dir action icon is clicked.
+        on_action_change_dir: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
+        /// Opaque pointer passed to action callbacks.
+        action_userdata: ?*anyopaque = null,
+
         pub var offset: c_int = 0;
     };
 
@@ -145,6 +166,37 @@ pub const WorkspaceTab = extern struct {
         );
         port_badge_label.as(gtk.Widget).addController(badge_click.as(gtk.EventController));
 
+        // -- Action icons box: shown on hover, hidden by default --
+        const action_box = gtk.Box.new(.horizontal, 2);
+        action_box.as(gtk.Widget).setVisible(0);
+        priv.action_box = action_box;
+        row1.append(action_box.as(gtk.Widget));
+
+        const rename_btn = gtk.Button.newWithLabel("\xe2\x9c\x8e"); // ✎
+        rename_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
+        rename_btn.as(gtk.Widget).addCssClass("flat");
+        _ = gtk.Button.signals.clicked.connect(rename_btn, *Self, &onActionRename, self, .{});
+        action_box.append(rename_btn.as(gtk.Widget));
+
+        const dir_btn = gtk.Button.newWithLabel("\xe2\x8c\x82"); // ⌂
+        dir_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
+        dir_btn.as(gtk.Widget).addCssClass("flat");
+        _ = gtk.Button.signals.clicked.connect(dir_btn, *Self, &onActionChangeDir, self, .{});
+        action_box.append(dir_btn.as(gtk.Widget));
+
+        const delete_btn = gtk.Button.newWithLabel("\xc3\x97"); // ×
+        delete_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
+        delete_btn.as(gtk.Widget).addCssClass("termplex-tab-action-delete");
+        delete_btn.as(gtk.Widget).addCssClass("flat");
+        _ = gtk.Button.signals.clicked.connect(delete_btn, *Self, &onActionDelete, self, .{});
+        action_box.append(delete_btn.as(gtk.Widget));
+
+        // Hover detection: show/hide action icons.
+        const motion = gtk.EventControllerMotion.new();
+        _ = gtk.EventControllerMotion.signals.enter.connect(motion, *Self, &onHoverEnter, self, .{});
+        _ = gtk.EventControllerMotion.signals.leave.connect(motion, *Self, &onHoverLeave, self, .{});
+        self.as(gtk.Widget).addController(motion.as(gtk.EventController));
+
         // -- Row 2: directory label --
         const row2 = gtk.Box.new(.horizontal, 0);
         content.append(row2.as(gtk.Widget));
@@ -189,12 +241,72 @@ pub const WorkspaceTab = extern struct {
         priv.port_detail_box.as(gtk.Widget).setVisible(@intFromBool(priv.ports_expanded));
     }
 
+    fn onHoverEnter(_: *gtk.EventControllerMotion, _: f64, _: f64, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        // Only show actions if callbacks are wired (not orchestrator).
+        if (priv.on_action_rename == null and priv.on_action_delete == null and priv.on_action_change_dir == null) return;
+        priv.is_hovered = true;
+        priv.action_box.as(gtk.Widget).setVisible(1);
+        priv.port_box.as(gtk.Widget).setVisible(0);
+    }
+
+    fn onHoverLeave(_: *gtk.EventControllerMotion, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        priv.is_hovered = false;
+        priv.action_box.as(gtk.Widget).setVisible(0);
+        priv.port_box.as(gtk.Widget).setVisible(@intFromBool(priv.has_ports));
+    }
+
+    fn onActionRename(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        const cb = priv.on_action_rename orelse return;
+        const index = self.getRowIndex() orelse return;
+        cb(index, priv.action_userdata);
+    }
+
+    fn onActionDelete(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        const cb = priv.on_action_delete orelse return;
+        const index = self.getRowIndex() orelse return;
+        cb(index, priv.action_userdata);
+    }
+
+    fn onActionChangeDir(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        const cb = priv.on_action_change_dir orelse return;
+        const index = self.getRowIndex() orelse return;
+        cb(index, priv.action_userdata);
+    }
+
+    fn getRowIndex(self: *Self) ?u32 {
+        const parent = self.as(gtk.Widget).getParent() orelse return null;
+        const row: *gtk.ListBoxRow = @ptrCast(@alignCast(parent));
+        const idx = row.getIndex();
+        if (idx < 0) return null;
+        return @intCast(idx);
+    }
+
     // ---------------------------------------------------------------
     // Public API
 
     /// Create a new WorkspaceTab widget.
     pub fn new() *Self {
         return gobject.ext.newInstance(Self, .{});
+    }
+
+    /// Set callback functions for hover action icons (rename, delete, change-dir).
+    pub fn setActionCallbacks(
+        self: *Self,
+        on_rename: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        on_delete: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        on_change_dir: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        userdata: ?*anyopaque,
+    ) void {
+        const priv = self.private();
+        priv.on_action_rename = on_rename;
+        priv.on_action_delete = on_delete;
+        priv.on_action_change_dir = on_change_dir;
+        priv.action_userdata = userdata;
     }
 
     /// Refresh all displayed values. The caller maps from WorkspaceState
@@ -213,14 +325,17 @@ pub const WorkspaceTab = extern struct {
         // Update labels
         priv.name_label.setLabel(name orelse "workspace");
 
+        // Track port visibility for hover restore.
+        priv.has_ports = if (port_text) |p| p.len > 0 else false;
+
         // Update port display.
         if (port_text) |p| {
             if (p.len == 0) {
-                priv.port_box.as(gtk.Widget).setVisible(0);
+                if (!priv.is_hovered) priv.port_box.as(gtk.Widget).setVisible(0);
                 priv.port_detail_box.as(gtk.Widget).setVisible(0);
                 priv.ports_expanded = false;
             } else {
-                priv.port_box.as(gtk.Widget).setVisible(1);
+                if (!priv.is_hovered) priv.port_box.as(gtk.Widget).setVisible(1);
 
                 // Count ports by counting ':' characters.
                 var port_count: u32 = 0;
@@ -268,7 +383,7 @@ pub const WorkspaceTab = extern struct {
                 }
             }
         } else {
-            priv.port_box.as(gtk.Widget).setVisible(0);
+            if (!priv.is_hovered) priv.port_box.as(gtk.Widget).setVisible(0);
             priv.port_detail_box.as(gtk.Widget).setVisible(0);
             priv.ports_expanded = false;
         }

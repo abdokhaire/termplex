@@ -1020,13 +1020,20 @@ typedef struct {
   const char **arguments;
 } termplex_ipc_action_new_window_s;
 
+// apprt.ipc.Action.NewSplit
+typedef struct {
+  const char *direction;
+} termplex_ipc_action_new_split_s;
+
 typedef union {
   termplex_ipc_action_new_window_s new_window;
+  termplex_ipc_action_new_split_s new_split;
 } termplex_ipc_action_u;
 
 // apprt.ipc.Action.Key
 typedef enum {
   TERMPLEX_IPC_ACTION_NEW_WINDOW,
+  TERMPLEX_IPC_ACTION_NEW_SPLIT,
 } termplex_ipc_action_tag_e;
 
 //-------------------------------------------------------------------

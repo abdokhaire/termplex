@@ -934,13 +934,8 @@ pub const Application = extern struct {
             if (index == orch_idx) return;
         }
 
-        // Close all tabs in this workspace's TabView before releasing it.
+        // Get the TabView before removing from the array.
         const tab_view = priv.workspace_tab_views.items[index];
-        while (tab_view.getNPages() > 0) {
-            const page = tab_view.getNthPage(0);
-            tab_view.closePage(page);
-            tab_view.closePageFinish(page, @intFromBool(true));
-        }
 
         // Free the owned name string.
         alloc.free(priv.workspace_names.items[index]);
@@ -950,19 +945,36 @@ pub const Application = extern struct {
         alloc.free(priv.workspace_dirs.items[index]);
         _ = priv.workspace_dirs.orderedRemove(index);
 
-        // Release Application-owned ref on the TabView.
-        tab_view.as(gobject.Object).unref();
+        // Remove from tab_views array.
         _ = priv.workspace_tab_views.orderedRemove(index);
+
+        // Defer the TabView unref to the GLib idle loop. Unreffing
+        // synchronously triggers surface close callbacks that re-enter
+        // application state while we are still modifying our arrays,
+        // corrupting workspace_names and crashing in autosaveSession.
+        _ = glib.idleAdd(deferredTabViewUnref, @ptrCast(tab_view));
 
         // Free per-workspace git state.
         if (priv.workspace_git_branches.items[index]) |b| alloc.free(b);
         _ = priv.workspace_git_branches.orderedRemove(index);
         _ = priv.workspace_git_dirty.orderedRemove(index);
 
-        // Clamp active_workspace_idx so it stays valid.
-        const new_len = priv.workspace_names.items.len;
-        if (new_len > 0 and priv.active_workspace_idx >= @as(u32, @intCast(new_len))) {
-            priv.active_workspace_idx = @intCast(new_len - 1);
+        // Adjust active_workspace_idx: shift down if removed index was before active,
+        // clamp if it was the active (or last).
+        if (index < priv.active_workspace_idx) {
+            priv.active_workspace_idx -= 1;
+        } else {
+            const new_len = priv.workspace_names.items.len;
+            if (new_len > 0 and priv.active_workspace_idx >= @as(u32, @intCast(new_len))) {
+                priv.active_workspace_idx = @intCast(new_len - 1);
+            }
+        }
+
+        // Adjust orchestration_workspace_idx if a workspace before it was removed.
+        if (priv.orchestration_workspace_idx) |orch_idx| {
+            if (index < orch_idx) {
+                priv.orchestration_workspace_idx = orch_idx - 1;
+            }
         }
     }
 
@@ -3137,6 +3149,14 @@ pub const Application = extern struct {
         self.refreshAllWorkspaceSidebars();
 
         return @intFromBool(glib.SOURCE_CONTINUE);
+    }
+
+    /// Idle callback to safely unref a TabView after workspace removal.
+    /// Called from the GLib idle loop to avoid reentrancy during removeWorkspace.
+    fn deferredTabViewUnref(ud: ?*anyopaque) callconv(.c) c_int {
+        const tv: *adw.TabView = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        tv.as(gobject.Object).unref();
+        return @intFromBool(glib.SOURCE_REMOVE);
     }
 
     /// One-shot callback to probe git for all workspaces at startup.

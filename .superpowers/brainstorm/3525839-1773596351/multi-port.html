@@ -1,0 +1,73 @@
+<h2>Multiple Ports Display</h2>
+<p class="subtitle">How should multiple listening ports be shown in the sidebar?</p>
+
+<div class="cards">
+
+  <!-- Option A: Comma-separated on one line -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#0f1923;padding:8px;border-radius:6px;font-family:monospace;font-size:12px;color:#e2e8f0;">
+        <div style="border-left:3px solid #00d4ff;padding:6px 8px;background:#1a2736;border-radius:0 4px 4px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:bold;font-size:13px;">fullstack</span>
+            <span style="color:#4ade80;font-size:10px;">:3000 :5173 :5432</span>
+          </div>
+          <div style="color:#94a3b8;font-size:10px;margin-top:2px;">~/projects/myapp</div>
+          <div style="color:#00d4ff;font-size:10px;margin-top:1px;">⎇ main*</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A: Inline list</h3>
+      <p>All ports listed on one line, space-separated. Simple but can overflow if many ports.</p>
+    </div>
+  </div>
+
+  <!-- Option B: Count badge + expand on hover/click -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#0f1923;padding:8px;border-radius:6px;font-family:monospace;font-size:12px;color:#e2e8f0;">
+        <div style="border-left:3px solid #00d4ff;padding:6px 8px;background:#1a2736;border-radius:0 4px 4px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:bold;font-size:13px;">fullstack</span>
+            <span style="color:#4ade80;font-size:10px;">:3000 <span style="background:#1a3a2a;padding:1px 4px;border-radius:3px;">+2</span></span>
+          </div>
+          <div style="color:#94a3b8;font-size:10px;margin-top:2px;">~/projects/myapp</div>
+          <div style="color:#00d4ff;font-size:10px;margin-top:1px;">⎇ main*</div>
+        </div>
+      </div>
+      <div style="background:#0f1923;padding:4px 8px;border-radius:0 0 6px 6px;font-family:monospace;font-size:10px;margin-top:-4px;">
+        <div style="color:#94a3b8;padding:4px 8px;background:#1a2736;border-radius:4px;">
+          <span style="color:#4ade80;">Tooltip/hover:</span> :3000 :5173 :5432
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B: Primary port + badge</h3>
+      <p>Shows first port + "+N" badge. Full list on hover tooltip. Stays compact even with many ports.</p>
+    </div>
+  </div>
+
+  <!-- Option C: Ports get their own row when multiple -->
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#0f1923;padding:8px;border-radius:6px;font-family:monospace;font-size:12px;color:#e2e8f0;">
+        <div style="border-left:3px solid #00d4ff;padding:6px 8px;background:#1a2736;border-radius:0 4px 4px 0;">
+          <div>
+            <span style="font-weight:bold;font-size:13px;">fullstack</span>
+          </div>
+          <div style="color:#94a3b8;font-size:10px;margin-top:2px;">~/projects/myapp</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:1px;">
+            <span style="color:#00d4ff;font-size:10px;">⎇ main*</span>
+            <span style="color:#4ade80;font-size:10px;">:3000 :5173 :5432</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C: Ports on git row (right-aligned)</h3>
+      <p>Git branch left, all ports right on the same row. Uses horizontal space efficiently. Wraps naturally if many ports.</p>
+    </div>
+  </div>
+
+</div>
