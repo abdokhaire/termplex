@@ -25,4 +25,7 @@ glad.zip
 /termplex.qcow2
 
 vgcore.*
-
+.craft/
+parts/
+prime/
+stage/
