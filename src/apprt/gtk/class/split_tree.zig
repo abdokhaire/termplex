@@ -448,22 +448,22 @@ pub const SplitTree = extern struct {
     fn getActiveSurfaceHandle(self: *Self) ?Surface.Tree.Node.Handle {
         const tree = self.getTree() orelse return null;
         var it = tree.iterator();
-        while (it.next()) |entry| {
-            if (entry.view.getFocused()) return entry.handle;
-        }
 
-        // If none are currently focused, the most previously focused
-        // surface (if it exists) is our active surface. This lets things
-        // like apprt actions and bell ringing continue to work in the
-        // background.
+        // The most recently targeted surface should win. This keeps session
+        // restore and IPC-driven surface selection stable even if GTK focus
+        // events land later than the state change that requested them.
         if (self.private().last_focused.get()) |v| {
             defer v.unref();
 
             // We need to find the handle of the last focused surface.
-            it = tree.iterator();
             while (it.next()) |entry| {
                 if (entry.view == v) return entry.handle;
             }
+        }
+
+        it = tree.iterator();
+        while (it.next()) |entry| {
+            if (entry.view.getFocused()) return entry.handle;
         }
 
         return null;
@@ -476,6 +476,13 @@ pub const SplitTree = extern struct {
         // in a multi-threaded context so this is safe.
         surface.unref();
         return surface;
+    }
+
+    /// Override the last-focused surface. This is used during session restore
+    /// so split tabs reopen with the previously active leaf selected.
+    pub fn setLastFocusedSurface(self: *Self, surface: ?*Surface) void {
+        self.private().last_focused.set(surface);
+        self.as(gobject.Object).notifyByPspec(properties.@"active-surface".impl.param_spec);
     }
 
     pub fn getHasSurfaces(self: *Self) bool {

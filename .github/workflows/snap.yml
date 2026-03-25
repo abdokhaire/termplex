@@ -17,9 +17,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          [namespace-profile-termplex-snap, namespace-profile-termplex-snap-arm64]
-    runs-on: ${{ matrix.os }}
+        variant:
+          - arch: amd64
+            runner: namespace-profile-termplex-snap
+          - arch: arm64
+            runner: namespace-profile-termplex-snap-arm64
+    runs-on: ${{ matrix.variant.runner }}
     timeout-minutes: 45
     env:
       ZIG_LOCAL_CACHE_DIR: /zig/local-cache
@@ -57,3 +60,15 @@ jobs:
       - uses: snapcore/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
         with:
           path: dist
+
+      - name: Collect snap
+        run: |
+          mkdir out
+          find . dist -maxdepth 2 -type f -name 'termplex_*.snap' -exec cp -v {} out/ \;
+          find out -maxdepth 1 -type f -name 'termplex_*.snap' | grep -q .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: snap-${{ matrix.variant.arch }}
+          path: out/*.snap

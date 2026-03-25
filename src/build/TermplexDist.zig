@@ -112,6 +112,17 @@ pub fn init(b: *std.Build, cfg: *const Config) !TermplexDist {
         const step = b.addSystemCommand(&.{ "zig", "build", "test" });
         step.setCwd(extract_dir);
 
+        // Allow local environments to inject extra test args for distcheck,
+        // such as disabling unavailable system integrations.
+        if (std.process.getEnvVarOwned(b.allocator, "TERMPLEX_DISTCHECK_ARGS")) |extra_args| {
+            defer b.allocator.free(extra_args);
+            var it = std.mem.tokenizeAny(u8, extra_args, " \t\r\n");
+            while (it.next()) |arg| {
+                const owned_arg = b.allocator.dupe(u8, arg) catch @panic("OOM duplicating distcheck arg");
+                step.addArg(owned_arg);
+            }
+        } else |_| {}
+
         // Must be set so that Zig knows that this command doesn't
         // have side effects and is being run for its exit code check.
         // Zig will cache depending on its extract dir.

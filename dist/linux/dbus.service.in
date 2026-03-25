@@ -1,4 +1,4 @@
 [D-BUS Service]
 Name=@APPID@
 SystemdService=app-@APPID@.service
-Exec=@TERMPLEX@ --gtk-single-instance=true --initial-window=false
+Exec=@TERMPLEX_APP@ --gtk-single-instance=true --initial-window=false

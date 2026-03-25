@@ -9,7 +9,7 @@
 //   Notification    — ephemeral notification from OSC or CLI
 
 const std = @import("std");
-const uuid_mod = @import("uuid");
+const uuid_mod = @import("../util/uuid.zig");
 const Uuid = uuid_mod.Uuid;
 const uuid_util = uuid_mod;
 

@@ -1,14 +1,17 @@
 name: termplex
 base: core24
+title: Termplex
 summary: A terminal emulator
 description: |
   Termplex is a fast, feature-rich, and cross-platform terminal emulator that
   uses platform-native UI and GPU acceleration.
 grade: stable
 confinement: classic
-contact: https://github.com/termplex-org/termplex/discussions
-issues: https://github.com/termplex-org/termplex/issues
+contact: https://github.com/abdokhaire/termplex/discussions
+issues: https://github.com/abdokhaire/termplex/issues
 website: https://termplex.org
+source-code: https://github.com/abdokhaire/termplex
+donation: https://github.com/sponsors/abdokhaire
 license: MIT
 icon: images/icons/icon_512.png
 adopt-info: termplex
@@ -19,7 +22,7 @@ platforms:
 
 apps:
   termplex:
-    command: bin/termplex
+    command: bin/termplex-app
     command-chain: [app/launcher]
     completer: share/bash-completion/completions/termplex.bash
     desktop: share/applications/com.termplex.app.desktop
@@ -78,15 +81,24 @@ parts:
       - gettext
     # TODO: Remove -fno-sys=gtk4-layer-shell when we upgrade to a version that packages it Ubuntu 24.10+
     override-build: |
-      craftctl set version=$(cat VERSION)
+      $CRAFT_PART_SRC/../../zig/src/zig build dist -j1 -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell
+      archive=$(find zig-out/dist -maxdepth 1 -type f -name 'termplex-*.tar.gz' | sort | tail -n1)
+      version=${archive##*/}
+      version=${version#termplex-}
+      version=${version%.tar.gz}
+      craftctl set version="$version"
       $CRAFT_PART_SRC/../../zig/src/zig build \
         -Dsnap \
         -Dpatch-rpath=\$ORIGIN/../usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR:/snap/core24/current/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR \
         -Doptimize=ReleaseFast \
         -Dcpu=baseline \
         -fno-sys=gtk4-layer-shell
-      cp -rp zig-out/* $CRAFT_PART_INSTALL/
+      cp -rp zig-out/bin zig-out/lib zig-out/share $CRAFT_PART_INSTALL/
       sed -i 's|Icon=com.termplex.app|Icon=${SNAP}/share/icons/hicolor/512x512/apps/com.termplex.app.png|g' $CRAFT_PART_INSTALL/share/applications/com.termplex.app.desktop
+    prime:
+      - -include
+      - -lib/libtermplex-vt.so*
+      - -share/pkgconfig
 
   libs:
     plugin: nil
@@ -141,7 +153,16 @@ parts:
     plugin: nil
     stage-packages:
       - libgl1-mesa-dri
+    build-packages:
+      - patchelf
     build-attributes: [no-patchelf]
+    override-prime: |
+      craftctl default
+      for lib in "$CRAFT_PRIME"/usr/lib/*/libgallium-*.so; do
+        if [ -f "$lib" ]; then
+          patchelf --set-rpath "\$ORIGIN:/snap/core24/current/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR" "$lib"
+        fi
+      done
     stage:
       # Only the libraries in dri need to not be patched, the rest come from the mesa part
       # Otherwise snapcraft may strip the build ID and cause the driver to crash

@@ -1967,6 +1967,11 @@ pub const Surface = extern struct {
         return priv.title_override orelse priv.title;
     }
 
+    /// Returns the manually overridden title, if any.
+    pub fn getTitleOverride(self: *Self) ?[:0]const u8 {
+        return self.private().title_override;
+    }
+
     /// Copies the effective title to the clipboard.
     pub fn copyTitleToClipboard(self: *Self) bool {
         const title = self.getEffectiveTitle() orelse return false;

@@ -43,9 +43,15 @@ const ConfigErrorsDialog = @import("config_errors_dialog.zig").ConfigErrorsDialo
 const GlobalShortcuts = @import("global_shortcuts.zig").GlobalShortcuts;
 
 const git_probe = @import("../../../termplex/core/git_probe.zig");
+const notification_mod = @import("../../../termplex/core/notification.zig");
 const port_scanner = @import("../../../termplex/core/port_scanner.zig");
+const session_mod = @import("../../../termplex/core/session.zig");
+const workspace_mod = @import("../../../termplex/core/workspace.zig");
 const termplex_config = @import("../../../termplex/core/config.zig");
 const agents = @import("../../../termplex/ipc/agents.zig");
+const uuid = @import("../../../termplex/util/uuid.zig");
+
+const Uuid = uuid.Uuid;
 
 const log = std.log.scoped(.gtk_termplex_application);
 
@@ -231,6 +237,9 @@ pub const Application = extern struct {
         /// string is owned (allocated via the Application allocator).
         workspace_dirs: std.ArrayListUnmanaged([:0]const u8) = .empty,
 
+        /// Stable per-workspace IDs. Parallel to workspace_names.
+        workspace_ids: std.ArrayListUnmanaged(Uuid) = .empty,
+
         /// Ordered list of AdwTabView instances, one per workspace. Each
         /// TabView has an Application-owned ref so it survives being
         /// unparented when workspace switching occurs.
@@ -260,6 +269,28 @@ pub const Application = extern struct {
         /// during initAndShowWindow(). Each inner slice contains the titles
         /// for one workspace's tabs. null when no restore is pending.
         restore_tab_titles: ?[][]const [:0]const u8 = null,
+
+        /// Per-workspace full tab snapshots from session restore (v5+),
+        /// consumed during initAndShowWindow().
+        restore_tab_snapshots: ?[][]const session_mod.TabData = null,
+
+        /// Per-workspace active tab indices from session restore (v4+),
+        /// consumed during initAndShowWindow().
+        restore_active_tab_indices: ?[]u32 = null,
+
+        /// Per-workspace tab directories from session restore (v4+),
+        /// consumed during initAndShowWindow(). Each inner slice contains
+        /// per-tab working directories for one workspace.
+        restore_tab_dirs: ?[][]const [:0]const u8 = null,
+
+        /// Restored window width from session JSON, applied to new windows.
+        restore_window_width: ?c_int = null,
+
+        /// Restored window height from session JSON, applied to new windows.
+        restore_window_height: ?c_int = null,
+
+        /// Restored sidebar width from session JSON, applied to new windows.
+        restore_sidebar_width: ?c_int = null,
 
         // ----- Termplex IPC socket state -----
 
@@ -328,6 +359,9 @@ pub const Application = extern struct {
 
         /// Registry of AI agents that have registered via IPC.
         agent_registry: agents.AgentRegistry,
+
+        /// Ephemeral notifications stored per workspace.
+        notifications: notification_mod.NotificationStore,
 
         pub var offset: c_int = 0;
     };
@@ -513,6 +547,7 @@ pub const Application = extern struct {
             .global_shortcuts = gobject.ext.newInstance(GlobalShortcuts, .{}),
             .saved_language = saved_language,
             .agent_registry = agents.AgentRegistry.init(std.heap.c_allocator),
+            .notifications = notification_mod.NotificationStore.init(alloc),
         };
 
         // Termplex: load Termplex config (falls back to defaults on any error).
@@ -541,7 +576,9 @@ pub const Application = extern struct {
         };
 
         // Termplex: restore session from disk (best-effort).
-        restoreSession(self);
+        if (priv.termplex_cfg.session.restore_on_startup) {
+            restoreSession(self);
+        }
 
         // Signals
         _ = gobject.Object.signals.notify.connect(
@@ -575,6 +612,19 @@ pub const Application = extern struct {
         const alloc = self.allocator();
         const priv: *Private = self.private();
 
+        // Cancel autosave timer and persist one last snapshot before tearing
+        // down any workspace state. Remote instances must never write session
+        // state because they don't own the primary app lifecycle.
+        if (priv.autosave_timer) |source| {
+            _ = glib.Source.remove(source);
+            priv.autosave_timer = null;
+        }
+        if (self.as(gio.Application).getIsRemote() == 0) {
+            autosaveSession(self);
+        } else {
+            log.debug("skipping final autosave for remote GTK instance", .{});
+        }
+
         // Termplex: free workspace names.
         for (priv.workspace_names.items) |name| {
             alloc.free(name);
@@ -586,6 +636,9 @@ pub const Application = extern struct {
             alloc.free(dir_str);
         }
         priv.workspace_dirs.deinit(alloc);
+
+        // Termplex: free workspace IDs.
+        priv.workspace_ids.deinit(alloc);
 
         // Termplex: release Application-owned refs on workspace TabViews.
         for (priv.workspace_tab_views.items) |tv| {
@@ -610,10 +663,38 @@ pub const Application = extern struct {
         if (priv.restore_tab_titles) |titles_per_ws| {
             for (titles_per_ws) |titles| {
                 for (titles) |t| alloc.free(t);
-                alloc.free(titles);
+                if (titles.len > 0) alloc.free(titles);
             }
             alloc.free(titles_per_ws);
             priv.restore_tab_titles = null;
+        }
+
+        if (priv.restore_tab_snapshots) |snapshots_per_ws| {
+            for (snapshots_per_ws) |snapshots| {
+                for (snapshots) |snapshot| {
+                    var owned_snapshot = snapshot;
+                    owned_snapshot.deinit(alloc);
+                }
+                if (snapshots.len > 0) alloc.free(snapshots);
+            }
+            alloc.free(snapshots_per_ws);
+            priv.restore_tab_snapshots = null;
+        }
+
+        // Termplex: free any unconsumed restore active tab indices.
+        if (priv.restore_active_tab_indices) |indices| {
+            alloc.free(indices);
+            priv.restore_active_tab_indices = null;
+        }
+
+        // Termplex: free any unconsumed restore tab directories.
+        if (priv.restore_tab_dirs) |dirs_per_ws| {
+            for (dirs_per_ws) |dirs| {
+                for (dirs) |dir| alloc.free(dir);
+                if (dirs.len > 0) alloc.free(dirs);
+            }
+            alloc.free(dirs_per_ws);
+            priv.restore_tab_dirs = null;
         }
 
         // Termplex: shut down the IPC socket server.
@@ -632,13 +713,6 @@ pub const Application = extern struct {
             alloc.free(path);
             priv.socket_path_buf = null;
         }
-
-        // Termplex: cancel autosave timer and do a final save.
-        if (priv.autosave_timer) |source| {
-            _ = glib.Source.remove(source);
-            priv.autosave_timer = null;
-        }
-        autosaveSession(self);
 
         // Termplex: cancel git debounce timer.
         if (priv.git_debounce_timer) |source| {
@@ -685,6 +759,9 @@ pub const Application = extern struct {
 
         // Termplex: free the agent registry.
         priv.agent_registry.deinit();
+
+        // Termplex: free ephemeral notifications.
+        priv.notifications.deinit();
 
         priv.config.unref();
         priv.winproto.deinit(alloc);
@@ -735,6 +812,22 @@ pub const Application = extern struct {
         return self.private().active_workspace_idx;
     }
 
+    /// Return the initial sidebar width for newly created windows.
+    /// Session restore overrides the configured width.
+    pub fn initialSidebarWidth(self: *Self) c_int {
+        const priv = self.private();
+        if (priv.restore_sidebar_width) |width| {
+            return if (width > 10) width else 180;
+        }
+
+        const configured: c_int = @intCast(priv.termplex_cfg.sidebar_width);
+        return if (configured > 10) configured else 180;
+    }
+
+    pub fn sidebarPosition(self: *Self) termplex_config.SidebarPosition {
+        return self.private().termplex_cfg.sidebar_position;
+    }
+
     /// Return the index of the orchestration workspace, or null if orchestration
     /// is disabled or the workspace has not been created yet.
     pub fn orchestrationWorkspaceIndex(self: *Self) ?u32 {
@@ -750,6 +843,32 @@ pub const Application = extern struct {
         }
     }
 
+    fn workspaceUuid(self: *Self, index: u32) ?Uuid {
+        const priv = self.private();
+        if (index >= priv.workspace_ids.items.len) return null;
+        return priv.workspace_ids.items[index];
+    }
+
+    fn workspaceIndexForUuid(self: *Self, id: Uuid) ?u32 {
+        const priv = self.private();
+        for (priv.workspace_ids.items, 0..) |workspace_id, idx| {
+            if (uuid.eql(workspace_id, id)) return @intCast(idx);
+        }
+        return null;
+    }
+
+    fn workspaceUnreadCount(self: *Self, index: u32) usize {
+        const priv = self.private();
+        const workspace_id = self.workspaceUuid(index) orelse return 0;
+        return priv.notifications.unreadCountForWorkspace(workspace_id);
+    }
+
+    pub fn markWorkspaceNotificationsRead(self: *Self, index: u32) void {
+        const priv = self.private();
+        const workspace_id = self.workspaceUuid(index) orelse return;
+        priv.notifications.markAllReadForWorkspace(workspace_id);
+    }
+
     /// Create a new workspace with an auto-generated name.  Returns the
     /// 0-based index of the newly created workspace, or null on OOM.
     pub fn addWorkspace(self: *Self) ?u32 {
@@ -763,6 +882,7 @@ pub const Application = extern struct {
     pub fn addWorkspaceWithDir(self: *Self, dir: ?[:0]const u8) ?u32 {
         const alloc = self.allocator();
         const priv = self.private();
+        const workspace_id = uuid.generate();
 
         // Generate name "Workspace N"
         var buf: [64]u8 = undefined;
@@ -809,7 +929,16 @@ pub const Application = extern struct {
             tab_view.as(gobject.Object).unref();
             return null;
         };
+        priv.workspace_ids.append(alloc, workspace_id) catch {
+            _ = priv.workspace_dirs.pop();
+            _ = priv.workspace_names.pop();
+            alloc.free(name);
+            alloc.free(resolved_dir);
+            tab_view.as(gobject.Object).unref();
+            return null;
+        };
         priv.workspace_tab_views.append(alloc, tab_view) catch {
+            _ = priv.workspace_ids.pop();
             _ = priv.workspace_dirs.pop();
             _ = priv.workspace_names.pop();
             alloc.free(name);
@@ -819,6 +948,7 @@ pub const Application = extern struct {
         };
         priv.workspace_git_branches.append(alloc, null) catch {
             _ = priv.workspace_tab_views.pop();
+            _ = priv.workspace_ids.pop();
             _ = priv.workspace_dirs.pop();
             _ = priv.workspace_names.pop();
             alloc.free(name);
@@ -829,6 +959,7 @@ pub const Application = extern struct {
         priv.workspace_git_dirty.append(alloc, false) catch {
             _ = priv.workspace_git_branches.pop();
             _ = priv.workspace_tab_views.pop();
+            _ = priv.workspace_ids.pop();
             _ = priv.workspace_dirs.pop();
             _ = priv.workspace_names.pop();
             alloc.free(name);
@@ -910,10 +1041,63 @@ pub const Application = extern struct {
         if (self.private().restore_tab_titles) |titles_per_ws| {
             for (titles_per_ws) |titles| {
                 for (titles) |t| alloc.free(t);
-                alloc.free(titles);
+                if (titles.len > 0) alloc.free(titles);
             }
             alloc.free(titles_per_ws);
             self.private().restore_tab_titles = null;
+        }
+    }
+
+    /// Return per-workspace full tab snapshots from session restore (v5+), or null.
+    pub fn getRestoreTabSnapshots(self: *Self) ?[]const []const session_mod.TabData {
+        return self.private().restore_tab_snapshots;
+    }
+
+    /// Free the restore_tab_snapshots and set to null.
+    pub fn clearRestoreTabSnapshots(self: *Self) void {
+        const alloc = self.allocator();
+        if (self.private().restore_tab_snapshots) |snapshots_per_ws| {
+            for (snapshots_per_ws) |snapshots| {
+                for (snapshots) |snapshot| {
+                    var owned_snapshot = snapshot;
+                    owned_snapshot.deinit(alloc);
+                }
+                if (snapshots.len > 0) alloc.free(snapshots);
+            }
+            alloc.free(snapshots_per_ws);
+            self.private().restore_tab_snapshots = null;
+        }
+    }
+
+    /// Return per-workspace active tab indices from session restore (v4+), or null.
+    pub fn getRestoreActiveTabIndices(self: *Self) ?[]const u32 {
+        return self.private().restore_active_tab_indices;
+    }
+
+    /// Free the restore_active_tab_indices slice and set to null.
+    pub fn clearRestoreActiveTabIndices(self: *Self) void {
+        const alloc = self.allocator();
+        if (self.private().restore_active_tab_indices) |indices| {
+            alloc.free(indices);
+            self.private().restore_active_tab_indices = null;
+        }
+    }
+
+    /// Return per-workspace tab directories from session restore (v4+), or null.
+    pub fn getRestoreTabDirs(self: *Self) ?[]const []const [:0]const u8 {
+        return self.private().restore_tab_dirs;
+    }
+
+    /// Free the restore_tab_dirs and set to null.
+    pub fn clearRestoreTabDirs(self: *Self) void {
+        const alloc = self.allocator();
+        if (self.private().restore_tab_dirs) |dirs_per_ws| {
+            for (dirs_per_ws) |dirs| {
+                for (dirs) |dir| alloc.free(dir);
+                if (dirs.len > 0) alloc.free(dirs);
+            }
+            alloc.free(dirs_per_ws);
+            self.private().restore_tab_dirs = null;
         }
     }
 
@@ -944,6 +1128,10 @@ pub const Application = extern struct {
         // Free the owned dir string.
         alloc.free(priv.workspace_dirs.items[index]);
         _ = priv.workspace_dirs.orderedRemove(index);
+
+        // Clear notifications for the workspace before removing its ID.
+        priv.notifications.clearWorkspace(priv.workspace_ids.items[index]);
+        _ = priv.workspace_ids.orderedRemove(index);
 
         // Remove from tab_views array.
         _ = priv.workspace_tab_views.orderedRemove(index);
@@ -1028,8 +1216,56 @@ pub const Application = extern struct {
 
         // Refresh sidebar to show new dir and git state.
         self.refreshAllWorkspaceSidebars();
+        if (index == priv.active_workspace_idx) {
+            self.syncActiveWorkspaceHeaders();
+        }
 
         log.info("workspace {d} directory changed to: {s}", .{ index, resolved_dir });
+    }
+
+    /// Add a workspace row to every open Termplex window sidebar.
+    pub fn addWorkspaceToAllWindows(self: *Self, index: u32) void {
+        const list = self.as(gtk.Application).getWindows();
+        list.foreach(struct {
+            fn cb(data: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
+                const idx_ptr: *const u32 = @ptrCast(@alignCast(userdata orelse return));
+                const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
+                const win = gobject.ext.cast(Window, ptr) orelse return;
+                const app = Application.default();
+                var dir_buf: [512]u8 = undefined;
+                win.getSidebar().addWorkspace(
+                    app.workspaceName(idx_ptr.*),
+                    null,
+                    null,
+                    app.formatDirDisplay(idx_ptr.*, &dir_buf),
+                );
+            }
+        }.cb, @ptrCast(@constCast(&index)));
+    }
+
+    /// Remove a workspace row from every open Termplex window sidebar.
+    pub fn removeWorkspaceFromAllWindows(self: *Self, index: u32) void {
+        const list = self.as(gtk.Application).getWindows();
+        list.foreach(struct {
+            fn cb(data: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
+                const idx_ptr: *const u32 = @ptrCast(@alignCast(userdata orelse return));
+                const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
+                const win = gobject.ext.cast(Window, ptr) orelse return;
+                win.getSidebar().removeWorkspace(idx_ptr.*);
+            }
+        }.cb, @ptrCast(@constCast(&index)));
+    }
+
+    /// Update all window titlebars to match the current active workspace.
+    pub fn syncActiveWorkspaceHeaders(self: *Self) void {
+        const list = self.as(gtk.Application).getWindows();
+        list.foreach(struct {
+            fn cb(data: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+                const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
+                const win = gobject.ext.cast(Window, ptr) orelse return;
+                win.syncHeaderFromApp();
+            }
+        }.cb, null);
     }
 
     // -----------------------------------------------------------------
@@ -1110,8 +1346,16 @@ pub const Application = extern struct {
         // so branch info appears quickly without waiting for the 10s timer.
         priv.initial_probe_timer = glib.timeoutAdd(500, initialProbeCallback, self);
 
-        // Termplex: start the 5-second autosave timer.
-        priv.autosave_timer = glib.timeoutAdd(5000, autosaveCallback, self);
+        // Termplex: start the autosave timer.
+        const autosave_minutes: u64 = if (priv.termplex_cfg.session.autosave_interval == 0)
+            5
+        else
+            priv.termplex_cfg.session.autosave_interval;
+        const autosave_ms: c_uint = @intCast(@min(
+            autosave_minutes * 60_000,
+            @as(u64, std.math.maxInt(c_uint)),
+        ));
+        priv.autosave_timer = glib.timeoutAdd(autosave_ms, autosaveCallback, self);
     }
 
     /// GLib timer callback: called every 100 ms to accept and service IPC
@@ -1271,6 +1515,12 @@ pub const Application = extern struct {
         if (std.mem.eql(u8, method, "notification.create")) {
             return ipcNotificationCreate(self, alloc, id, root.object);
         }
+        if (std.mem.eql(u8, method, "notification.list")) {
+            return ipcNotificationList(self, alloc, id, root.object);
+        }
+        if (std.mem.eql(u8, method, "notification.clear")) {
+            return ipcNotificationClear(self, alloc, id, root.object);
+        }
 
         if (std.mem.eql(u8, method, "status.report_pwd")) {
             // Extract pwd from params.
@@ -1280,7 +1530,8 @@ pub const Application = extern struct {
                     .string => |s| s,
                     else => "",
                 } else ""
-            else "";
+            else
+                "";
 
             if (pwd_slice.len > 0) {
                 const pwd_z = alloc.dupeZ(u8, pwd_slice) catch null;
@@ -1327,19 +1578,30 @@ pub const Application = extern struct {
         if (std.mem.eql(u8, method, "surface.split")) {
             return ipcSurfaceSplit(self, alloc, id, root.object);
         }
+        if (std.mem.eql(u8, method, "surface.list")) {
+            return ipcSurfaceList(self, alloc, id, root.object);
+        }
+        if (std.mem.eql(u8, method, "surface.create")) {
+            return ipcSurfaceCreate(self, alloc, id, root.object);
+        }
+        if (std.mem.eql(u8, method, "surface.close")) {
+            return ipcSurfaceClose(self, alloc, id, root.object);
+        }
+        if (std.mem.eql(u8, method, "surface.focus")) {
+            return ipcSurfaceFocus(self, alloc, id, root.object);
+        }
+        if (std.mem.eql(u8, method, "system.tree")) {
+            return ipcSystemTree(self, alloc, id);
+        }
+        if (std.mem.eql(u8, method, "status.report_git")) {
+            return ipcStatusReportGit(self, alloc, id);
+        }
+        if (std.mem.eql(u8, method, "status.report_ports")) {
+            return ipcStatusReportPorts(self, alloc, id);
+        }
 
         // Stubs for other known methods — return ok with null result.
-        const known_stubs = [_][]const u8{
-            "system.tree",
-            "surface.list",
-            "surface.create",
-            "surface.close",
-            "surface.focus",
-            "notification.list",
-            "notification.clear",
-            "status.report_git",
-            "status.report_ports",
-        };
+        const known_stubs = [_][]const u8{};
         for (known_stubs) |stub| {
             if (std.mem.eql(u8, method, stub)) {
                 return std.fmt.allocPrint(
@@ -1363,7 +1625,8 @@ pub const Application = extern struct {
         const priv = self.private();
         const params_val = obj.get("params") orelse .null;
         if (params_val != .object) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -1373,11 +1636,17 @@ pub const Application = extern struct {
         // Extract required fields
         const workspace = blk: {
             const v = params.get("workspace") orelse break :blk "";
-            break :blk switch (v) { .string => |s| s, else => "" };
+            break :blk switch (v) {
+                .string => |s| s,
+                else => "",
+            };
         };
         const tab: u32 = blk: {
             const v = params.get("tab") orelse break :blk 0;
-            break :blk switch (v) { .integer => |n| @intCast(@max(0, n)), else => 0 };
+            break :blk switch (v) {
+                .integer => |n| @intCast(@max(0, n)),
+                else => 0,
+            };
         };
         const agent_type = blk: {
             const v = params.get("type") orelse break :blk agents.AgentType.custom;
@@ -1388,23 +1657,29 @@ pub const Application = extern struct {
         };
         const pid: i32 = blk: {
             const v = params.get("pid") orelse break :blk 0;
-            break :blk switch (v) { .integer => |n| @intCast(n), else => 0 };
+            break :blk switch (v) {
+                .integer => |n| @intCast(n),
+                else => 0,
+            };
         };
         if (pid <= 0) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"valid pid required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         }
 
         const agent_id = priv.agent_registry.register(workspace, tab, agent_type, pid) catch {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"oom\",\"message\":\"out of memory\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         };
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":true,\"result\":{{\"agent_id\":\"{s}\"}},\"id\":{d}}}",
             .{ &agent_id, id },
         ) catch null;
@@ -1444,7 +1719,8 @@ pub const Application = extern struct {
         }
         arr_buf.appendSlice(alloc, "]") catch return null;
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":true,\"result\":{{\"agents\":{s}}},\"id\":{d}}}",
             .{ arr_buf.items, id },
         ) catch null;
@@ -1455,17 +1731,22 @@ pub const Application = extern struct {
         const priv = self.private();
         const params_val = obj.get("params") orelse .null;
         if (params_val != .object) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         }
         const pid: i32 = blk: {
             const v = params_val.object.get("pid") orelse break :blk 0;
-            break :blk switch (v) { .integer => |n| @intCast(n), else => 0 };
+            break :blk switch (v) {
+                .integer => |n| @intCast(n),
+                else => 0,
+            };
         };
         if (pid <= 0) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"valid pid required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -1473,7 +1754,8 @@ pub const Application = extern struct {
 
         _ = priv.agent_registry.unregister(pid);
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
             .{id},
         ) catch null;
@@ -1484,17 +1766,22 @@ pub const Application = extern struct {
         const priv = self.private();
         const params_val = obj.get("params") orelse .null;
         if (params_val != .object) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         }
         const pid: i32 = blk: {
             const v = params_val.object.get("pid") orelse break :blk 0;
-            break :blk switch (v) { .integer => |n| @intCast(n), else => 0 };
+            break :blk switch (v) {
+                .integer => |n| @intCast(n),
+                else => 0,
+            };
         };
         if (pid <= 0) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"valid pid required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -1522,42 +1809,66 @@ pub const Application = extern struct {
             log.info("IPC: agent terminate policy=terminate, tab close not yet implemented", .{});
         }
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
             .{id},
         ) catch null;
     }
 
-    /// Handle workspace.list — returns the real workspace names array.
+    /// Handle workspace.list — returns workspace names plus explicit indices/refs.
     fn ipcWorkspaceList(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
         const priv = self.private();
         const names = priv.workspace_names.items;
 
-        // Build a JSON array of quoted strings.
-        var arr_buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer arr_buf.deinit(alloc);
+        var names_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer names_buf.deinit(alloc);
+        names_buf.appendSlice(alloc, "[") catch return null;
 
-        arr_buf.appendSlice(alloc, "[") catch return null;
+        var items_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer items_buf.deinit(alloc);
+        items_buf.appendSlice(alloc, "[") catch return null;
+
         for (names, 0..) |name, i| {
-            if (i > 0) arr_buf.appendSlice(alloc, ",") catch return null;
-            // Append a JSON-escaped string.
-            arr_buf.appendSlice(alloc, "\"") catch return null;
+            if (i > 0) {
+                names_buf.appendSlice(alloc, ",") catch return null;
+                items_buf.appendSlice(alloc, ",") catch return null;
+            }
+
+            names_buf.appendSlice(alloc, "\"") catch return null;
             for (name) |c| {
                 if (c == '"' or c == '\\') {
-                    arr_buf.append(alloc, '\\') catch return null;
+                    names_buf.append(alloc, '\\') catch return null;
                 }
-                arr_buf.append(alloc, c) catch return null;
+                names_buf.append(alloc, c) catch return null;
             }
-            arr_buf.appendSlice(alloc, "\"") catch return null;
-        }
-        arr_buf.appendSlice(alloc, "]") catch return null;
+            names_buf.appendSlice(alloc, "\"") catch return null;
 
-        const arr_str = arr_buf.items;
+            items_buf.appendSlice(alloc, "{\"index\":") catch return null;
+            var idx_buf: [16]u8 = undefined;
+            const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{i}) catch return null;
+            items_buf.appendSlice(alloc, idx_str) catch return null;
+            items_buf.appendSlice(alloc, ",\"ref\":\"") catch return null;
+            items_buf.appendSlice(alloc, idx_str) catch return null;
+            items_buf.appendSlice(alloc, "\",\"name\":\"") catch return null;
+            for (name) |c| {
+                if (c == '"' or c == '\\') {
+                    items_buf.append(alloc, '\\') catch return null;
+                }
+                items_buf.append(alloc, c) catch return null;
+            }
+            items_buf.appendSlice(alloc, "\",\"active\":") catch return null;
+            items_buf.appendSlice(alloc, if (i == priv.active_workspace_idx) "true" else "false") catch return null;
+            items_buf.appendSlice(alloc, "}") catch return null;
+        }
+
+        names_buf.appendSlice(alloc, "]") catch return null;
+        items_buf.appendSlice(alloc, "]") catch return null;
 
         return std.fmt.allocPrint(
             alloc,
-            "{{\"ok\":true,\"result\":{{\"workspaces\":{s},\"active\":{d}}},\"id\":{d}}}",
-            .{ arr_str, priv.active_workspace_idx, id },
+            "{{\"ok\":true,\"result\":{{\"workspaces\":{s},\"items\":{s},\"active\":{d}}},\"id\":{d}}}",
+            .{ names_buf.items, items_buf.items, priv.active_workspace_idx, id },
         ) catch null;
     }
 
@@ -1608,15 +1919,8 @@ pub const Application = extern struct {
             }
         }
 
-        // Update sidebar UI.
-        const name = self.workspaceName(new_idx) orelse "Workspace";
-        var ipc_dir_buf: [512]u8 = undefined;
-        const ipc_dir_text = self.formatDirDisplay(new_idx, &ipc_dir_buf);
-        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
-            if (gobject.ext.cast(Window, active_win)) |win| {
-                win.getSidebar().addWorkspace(name, null, null, ipc_dir_text);
-            }
-        }
+        self.addWorkspaceToAllWindows(new_idx);
+        self.refreshAllWorkspaceSidebars();
 
         return std.fmt.allocPrint(
             alloc,
@@ -1629,14 +1933,16 @@ pub const Application = extern struct {
     fn ipcWorkspaceClose(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
         const params_val = obj.get("params") orelse .null;
         if (params_val != .object) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params object required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         }
 
         const ws_idx = self.resolveWorkspaceIdx(params_val.object) orelse {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -1646,7 +1952,8 @@ pub const Application = extern struct {
 
         // Don't allow closing the last workspace.
         if (priv.workspace_names.items.len <= 1) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_operation\",\"message\":\"cannot close last workspace\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -1655,24 +1962,35 @@ pub const Application = extern struct {
         // Don't allow closing the orchestration workspace.
         if (priv.orchestration_workspace_idx) |orch_idx| {
             if (ws_idx == orch_idx) {
-                return std.fmt.allocPrint(alloc,
+                return std.fmt.allocPrint(
+                    alloc,
                     "{{\"ok\":false,\"error\":{{\"code\":\"invalid_operation\",\"message\":\"cannot close orchestration workspace\"}},\"id\":{d}}}",
                     .{id},
                 ) catch null;
             }
         }
 
-        // Remove from sidebar UI first (before internal state changes indices).
+        // Reuse the window-side close flow when a window exists so the active
+        // TabView switches correctly before the workspace is removed.
         if (self.as(gtk.Application).getActiveWindow()) |active_win| {
             if (gobject.ext.cast(Window, active_win)) |win| {
-                win.getSidebar().removeWorkspace(ws_idx);
+                win.closeWorkspace(ws_idx);
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
             }
         }
 
-        // Remove internal state (closes tabs, frees memory).
+        // Headless fallback: remove from sidebars first, then internal state.
+        self.removeWorkspaceFromAllWindows(ws_idx);
         self.removeWorkspace(ws_idx);
+        self.refreshAllWorkspaceSidebars();
+        self.syncActiveWorkspaceHeaders();
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
             .{id},
         ) catch null;
@@ -1682,14 +2000,16 @@ pub const Application = extern struct {
     fn ipcWorkspaceRename(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
         const params_val = obj.get("params") orelse .null;
         if (params_val != .object) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params object required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         }
 
         const ws_idx = self.resolveWorkspaceIdx(params_val.object) orelse {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -1697,8 +2017,9 @@ pub const Application = extern struct {
 
         // Extract new name.
         const new_name: [:0]const u8 = blk: {
-            const nv = params_val.object.get("new_name") orelse {
-                return std.fmt.allocPrint(alloc,
+            const nv = params_val.object.get("new_name") orelse params_val.object.get("name") orelse {
+                return std.fmt.allocPrint(
+                    alloc,
                     "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"new_name required\"}},\"id\":{d}}}",
                     .{id},
                 ) catch null;
@@ -1706,20 +2027,23 @@ pub const Application = extern struct {
             switch (nv) {
                 .string => |s| {
                     if (s.len == 0) {
-                        return std.fmt.allocPrint(alloc,
+                        return std.fmt.allocPrint(
+                            alloc,
                             "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"new_name cannot be empty\"}},\"id\":{d}}}",
                             .{id},
                         ) catch null;
                     }
                     break :blk alloc.dupeZ(u8, s) catch {
-                        return std.fmt.allocPrint(alloc,
+                        return std.fmt.allocPrint(
+                            alloc,
                             "{{\"ok\":false,\"error\":{{\"code\":\"oom\",\"message\":\"out of memory\"}},\"id\":{d}}}",
                             .{id},
                         ) catch null;
                     };
                 },
                 else => {
-                    return std.fmt.allocPrint(alloc,
+                    return std.fmt.allocPrint(
+                        alloc,
                         "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"new_name must be a string\"}},\"id\":{d}}}",
                         .{id},
                     ) catch null;
@@ -1731,14 +2055,13 @@ pub const Application = extern struct {
         // Rename internal state.
         self.renameWorkspace(ws_idx, new_name);
 
-        // Update sidebar UI.
-        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
-            if (gobject.ext.cast(Window, active_win)) |win| {
-                win.getSidebar().updateWorkspace(ws_idx, new_name, null, null, null, ws_idx == self.private().active_workspace_idx, false);
-            }
+        self.refreshAllWorkspaceSidebars();
+        if (ws_idx == self.private().active_workspace_idx) {
+            self.syncActiveWorkspaceHeaders();
         }
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
             .{id},
         ) catch null;
@@ -1766,7 +2089,8 @@ pub const Application = extern struct {
                     else => {},
                 }
             }
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"missing_param\",\"message\":\"dir is required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -1810,7 +2134,8 @@ pub const Application = extern struct {
         }
         arr_buf.appendSlice(alloc, "]") catch return null;
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":true,\"result\":{{\"workspaces\":{s}}},\"id\":{d}}}",
             .{ arr_buf.items, id },
         ) catch null;
@@ -1854,37 +2179,15 @@ pub const Application = extern struct {
         }
 
         if (target_idx) |idx| {
-            const old_idx = priv.active_workspace_idx;
             self.setActiveWorkspaceIndex(idx);
+            self.markWorkspaceNotificationsRead(idx);
+            self.refreshAllWorkspaceSidebars();
+            self.syncActiveWorkspaceHeaders();
 
             // Get the active window, cast to our Window type, update sidebar and switch TabView.
             if (self.as(gtk.Application).getActiveWindow()) |active_win| {
                 if (gobject.ext.cast(Window, active_win)) |win| {
-                    const sidebar = win.getSidebar();
-                    // Deactivate old workspace in sidebar
-                    if (old_idx != idx) {
-                        sidebar.updateWorkspace(
-                            old_idx,
-                            self.workspaceName(old_idx),
-                            null,
-                            null,
-                            null,
-                            false,
-                            false,
-                        );
-                    }
-                    // Activate new workspace in sidebar
-                    sidebar.updateWorkspace(
-                        idx,
-                        self.workspaceName(idx),
-                        null,
-                        null,
-                        null,
-                        true,
-                        false,
-                    );
-                    sidebar.setActiveIndex(idx);
-                    // Switch the displayed TabView
+                    // Switch the displayed TabView in the active window.
                     if (self.workspaceTabView(idx)) |tv| {
                         win.switchToTabView(tv);
                     }
@@ -1892,16 +2195,449 @@ pub const Application = extern struct {
             }
         }
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":true,\"result\":null,\"id\":{d}}}",
             .{id},
         ) catch null;
     }
 
+    fn appendJsonEscaped(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        text: []const u8,
+    ) !void {
+        for (text) |c| {
+            switch (c) {
+                '"' => try buf.appendSlice(alloc, "\\\""),
+                '\\' => try buf.appendSlice(alloc, "\\\\"),
+                '\n' => try buf.appendSlice(alloc, "\\n"),
+                '\r' => try buf.appendSlice(alloc, "\\r"),
+                '\t' => try buf.appendSlice(alloc, "\\t"),
+                else => {
+                    if (c < 0x20) {
+                        const hex = "0123456789abcdef";
+                        try buf.appendSlice(alloc, "\\u00");
+                        try buf.append(alloc, hex[c >> 4]);
+                        try buf.append(alloc, hex[c & 0xf]);
+                    } else {
+                        try buf.append(alloc, c);
+                    }
+                },
+            }
+        }
+    }
+
+    fn appendJsonString(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        text: []const u8,
+    ) !void {
+        try buf.append(alloc, '"');
+        try appendJsonEscaped(buf, alloc, text);
+        try buf.append(alloc, '"');
+    }
+
+    fn appendOptionalJsonString(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        text: ?[]const u8,
+    ) !void {
+        if (text) |value| {
+            try appendJsonString(buf, alloc, value);
+        } else {
+            try buf.appendSlice(alloc, "null");
+        }
+    }
+
+    const SurfaceUuidEntry = struct {
+        surface: *Surface,
+        id: Uuid,
+    };
+
+    fn surfaceUuidFor(entries: []const SurfaceUuidEntry, surface: *Surface) ?Uuid {
+        for (entries) |entry| {
+            if (entry.surface == surface) return entry.id;
+        }
+        return null;
+    }
+
+    fn getOrCreateSurfaceUuid(
+        entries: *std.ArrayListUnmanaged(SurfaceUuidEntry),
+        alloc: std.mem.Allocator,
+        surface: *Surface,
+    ) !Uuid {
+        if (surfaceUuidFor(entries.items, surface)) |existing| return existing;
+
+        const id = uuid.generate();
+        try entries.append(alloc, .{
+            .surface = surface,
+            .id = id,
+        });
+        return id;
+    }
+
+    fn sessionSplitLayoutFromTree(
+        alloc: std.mem.Allocator,
+        tree: *const Surface.Tree,
+        handle: Surface.Tree.Node.Handle,
+        surface_ids: *std.ArrayListUnmanaged(SurfaceUuidEntry),
+    ) !workspace_mod.SplitLayout {
+        return switch (tree.nodes[handle.idx()]) {
+            .leaf => |surface| .{
+                .leaf = .{
+                    .surface_id = try getOrCreateSurfaceUuid(surface_ids, alloc, surface),
+                },
+            },
+            .split => |split| blk: {
+                const first = try alloc.create(workspace_mod.SplitLayout);
+                errdefer alloc.destroy(first);
+                first.* = try sessionSplitLayoutFromTree(alloc, tree, split.left, surface_ids);
+                errdefer {
+                    first.deinit(alloc);
+                    alloc.destroy(first);
+                }
+
+                const second = try alloc.create(workspace_mod.SplitLayout);
+                errdefer {
+                    first.deinit(alloc);
+                    alloc.destroy(first);
+                    alloc.destroy(second);
+                }
+                second.* = try sessionSplitLayoutFromTree(alloc, tree, split.right, surface_ids);
+
+                break :blk .{
+                    .split = .{
+                        .direction = switch (split.layout) {
+                            .horizontal => .horizontal,
+                            .vertical => .vertical,
+                        },
+                        .ratio = @floatCast(split.ratio),
+                        .first = first,
+                        .second = second,
+                    },
+                };
+            },
+        };
+    }
+
+    fn appendSessionTabJson(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        tab: *Tab,
+        page: *adw.TabPage,
+        workspace_dir: []const u8,
+    ) !void {
+        const split_tree = tab.getSplitTree();
+        const tree = split_tree.getTree() orelse return error.InvalidArgument;
+
+        var surface_ids: std.ArrayListUnmanaged(SurfaceUuidEntry) = .empty;
+        defer surface_ids.deinit(alloc);
+
+        var layout = try sessionSplitLayoutFromTree(alloc, tree, .root, &surface_ids);
+        defer layout.deinit(alloc);
+
+        try buf.appendSlice(alloc, "{\"title\":");
+        try appendOptionalJsonString(
+            buf,
+            alloc,
+            if (tab.getTitleOverride()) |title| title else null,
+        );
+        try buf.appendSlice(alloc, ",\"focused_surface_id\":");
+        try appendOptionalJsonString(
+            buf,
+            alloc,
+            if (split_tree.getActiveSurface()) |surface|
+                if (surfaceUuidFor(surface_ids.items, surface)) |id| blk: {
+                    var id_buf: [36]u8 = undefined;
+                    uuid.format(id, &id_buf);
+                    break :blk id_buf[0..];
+                } else null
+            else
+                null,
+        );
+        try buf.appendSlice(alloc, ",\"split_layout\":");
+        const layout_json = try layout.toJson(alloc);
+        defer alloc.free(layout_json);
+        try buf.appendSlice(alloc, layout_json);
+        try buf.appendSlice(alloc, ",\"surfaces\":[");
+
+        for (surface_ids.items, 0..) |entry, idx| {
+            if (idx > 0) try buf.appendSlice(alloc, ",");
+            try buf.appendSlice(alloc, "{\"id\":");
+            var id_buf: [36]u8 = undefined;
+            uuid.format(entry.id, &id_buf);
+            try appendJsonString(buf, alloc, id_buf[0..]);
+            try buf.appendSlice(alloc, ",\"working_directory\":");
+            try appendJsonString(
+                buf,
+                alloc,
+                if (entry.surface.getPwd()) |pwd| pwd else workspace_dir,
+            );
+            try buf.appendSlice(alloc, ",\"custom_title\":");
+            try appendOptionalJsonString(
+                buf,
+                alloc,
+                if (entry.surface.getTitleOverride()) |title| title else null,
+            );
+            try buf.appendSlice(alloc, "}");
+        }
+
+        _ = page;
+        try buf.appendSlice(alloc, "]}");
+    }
+
+    fn resolveWorkspaceRefString(self: *Self, workspace_ref: []const u8) ?u32 {
+        const priv = self.private();
+        if (std.fmt.parseUnsigned(u32, workspace_ref, 10)) |idx| {
+            if (idx < priv.workspace_names.items.len) return idx;
+        } else |_| {}
+
+        for (priv.workspace_names.items, 0..) |name, idx| {
+            if (std.mem.eql(u8, name, workspace_ref)) return @intCast(idx);
+        }
+
+        return null;
+    }
+
+    fn resolveWorkspaceParam(self: *Self, params: std.json.ObjectMap, field_name: []const u8, fallback: ?u32) ?u32 {
+        const ws_val = params.get(field_name) orelse return fallback;
+        return switch (ws_val) {
+            .integer => |n| if (n >= 0 and n < @as(i64, @intCast(self.private().workspace_names.items.len)))
+                @as(u32, @intCast(n))
+            else
+                null,
+            .string => |s| self.resolveWorkspaceRefString(s),
+            else => fallback,
+        };
+    }
+
+    fn activeTabIndexForWorkspace(self: *Self, workspace_idx: u32) ?u32 {
+        const tab_view = self.workspaceTabView(workspace_idx) orelse return null;
+        const selected = tab_view.getSelectedPage() orelse return 0;
+        const position = tab_view.getPagePosition(selected);
+        if (position < 0) return null;
+        return @intCast(position);
+    }
+
+    const SurfaceRef = struct {
+        workspace_idx: u32,
+        tab_idx: u32,
+        surface_idx: ?u32 = null,
+    };
+
+    fn resolveSurfaceRef(self: *Self, params: std.json.ObjectMap, default_to_selected: bool) ?SurfaceRef {
+        var workspace_idx = self.resolveWorkspaceParam(params, "workspace", self.private().active_workspace_idx) orelse return null;
+        var tab_idx_opt: ?u32 = null;
+        var surface_idx_opt: ?u32 = null;
+
+        if (params.get("tab")) |tv| switch (tv) {
+            .integer => |n| {
+                if (n >= 0) tab_idx_opt = @intCast(n);
+            },
+            .string => |s| tab_idx_opt = std.fmt.parseUnsigned(u32, s, 10) catch null,
+            else => {},
+        };
+
+        if (params.get("surface")) |sv| switch (sv) {
+            .integer => |n| {
+                if (n >= 0) surface_idx_opt = @intCast(n);
+            },
+            .string => |s| surface_idx_opt = std.fmt.parseUnsigned(u32, s, 10) catch null,
+            else => {},
+        };
+
+        if (params.get("ref")) |rv| switch (rv) {
+            .integer => |n| {
+                if (n >= 0) tab_idx_opt = @intCast(n);
+            },
+            .string => |s| {
+                var ref_value = s;
+                if (std.mem.lastIndexOfScalar(u8, ref_value, '/')) |slash| {
+                    surface_idx_opt = std.fmt.parseUnsigned(u32, ref_value[slash + 1 ..], 10) catch null;
+                    ref_value = ref_value[0..slash];
+                }
+
+                if (std.mem.lastIndexOfScalar(u8, ref_value, ':')) |sep| {
+                    workspace_idx = self.resolveWorkspaceRefString(ref_value[0..sep]) orelse return null;
+                    tab_idx_opt = std.fmt.parseUnsigned(u32, ref_value[sep + 1 ..], 10) catch null;
+                } else {
+                    tab_idx_opt = std.fmt.parseUnsigned(u32, ref_value, 10) catch null;
+                }
+            },
+            else => {},
+        };
+
+        const tab_idx = tab_idx_opt orelse if (default_to_selected)
+            (self.activeTabIndexForWorkspace(workspace_idx) orelse return null)
+        else
+            return null;
+
+        const tab_view = self.workspaceTabView(workspace_idx) orelse return null;
+        if (tab_idx >= @as(u32, @intCast(@max(tab_view.getNPages(), 0)))) return null;
+
+        return .{
+            .workspace_idx = workspace_idx,
+            .tab_idx = tab_idx,
+            .surface_idx = surface_idx_opt,
+        };
+    }
+
+    const ResolvedSurfaceTarget = struct {
+        workspace_idx: u32,
+        tab_idx: u32,
+        surface_idx: u32,
+        surface_count: u32,
+        page: *adw.TabPage,
+        tab: *Tab,
+        surface: *Surface,
+    };
+
+    const TabSurfaceSelection = struct {
+        surface_idx: u32,
+        surface_count: u32,
+        surface: *Surface,
+    };
+
+    const TabSurfaceEntry = struct {
+        handle: Surface.Tree.Node.Handle,
+        surface: *Surface,
+    };
+
+    fn appendTabSurfaceEntries(
+        entries: *std.ArrayListUnmanaged(TabSurfaceEntry),
+        alloc: std.mem.Allocator,
+        tree: *const Surface.Tree,
+        handle: Surface.Tree.Node.Handle,
+    ) !void {
+        switch (tree.nodes[handle.idx()]) {
+            .leaf => |surface| try entries.append(alloc, .{
+                .handle = handle,
+                .surface = surface,
+            }),
+            .split => |split| {
+                try appendTabSurfaceEntries(entries, alloc, tree, split.left);
+                try appendTabSurfaceEntries(entries, alloc, tree, split.right);
+            },
+        }
+    }
+
+    fn collectTabSurfaceEntries(tab: *Tab, alloc: std.mem.Allocator) ?[]TabSurfaceEntry {
+        const tree = tab.getSurfaceTree() orelse return null;
+        var entries: std.ArrayListUnmanaged(TabSurfaceEntry) = .empty;
+        appendTabSurfaceEntries(&entries, alloc, tree, .root) catch {
+            entries.deinit(alloc);
+            return null;
+        };
+        return entries.toOwnedSlice(alloc) catch {
+            entries.deinit(alloc);
+            return null;
+        };
+    }
+
+    fn selectTabSurface(tab: *Tab, requested_surface_idx: ?u32) ?TabSurfaceSelection {
+        const alloc = Application.default().allocator();
+        const entries = collectTabSurfaceEntries(tab, alloc) orelse return null;
+        defer alloc.free(entries);
+
+        const active_surface = tab.getActiveSurface();
+        var active_surface_idx: ?u32 = null;
+        for (entries, 0..) |entry, idx| {
+            if (active_surface != null and active_surface.? == entry.surface) {
+                active_surface_idx = @intCast(idx);
+                break;
+            }
+        }
+
+        const surface_count: u32 = @intCast(entries.len);
+        if (surface_count == 0) return null;
+        if (requested_surface_idx) |idx| {
+            if (idx >= surface_count) return null;
+            return .{
+                .surface_idx = idx,
+                .surface_count = surface_count,
+                .surface = entries[idx].surface,
+            };
+        }
+
+        if (active_surface) |surface| {
+            return .{
+                .surface_idx = active_surface_idx orelse 0,
+                .surface_count = surface_count,
+                .surface = surface,
+            };
+        }
+
+        return .{
+            .surface_idx = 0,
+            .surface_count = surface_count,
+            .surface = entries[0].surface,
+        };
+    }
+
+    fn resolveSurfaceTarget(self: *Self, surface_ref: SurfaceRef) ?ResolvedSurfaceTarget {
+        const tab_view = self.workspaceTabView(surface_ref.workspace_idx) orelse return null;
+        if (surface_ref.tab_idx >= @as(u32, @intCast(@max(tab_view.getNPages(), 0)))) return null;
+
+        const page = tab_view.getNthPage(@intCast(surface_ref.tab_idx));
+        const tab = gobject.ext.cast(Tab, page.getChild()) orelse return null;
+        const selection = selectTabSurface(tab, surface_ref.surface_idx) orelse return null;
+
+        return .{
+            .workspace_idx = surface_ref.workspace_idx,
+            .tab_idx = surface_ref.tab_idx,
+            .surface_idx = selection.surface_idx,
+            .surface_count = selection.surface_count,
+            .page = page,
+            .tab = tab,
+            .surface = selection.surface,
+        };
+    }
+
+    fn countTabSurfaces(tab: *Tab) u32 {
+        const alloc = Application.default().allocator();
+        const entries = collectTabSurfaceEntries(tab, alloc) orelse return 0;
+        defer alloc.free(entries);
+        return @intCast(entries.len);
+    }
+
+    fn surfaceDisplayTitle(surface: *Surface, fallback: []const u8) []const u8 {
+        return if (surface.getEffectiveTitle()) |title| title else fallback;
+    }
+
+    fn formatSurfaceRef(
+        buf: *[32]u8,
+        tab_idx: u32,
+        surface_idx: u32,
+        surface_count: u32,
+    ) ![]const u8 {
+        if (surface_count <= 1) return std.fmt.bufPrint(buf, "{d}", .{tab_idx});
+        return std.fmt.bufPrint(buf, "{d}/{d}", .{ tab_idx, surface_idx });
+    }
+
+    fn recordWorkspaceNotification(
+        self: *Self,
+        workspace_idx: u32,
+        title: []const u8,
+        body: []const u8,
+        source: notification_mod.NotificationSource,
+    ) ?u64 {
+        const priv = self.private();
+        const workspace_id = self.workspaceUuid(workspace_idx) orelse return null;
+        const notification_id = priv.notifications.add(workspace_id, null, title, body, source) catch return null;
+        if (workspace_idx == priv.active_workspace_idx) {
+            priv.notifications.markRead(notification_id);
+        }
+        self.refreshAllWorkspaceSidebars();
+        return notification_id;
+    }
+
     /// Handle notification.create — fires a desktop notification via GIO and
-    /// adds the termplex-attention CSS class to the active surface.
-    fn ipcNotificationCreate(self: *Self, alloc: std.mem.Allocator, id: i64, params: std.json.ObjectMap) ?[]u8 {
-        // Extract title and body from params.
+    /// records unread state for the target workspace.
+    fn ipcNotificationCreate(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        const params = if (params_val == .object) params_val.object else obj;
+
         const title_slice: []const u8 = if (params.get("title")) |v| switch (v) {
             .string => |s| s,
             else => "Termplex Notification",
@@ -1912,13 +2648,14 @@ pub const Application = extern struct {
             else => "",
         } else "";
 
-        // Duplicate as null-terminated strings for GIO API.
+        const workspace_idx = self.resolveWorkspaceIdx(params) orelse self.private().active_workspace_idx;
+        const notification_id = self.recordWorkspaceNotification(workspace_idx, title_slice, body_slice, .cli);
+
         const title_z = alloc.dupeZ(u8, title_slice) catch return null;
         defer alloc.free(title_z);
         const body_z = alloc.dupeZ(u8, body_slice) catch return null;
         defer alloc.free(body_z);
 
-        // Fire a GIO desktop notification.
         const notification = gio.Notification.new(title_z);
         defer notification.unref();
         if (body_slice.len > 0) {
@@ -1926,17 +2663,33 @@ pub const Application = extern struct {
         }
         self.as(gio.Application).sendNotification(null, notification);
 
-        // Add attention CSS class to the active window's focused surface.
-        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
-            active_win.as(gtk.Widget).addCssClass("termplex-attention");
+        if (workspace_idx == self.private().active_workspace_idx) {
+            if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+                active_win.as(gtk.Widget).addCssClass("termplex-attention");
+            }
         }
 
-        log.info("IPC notification: title=\"{s}\" body=\"{s}\"", .{ title_slice, body_slice });
+        log.info("IPC notification: workspace={d} title=\"{s}\" body=\"{s}\"", .{ workspace_idx, title_slice, body_slice });
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"id\":") catch return null;
+        if (notification_id) |value| {
+            var notification_id_buf: [32]u8 = undefined;
+            const notification_id_str = std.fmt.bufPrint(&notification_id_buf, "{d}", .{value}) catch return null;
+            buf.appendSlice(alloc, notification_id_str) catch return null;
+        } else {
+            buf.appendSlice(alloc, "null") catch return null;
+        }
+        buf.appendSlice(alloc, ",\"workspace\":") catch return null;
+        var workspace_buf: [16]u8 = undefined;
+        const workspace_str = std.fmt.bufPrint(&workspace_buf, "{d}", .{workspace_idx}) catch return null;
+        buf.appendSlice(alloc, workspace_str) catch return null;
+        buf.appendSlice(alloc, ",\"notified\":true}") catch return null;
 
         return std.fmt.allocPrint(
             alloc,
-            "{{\"ok\":true,\"result\":{{\"notified\":true}},\"id\":{d}}}",
-            .{id},
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
         ) catch null;
     }
 
@@ -1944,7 +2697,10 @@ pub const Application = extern struct {
     /// Returns the workspace index, or null if not found.
     fn resolveWorkspaceIdx(self: *Self, params: std.json.ObjectMap) ?u32 {
         const priv = self.private();
-        const ws_val = params.get("workspace") orelse return priv.active_workspace_idx;
+        const ws_val = params.get("workspace") orelse
+            params.get("ref") orelse
+            params.get("index") orelse
+            return priv.active_workspace_idx;
         switch (ws_val) {
             .integer => |n| {
                 if (n >= 0 and n < @as(i64, @intCast(priv.workspace_names.items.len)))
@@ -1952,11 +2708,7 @@ pub const Application = extern struct {
                 return null;
             },
             .string => |name| {
-                for (priv.workspace_names.items, 0..) |ws_name, idx| {
-                    if (std.mem.eql(u8, ws_name, name))
-                        return @intCast(idx);
-                }
-                return null;
+                return self.resolveWorkspaceRefString(name);
             },
             else => return priv.active_workspace_idx,
         }
@@ -1988,11 +2740,565 @@ pub const Application = extern struct {
         return tab_view.getNthPage(tab_idx);
     }
 
+    fn ipcNotificationList(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const priv = self.private();
+        const params_val = obj.get("params") orelse .null;
+        const has_workspace_filter = params_val == .object and
+            (params_val.object.get("workspace") != null or
+                params_val.object.get("ref") != null or
+                params_val.object.get("index") != null);
+
+        const workspace_filter: ?u32 = blk: {
+            if (!has_workspace_filter) break :blk null;
+            if (params_val != .object) break :blk null;
+            break :blk self.resolveWorkspaceIdx(params_val.object) orelse {
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            };
+        };
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+
+        buf.appendSlice(alloc, "[") catch return null;
+        var first = true;
+        for (priv.notifications.notifications.items) |notification| {
+            const ws_idx = self.workspaceIndexForUuid(notification.workspace_id) orelse continue;
+            if (workspace_filter) |filter_idx| {
+                if (ws_idx != filter_idx) continue;
+            }
+
+            if (!first) buf.appendSlice(alloc, ",") catch return null;
+            first = false;
+
+            buf.appendSlice(alloc, "{\"id\":") catch return null;
+            var id_buf: [32]u8 = undefined;
+            const notification_id = std.fmt.bufPrint(&id_buf, "{d}", .{notification.id}) catch return null;
+            buf.appendSlice(alloc, notification_id) catch return null;
+            buf.appendSlice(alloc, ",\"workspace\":") catch return null;
+            var ws_buf: [16]u8 = undefined;
+            const ws_str = std.fmt.bufPrint(&ws_buf, "{d}", .{ws_idx}) catch return null;
+            buf.appendSlice(alloc, ws_str) catch return null;
+            buf.appendSlice(alloc, ",\"workspace_name\":") catch return null;
+            appendJsonString(&buf, alloc, self.workspaceName(ws_idx) orelse "") catch return null;
+            buf.appendSlice(alloc, ",\"title\":") catch return null;
+            appendJsonString(&buf, alloc, notification.title) catch return null;
+            buf.appendSlice(alloc, ",\"body\":") catch return null;
+            appendJsonString(&buf, alloc, notification.body) catch return null;
+            buf.appendSlice(alloc, ",\"timestamp\":") catch return null;
+            var ts_buf: [32]u8 = undefined;
+            const ts_str = std.fmt.bufPrint(&ts_buf, "{d}", .{notification.timestamp}) catch return null;
+            buf.appendSlice(alloc, ts_str) catch return null;
+            buf.appendSlice(alloc, ",\"read\":") catch return null;
+            buf.appendSlice(alloc, if (notification.read) "true" else "false") catch return null;
+            buf.appendSlice(alloc, ",\"source\":") catch return null;
+            appendJsonString(&buf, alloc, @tagName(notification.source)) catch return null;
+            buf.appendSlice(alloc, "}") catch return null;
+        }
+        buf.appendSlice(alloc, "]") catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"notifications\":{s}}},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcNotificationClear(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const priv = self.private();
+        const params_val = obj.get("params") orelse .null;
+        const has_workspace_filter = params_val == .object and
+            (params_val.object.get("workspace") != null or
+                params_val.object.get("ref") != null or
+                params_val.object.get("index") != null);
+
+        if (has_workspace_filter) {
+            const ws_idx = self.resolveWorkspaceIdx(params_val.object) orelse {
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            };
+            const workspace_id = self.workspaceUuid(ws_idx) orelse {
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            };
+            priv.notifications.clearWorkspace(workspace_id);
+        } else {
+            priv.notifications.clearAll();
+        }
+
+        self.refreshAllWorkspaceSidebars();
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"cleared\":true}},\"id\":{d}}}",
+            .{id},
+        ) catch null;
+    }
+
+    fn ipcSystemTree(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        const priv = self.private();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+
+        buf.appendSlice(alloc, "{\"active_workspace\":") catch return null;
+        var active_buf: [16]u8 = undefined;
+        const active_str = std.fmt.bufPrint(&active_buf, "{d}", .{priv.active_workspace_idx}) catch return null;
+        buf.appendSlice(alloc, active_str) catch return null;
+        buf.appendSlice(alloc, ",\"workspaces\":[") catch return null;
+
+        for (priv.workspace_names.items, 0..) |name, ws_idx| {
+            if (ws_idx > 0) buf.appendSlice(alloc, ",") catch return null;
+
+            buf.appendSlice(alloc, "{\"index\":") catch return null;
+            var idx_buf: [16]u8 = undefined;
+            const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{ws_idx}) catch return null;
+            buf.appendSlice(alloc, idx_str) catch return null;
+            buf.appendSlice(alloc, ",\"name\":") catch return null;
+            appendJsonString(&buf, alloc, name) catch return null;
+            buf.appendSlice(alloc, ",\"dir\":") catch return null;
+            appendJsonString(&buf, alloc, self.workspaceDir(@intCast(ws_idx)) orelse "") catch return null;
+            buf.appendSlice(alloc, ",\"active\":") catch return null;
+            buf.appendSlice(alloc, if (ws_idx == priv.active_workspace_idx) "true" else "false") catch return null;
+            buf.appendSlice(alloc, ",\"unread_count\":") catch return null;
+            var unread_buf: [16]u8 = undefined;
+            const unread_str = std.fmt.bufPrint(&unread_buf, "{d}", .{self.workspaceUnreadCount(@intCast(ws_idx))}) catch return null;
+            buf.appendSlice(alloc, unread_str) catch return null;
+            buf.appendSlice(alloc, ",\"tabs\":[") catch return null;
+
+            if (self.workspaceTabView(@intCast(ws_idx))) |tab_view| {
+                const selected_idx = self.activeTabIndexForWorkspace(@intCast(ws_idx));
+                var tab_idx: c_int = 0;
+                while (tab_idx < tab_view.getNPages()) : (tab_idx += 1) {
+                    if (tab_idx > 0) buf.appendSlice(alloc, ",") catch return null;
+                    const page = tab_view.getNthPage(tab_idx);
+                    const child = page.getChild();
+                    const tab = gobject.ext.cast(Tab, child);
+                    const active_surface = if (tab) |t| t.getActiveSurface() else null;
+                    const title_slice = std.mem.span(page.getTitle());
+
+                    buf.appendSlice(alloc, "{\"index\":") catch return null;
+                    var tab_idx_buf: [16]u8 = undefined;
+                    const tab_idx_str = std.fmt.bufPrint(&tab_idx_buf, "{d}", .{tab_idx}) catch return null;
+                    buf.appendSlice(alloc, tab_idx_str) catch return null;
+                    buf.appendSlice(alloc, ",\"title\":") catch return null;
+                    appendJsonString(&buf, alloc, title_slice) catch return null;
+                    buf.appendSlice(alloc, ",\"active\":") catch return null;
+                    buf.appendSlice(alloc, if (selected_idx != null and selected_idx.? == @as(u32, @intCast(tab_idx))) "true" else "false") catch return null;
+                    if (active_surface) |s| {
+                        buf.appendSlice(alloc, ",\"pwd\":") catch return null;
+                        appendJsonString(&buf, alloc, if (s.getPwd()) |pwd| pwd else "") catch return null;
+                    }
+                    buf.appendSlice(alloc, "}") catch return null;
+                }
+            }
+
+            buf.appendSlice(alloc, "]}") catch return null;
+        }
+
+        buf.appendSlice(alloc, "]}") catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcStatusReportGit(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        const priv = self.private();
+        const ws_idx = priv.active_workspace_idx;
+        const probe_dir = priv.current_pwd orelse self.workspaceDir(ws_idx) orelse "";
+
+        var result = git_probe.probe(alloc, probe_dir);
+        defer result.deinit(alloc);
+
+        if (priv.git_branch) |old| alloc.free(old);
+        priv.git_branch = if (result.branch) |branch| alloc.dupeZ(u8, branch) catch null else null;
+        priv.git_dirty = result.dirty;
+
+        if (ws_idx < priv.workspace_git_branches.items.len) {
+            if (priv.workspace_git_branches.items[ws_idx]) |old_branch| alloc.free(old_branch);
+            priv.workspace_git_branches.items[ws_idx] = if (result.branch) |branch| alloc.dupeZ(u8, branch) catch null else null;
+            priv.workspace_git_dirty.items[ws_idx] = result.dirty;
+        }
+
+        self.updateSidebarGitState();
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"workspace\":") catch return null;
+        var ws_buf: [16]u8 = undefined;
+        const ws_str = std.fmt.bufPrint(&ws_buf, "{d}", .{ws_idx}) catch return null;
+        buf.appendSlice(alloc, ws_str) catch return null;
+        buf.appendSlice(alloc, ",\"branch\":") catch return null;
+        if (priv.git_branch) |branch| {
+            appendJsonString(&buf, alloc, branch) catch return null;
+        } else {
+            buf.appendSlice(alloc, "null") catch return null;
+        }
+        buf.appendSlice(alloc, ",\"dirty\":") catch return null;
+        buf.appendSlice(alloc, if (priv.git_dirty) "true" else "false") catch return null;
+        buf.appendSlice(alloc, "}") catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcStatusReportPorts(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        const priv = self.private();
+        runPortScan(self);
+        self.updateSidebarPortState();
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"workspace\":") catch return null;
+        var ws_buf: [16]u8 = undefined;
+        const ws_str = std.fmt.bufPrint(&ws_buf, "{d}", .{priv.active_workspace_idx}) catch return null;
+        buf.appendSlice(alloc, ws_str) catch return null;
+        buf.appendSlice(alloc, ",\"ports\":") catch return null;
+        if (priv.listening_ports_str) |ports| {
+            appendJsonString(&buf, alloc, ports) catch return null;
+        } else {
+            buf.appendSlice(alloc, "null") catch return null;
+        }
+        buf.appendSlice(alloc, "}") catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcSurfaceList(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        const workspace_idx: u32 = blk: {
+            if (params_val == .object and
+                (params_val.object.get("workspace") != null or
+                    params_val.object.get("ref") != null or
+                    params_val.object.get("index") != null))
+            {
+                break :blk self.resolveWorkspaceIdx(params_val.object) orelse {
+                    return std.fmt.allocPrint(
+                        alloc,
+                        "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                        .{id},
+                    ) catch null;
+                };
+            }
+            break :blk self.private().active_workspace_idx;
+        };
+
+        const tab_view = self.workspaceTabView(workspace_idx) orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+
+        buf.appendSlice(alloc, "[") catch return null;
+        const selected_idx = self.activeTabIndexForWorkspace(workspace_idx);
+        var tab_idx: c_int = 0;
+        while (tab_idx < tab_view.getNPages()) : (tab_idx += 1) {
+            if (tab_idx > 0) buf.appendSlice(alloc, ",") catch return null;
+            const page = tab_view.getNthPage(tab_idx);
+            const child = page.getChild();
+            const tab = gobject.ext.cast(Tab, child);
+
+            if (tab) |tab_widget| {
+                const entries = collectTabSurfaceEntries(tab_widget, alloc) orelse &[_]TabSurfaceEntry{};
+                defer if (entries.len > 0) alloc.free(entries);
+                const surface_count: u32 = @intCast(entries.len);
+                const active_surface = tab_widget.getActiveSurface();
+                if (surface_count > 0) {
+                    for (entries, 0..) |entry, surface_idx_usize| {
+                        const surface_idx: u32 = @intCast(surface_idx_usize);
+                        if (buf.items.len > 1) buf.appendSlice(alloc, ",") catch return null;
+
+                        buf.appendSlice(alloc, "{\"ref\":") catch return null;
+                        var ref_buf: [32]u8 = undefined;
+                        const ref_str = formatSurfaceRef(
+                            &ref_buf,
+                            @intCast(tab_idx),
+                            surface_idx,
+                            surface_count,
+                        ) catch return null;
+                        appendJsonString(&buf, alloc, ref_str) catch return null;
+
+                        buf.appendSlice(alloc, ",\"tab\":") catch return null;
+                        var tab_buf: [16]u8 = undefined;
+                        const tab_str = std.fmt.bufPrint(&tab_buf, "{d}", .{tab_idx}) catch return null;
+                        buf.appendSlice(alloc, tab_str) catch return null;
+
+                        buf.appendSlice(alloc, ",\"surface\":") catch return null;
+                        var surface_buf: [16]u8 = undefined;
+                        const surface_str = std.fmt.bufPrint(&surface_buf, "{d}", .{surface_idx}) catch return null;
+                        buf.appendSlice(alloc, surface_str) catch return null;
+
+                        buf.appendSlice(alloc, ",\"tab_title\":") catch return null;
+                        appendJsonString(&buf, alloc, std.mem.span(page.getTitle())) catch return null;
+
+                        buf.appendSlice(alloc, ",\"title\":") catch return null;
+                        appendJsonString(
+                            &buf,
+                            alloc,
+                            surfaceDisplayTitle(entry.surface, std.mem.span(page.getTitle())),
+                        ) catch return null;
+
+                        buf.appendSlice(alloc, ",\"pwd\":") catch return null;
+                        appendJsonString(&buf, alloc, entry.surface.getPwd() orelse "") catch return null;
+
+                        buf.appendSlice(alloc, ",\"focused\":") catch return null;
+                        const is_focused =
+                            selected_idx != null and
+                            selected_idx.? == @as(u32, @intCast(tab_idx)) and
+                            workspace_idx == self.private().active_workspace_idx and
+                            active_surface != null and
+                            active_surface.? == entry.surface;
+                        buf.appendSlice(alloc, if (is_focused) "true" else "false") catch return null;
+                        buf.appendSlice(alloc, "}") catch return null;
+                    }
+                    continue;
+                }
+            }
+
+            if (buf.items.len > 1) buf.appendSlice(alloc, ",") catch return null;
+            buf.appendSlice(alloc, "{\"ref\":") catch return null;
+            var ref_buf: [16]u8 = undefined;
+            const ref_str = std.fmt.bufPrint(&ref_buf, "{d}", .{tab_idx}) catch return null;
+            appendJsonString(&buf, alloc, ref_str) catch return null;
+            buf.appendSlice(alloc, ",\"tab\":") catch return null;
+            buf.appendSlice(alloc, ref_str) catch return null;
+            buf.appendSlice(alloc, ",\"surface\":0,\"tab_title\":") catch return null;
+            appendJsonString(&buf, alloc, std.mem.span(page.getTitle())) catch return null;
+            buf.appendSlice(alloc, ",\"title\":") catch return null;
+            appendJsonString(&buf, alloc, std.mem.span(page.getTitle())) catch return null;
+            buf.appendSlice(alloc, ",\"pwd\":\"\",\"focused\":") catch return null;
+            buf.appendSlice(alloc, if (selected_idx != null and selected_idx.? == @as(u32, @intCast(tab_idx)) and workspace_idx == self.private().active_workspace_idx) "true" else "false") catch return null;
+            buf.appendSlice(alloc, "}") catch return null;
+        }
+        buf.appendSlice(alloc, "]") catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"workspace\":{d},\"surfaces\":{s}}},\"id\":{d}}}",
+            .{ workspace_idx, buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcSurfaceCreate(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        const workspace_idx: u32 = blk: {
+            if (params_val == .object and params_val.object.get("workspace") != null) {
+                break :blk self.resolveWorkspaceParam(params_val.object, "workspace", self.private().active_workspace_idx) orelse {
+                    return std.fmt.allocPrint(
+                        alloc,
+                        "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                        .{id},
+                    ) catch null;
+                };
+            }
+            break :blk self.private().active_workspace_idx;
+        };
+
+        const active_win = self.as(gtk.Application).getActiveWindow() orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"no active window\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const win = gobject.ext.cast(Window, active_win) orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"active window is not a termplex window\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        if (workspace_idx == self.private().active_workspace_idx) {
+            win.newTab(null);
+        } else {
+            const tab_view = self.workspaceTabView(workspace_idx) orelse {
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            };
+            win.createTabInView(tab_view, self.workspaceDir(workspace_idx));
+        }
+
+        const tab_view = self.workspaceTabView(workspace_idx) orelse return null;
+        const tab_idx: c_int = tab_view.getNPages() - 1;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"workspace\":{d},\"ref\":\"{d}\",\"tab\":{d}}},\"id\":{d}}}",
+            .{ workspace_idx, tab_idx, tab_idx, id },
+        ) catch null;
+    }
+
+    fn ipcSurfaceClose(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        const surface_ref = if (params_val == .object)
+            self.resolveSurfaceRef(params_val.object, true)
+        else blk: {
+            const workspace_idx = self.private().active_workspace_idx;
+            const tab_idx = self.activeTabIndexForWorkspace(workspace_idx) orelse break :blk null;
+            break :blk SurfaceRef{
+                .workspace_idx = workspace_idx,
+                .tab_idx = tab_idx,
+            };
+        };
+        const surface_target_ref = surface_ref orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"surface not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const surface_target = self.resolveSurfaceTarget(surface_target_ref) orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"surface not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        const active_win = self.as(gtk.Application).getActiveWindow() orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"no active window\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const win = gobject.ext.cast(Window, active_win) orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"active window is not a termplex window\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        if (surface_target.workspace_idx != self.private().active_workspace_idx) {
+            self.setActiveWorkspaceIndex(surface_target.workspace_idx);
+            self.markWorkspaceNotificationsRead(surface_target.workspace_idx);
+            self.refreshAllWorkspaceSidebars();
+            self.syncActiveWorkspaceHeaders();
+            if (self.workspaceTabView(surface_target.workspace_idx)) |target_view| {
+                win.switchToTabView(target_view);
+            }
+        }
+
+        const tab_view = self.workspaceTabView(surface_target.workspace_idx) orelse return null;
+        tab_view.setSelectedPage(surface_target.page);
+        if (surface_target.surface_count <= 1) {
+            tab_view.closePage(surface_target.page);
+        } else {
+            surface_target.tab.getSplitTree().setLastFocusedSurface(surface_target.surface);
+            surface_target.surface.close();
+        }
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"closed\":true}},\"id\":{d}}}",
+            .{id},
+        ) catch null;
+    }
+
+    fn ipcSurfaceFocus(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        if (params_val != .object) {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"surface ref required\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        const surface_target_ref = self.resolveSurfaceRef(params_val.object, false) orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"surface not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const surface_target = self.resolveSurfaceTarget(surface_target_ref) orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"surface not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        const active_win = self.as(gtk.Application).getActiveWindow() orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"no active window\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const win = gobject.ext.cast(Window, active_win) orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"active window is not a termplex window\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        if (surface_target.workspace_idx != self.private().active_workspace_idx) {
+            self.setActiveWorkspaceIndex(surface_target.workspace_idx);
+            self.markWorkspaceNotificationsRead(surface_target.workspace_idx);
+            self.refreshAllWorkspaceSidebars();
+            self.syncActiveWorkspaceHeaders();
+            if (self.workspaceTabView(surface_target.workspace_idx)) |target_view| {
+                win.switchToTabView(target_view);
+            }
+        }
+
+        const tab_view = self.workspaceTabView(surface_target.workspace_idx) orelse return null;
+        tab_view.setSelectedPage(surface_target.page);
+        surface_target.tab.getSplitTree().setLastFocusedSurface(surface_target.surface);
+        surface_target.surface.grabFocus();
+
+        var ref_buf: [32]u8 = undefined;
+        const ref_str = formatSurfaceRef(
+            &ref_buf,
+            surface_target.tab_idx,
+            surface_target.surface_idx,
+            surface_target.surface_count,
+        ) catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"workspace\":{d},\"ref\":\"{s}\",\"focused\":true}},\"id\":{d}}}",
+            .{ surface_target.workspace_idx, ref_str, id },
+        ) catch null;
+    }
+
     /// Handle surface.send — writes text to a terminal's PTY.
     fn ipcSurfaceSend(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
         const params_val = obj.get("params") orelse .null;
         if (params_val != .object) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params object required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2000,7 +3306,8 @@ pub const Application = extern struct {
         const params = params_val.object;
 
         const page = self.resolveTabPage(params) orelse {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace or tab not found\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2017,7 +3324,8 @@ pub const Application = extern struct {
 
         // If text is empty, just return success — nothing to write.
         if (text.len == 0) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2032,7 +3340,8 @@ pub const Application = extern struct {
                         core_surface.alloc,
                         text,
                     ) catch {
-                        return std.fmt.allocPrint(alloc,
+                        return std.fmt.allocPrint(
+                            alloc,
                             "{{\"ok\":false,\"error\":{{\"code\":\"write_error\",\"message\":\"failed to create write request\"}},\"id\":{d}}}",
                             .{id},
                         ) catch null;
@@ -2042,7 +3351,8 @@ pub const Application = extern struct {
             }
         }
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
             .{id},
         ) catch null;
@@ -2052,7 +3362,8 @@ pub const Application = extern struct {
     fn ipcSurfaceRead(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
         const params_val = obj.get("params") orelse .null;
         if (params_val != .object) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params object required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2060,7 +3371,8 @@ pub const Application = extern struct {
         const params = params_val.object;
 
         const page = self.resolveTabPage(params) orelse {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace or tab not found\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2082,19 +3394,22 @@ pub const Application = extern struct {
         // Navigate: page -> Tab -> Surface -> CoreSurface -> terminal text.
         const child = page.getChild();
         const tab = gobject.ext.cast(Tab, child) orelse {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"tab not found\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         };
         const gtk_surface = tab.getActiveSurface() orelse {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"surface not found\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         };
         const core_surface = gtk_surface.core() orelse {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"core surface not found\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2109,7 +3424,8 @@ pub const Application = extern struct {
         // Get viewport text. Note: plainString reads only the visible viewport
         // (not scrollback). Future enhancement could use .screen to read history.
         const full_text = t.plainString(alloc) catch {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"read_error\",\"message\":\"failed to read terminal buffer\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2124,7 +3440,8 @@ pub const Application = extern struct {
         defer buf.deinit(alloc);
 
         buf.appendSlice(alloc, "{\"ok\":true,\"result\":{\"output\":\"") catch {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"read_error\",\"message\":\"failed to build response\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2215,7 +3532,8 @@ pub const Application = extern struct {
                         {
                             break :blk d;
                         }
-                        return std.fmt.allocPrint(alloc,
+                        return std.fmt.allocPrint(
+                            alloc,
                             "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"direction must be right, left, up, down, horizontal, or vertical\"}},\"id\":{d}}}",
                             .{id},
                         ) catch null;
@@ -2227,13 +3545,15 @@ pub const Application = extern struct {
 
         // Get the active window.
         const active_win = self.as(gtk.Application).getActiveWindow() orelse {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"no active window\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         };
         const win = gobject.ext.cast(Window, active_win) orelse {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"active window is not a termplex window\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2241,7 +3561,8 @@ pub const Application = extern struct {
 
         // Get the active surface and activate the split-tree action on it.
         const surface = win.getActiveSurface() orelse {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"no_surface\",\"message\":\"no active surface\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2254,13 +3575,15 @@ pub const Application = extern struct {
         );
 
         if (result == 0) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"split_failed\",\"message\":\"failed to create split\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         }
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":true,\"result\":{{\"direction\":\"{s}\"}},\"id\":{d}}}",
             .{ direction, id },
         ) catch null;
@@ -2274,7 +3597,8 @@ pub const Application = extern struct {
         const ws_idx: u32 = blk: {
             if (params_val == .object) {
                 if (self.resolveWorkspaceIdx(params_val.object)) |i| break :blk i;
-                return std.fmt.allocPrint(alloc,
+                return std.fmt.allocPrint(
+                    alloc,
                     "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
                     .{id},
                 ) catch null;
@@ -2305,11 +3629,20 @@ pub const Application = extern struct {
                 if (c == '"' or c == '\\') arr_buf.append(alloc, '\\') catch return null;
                 arr_buf.append(alloc, c) catch return null;
             }
-            arr_buf.appendSlice(alloc, "\",\"surface_count\":1}") catch return null;
+            const surface_count: u32 = if (gobject.ext.cast(Tab, page.getChild())) |tab|
+                @max(countTabSurfaces(tab), 1)
+            else
+                1;
+            arr_buf.appendSlice(alloc, "\",\"surface_count\":") catch return null;
+            var surface_count_buf: [16]u8 = undefined;
+            const surface_count_str = std.fmt.bufPrint(&surface_count_buf, "{d}", .{surface_count}) catch return null;
+            arr_buf.appendSlice(alloc, surface_count_str) catch return null;
+            arr_buf.appendSlice(alloc, "}") catch return null;
         }
         arr_buf.appendSlice(alloc, "]") catch return null;
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":true,\"result\":{{\"tabs\":{s}}},\"id\":{d}}}",
             .{ arr_buf.items, id },
         ) catch null;
@@ -2319,7 +3652,8 @@ pub const Application = extern struct {
     fn ipcTabCreate(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
         const params_val = obj.get("params") orelse .null;
         if (params_val != .object) {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"invalid_params\",\"message\":\"params object required\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2328,7 +3662,8 @@ pub const Application = extern struct {
 
         // Resolve workspace using shared helper
         const ws_idx = self.resolveWorkspaceIdx(params) orelse {
-            return std.fmt.allocPrint(alloc,
+            return std.fmt.allocPrint(
+                alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
                 .{id},
             ) catch null;
@@ -2405,7 +3740,8 @@ pub const Application = extern struct {
 
                     const new_idx = n_pages - 1;
                     log.info("IPC tab.create: workspace={d} new_tab_idx={d}", .{ ws_idx, new_idx });
-                    return std.fmt.allocPrint(alloc,
+                    return std.fmt.allocPrint(
+                        alloc,
                         "{{\"ok\":true,\"result\":{{\"index\":{d}}},\"id\":{d}}}",
                         .{ new_idx, id },
                     ) catch null;
@@ -2413,7 +3749,8 @@ pub const Application = extern struct {
             }
         }
 
-        return std.fmt.allocPrint(alloc,
+        return std.fmt.allocPrint(
+            alloc,
             "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"no active window\"}},\"id\":{d}}}",
             .{id},
         ) catch null;
@@ -2543,7 +3880,8 @@ pub const Application = extern struct {
             }
         }
 
-        // Build JSON workspaces array (v3: objects with name, dir, tabs[]).
+        // Build JSON workspaces array (v5: full tab snapshots including
+        // split layouts, focused surfaces, and per-surface metadata).
         var ws_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer ws_buf.deinit(alloc);
         ws_buf.appendSlice(alloc, "[") catch return;
@@ -2555,21 +3893,17 @@ pub const Application = extern struct {
             }
             if (need_comma) ws_buf.appendSlice(alloc, ",") catch return;
             need_comma = true;
-            ws_buf.appendSlice(alloc, "{\"name\":\"") catch return;
-            // Escape name
-            for (name) |c| {
-                if (c == '"' or c == '\\') ws_buf.append(alloc, '\\') catch return;
-                ws_buf.append(alloc, c) catch return;
-            }
-            ws_buf.appendSlice(alloc, "\",\"dir\":\"") catch return;
-            // Escape dir
             const dir = if (i < priv.workspace_dirs.items.len) priv.workspace_dirs.items[i] else "";
-            for (dir) |c| {
-                if (c == '"' or c == '\\') ws_buf.append(alloc, '\\') catch return;
-                ws_buf.append(alloc, c) catch return;
-            }
-            ws_buf.appendSlice(alloc, "\",\"tabs\":[") catch return;
-            // Serialize each tab's title
+            ws_buf.appendSlice(alloc, "{\"name\":") catch return;
+            appendJsonString(&ws_buf, alloc, name) catch return;
+            ws_buf.appendSlice(alloc, ",\"dir\":") catch return;
+            appendJsonString(&ws_buf, alloc, dir) catch return;
+            ws_buf.appendSlice(alloc, ",\"active_tab_index\":") catch return;
+            const active_tab_index: u32 = self.activeTabIndexForWorkspace(@intCast(i)) orelse 0;
+            var active_tab_buf: [16]u8 = undefined;
+            const active_tab_str = std.fmt.bufPrint(&active_tab_buf, "{d}", .{active_tab_index}) catch return;
+            ws_buf.appendSlice(alloc, active_tab_str) catch return;
+            ws_buf.appendSlice(alloc, ",\"tabs\":[") catch return;
             if (i < priv.workspace_tab_views.items.len) {
                 const tv = priv.workspace_tab_views.items[i];
                 const n_pages = tv.getNPages();
@@ -2577,13 +3911,14 @@ pub const Application = extern struct {
                 while (j < n_pages) : (j += 1) {
                     if (j > 0) ws_buf.appendSlice(alloc, ",") catch return;
                     const page = tv.getNthPage(j);
-                    const title = std.mem.span(page.getTitle());
-                    ws_buf.appendSlice(alloc, "{\"title\":\"") catch return;
-                    for (title) |c| {
-                        if (c == '"' or c == '\\') ws_buf.append(alloc, '\\') catch return;
-                        ws_buf.append(alloc, c) catch return;
+                    const tab_widget = page.getChild();
+                    if (gobject.ext.cast(Tab, tab_widget)) |tab| {
+                        appendSessionTabJson(&ws_buf, alloc, tab, page, dir) catch return;
+                    } else {
+                        ws_buf.appendSlice(alloc, "{\"title\":null,\"focused_surface_id\":null,\"split_layout\":{\"type\":\"leaf\",\"surface_id\":\"00000000-0000-0000-0000-000000000000\"},\"surfaces\":[{\"id\":\"00000000-0000-0000-0000-000000000000\",\"working_directory\":") catch return;
+                        appendJsonString(&ws_buf, alloc, dir) catch return;
+                        ws_buf.appendSlice(alloc, ",\"custom_title\":null}]}") catch return;
                     }
-                    ws_buf.appendSlice(alloc, "\"}") catch return;
                 }
             }
             ws_buf.appendSlice(alloc, "]}") catch return;
@@ -2607,7 +3942,7 @@ pub const Application = extern struct {
 
         const json = std.fmt.allocPrint(alloc,
             \\{{
-            \\  "version": 3,
+            \\  "version": 5,
             \\  "window_width": {d},
             \\  "window_height": {d},
             \\  "sidebar_width": {d},
@@ -2652,6 +3987,80 @@ pub const Application = extern struct {
         };
 
         log.debug("autosave: session written to {s}", .{session_path});
+    }
+
+    fn parseOwnedJsonString(alloc: std.mem.Allocator, value: std.json.Value) !?[]const u8 {
+        return switch (value) {
+            .string => |s| try alloc.dupe(u8, s),
+            .null => null,
+            else => error.InvalidArgument,
+        };
+    }
+
+    fn parseSessionSurfaceData(alloc: std.mem.Allocator, value: std.json.Value) !session_mod.SurfaceData {
+        if (value != .object) return error.InvalidArgument;
+        const obj = value.object;
+
+        const id_val = obj.get("id") orelse return error.InvalidArgument;
+        if (id_val != .string) return error.InvalidArgument;
+        const id = try alloc.dupe(u8, id_val.string);
+        errdefer alloc.free(id);
+
+        const wd_val = obj.get("working_directory") orelse return error.InvalidArgument;
+        if (wd_val != .string) return error.InvalidArgument;
+        const working_directory = try alloc.dupe(u8, wd_val.string);
+        errdefer alloc.free(working_directory);
+
+        const custom_title = if (obj.get("custom_title")) |custom_title_val|
+            try parseOwnedJsonString(alloc, custom_title_val)
+        else
+            null;
+        errdefer if (custom_title) |title| alloc.free(title);
+
+        return .{
+            .id = id,
+            .working_directory = working_directory,
+            .custom_title = custom_title,
+        };
+    }
+
+    fn parseSessionTabData(alloc: std.mem.Allocator, value: std.json.Value) !session_mod.TabData {
+        if (value != .object) return error.InvalidArgument;
+        const obj = value.object;
+
+        const title = if (obj.get("title")) |title_val|
+            try parseOwnedJsonString(alloc, title_val)
+        else
+            null;
+        errdefer if (title) |owned| alloc.free(owned);
+
+        const focused_surface_id = if (obj.get("focused_surface_id")) |focused_val|
+            try parseOwnedJsonString(alloc, focused_val)
+        else
+            null;
+        errdefer if (focused_surface_id) |owned| alloc.free(owned);
+
+        const layout_val = obj.get("split_layout") orelse return error.InvalidArgument;
+        var split_layout = try workspace_mod.SplitLayout.fromJsonValue(alloc, layout_val);
+        errdefer split_layout.deinit(alloc);
+
+        const surfaces_val = obj.get("surfaces") orelse return error.InvalidArgument;
+        if (surfaces_val != .array) return error.InvalidArgument;
+        var surfaces = std.ArrayListUnmanaged(session_mod.SurfaceData){};
+        errdefer {
+            for (surfaces.items) |*surface| surface.deinit(alloc);
+            surfaces.deinit(alloc);
+        }
+        for (surfaces_val.array.items) |surface_val| {
+            try surfaces.append(alloc, try parseSessionSurfaceData(alloc, surface_val));
+        }
+
+        return .{
+            .title = title,
+            .focused_surface_id = focused_surface_id,
+            .split_layout = split_layout,
+            .surfaces = try surfaces.toOwnedSlice(alloc),
+        };
     }
 
     /// Restore workspace state from the session JSON file on startup.
@@ -2702,9 +4111,11 @@ pub const Application = extern struct {
         // Detect format version. Absent or 1 → v1 (flat string array).
         // Explicit 2 → v2 (array of objects with name/dir/tab_count).
         // Explicit 3 → v3 (v2 + tabs[] array with per-tab title).
+        // Explicit 4 → v4 (v3 + workspace active_tab_index + per-tab dir).
+        // Explicit 5 → v5 (full split/session snapshots per tab).
         const format_version: u32 = if (root.object.get("version")) |vv|
             switch (vv) {
-                .integer => |n| @as(u32, @intCast(std.math.clamp(n, 1, 3))),
+                .integer => |n| @as(u32, @intCast(std.math.clamp(n, 1, 5))),
                 else => 1,
             }
         else
@@ -2715,6 +4126,7 @@ pub const Application = extern struct {
         priv.workspace_names.clearRetainingCapacity();
         for (priv.workspace_dirs.items) |dir_str| alloc.free(dir_str);
         priv.workspace_dirs.clearRetainingCapacity();
+        priv.workspace_ids.clearRetainingCapacity();
         for (priv.workspace_tab_views.items) |tv| tv.as(gobject.Object).unref();
         priv.workspace_tab_views.clearRetainingCapacity();
         for (priv.workspace_git_branches.items) |branch_opt| {
@@ -2722,6 +4134,7 @@ pub const Application = extern struct {
         }
         priv.workspace_git_branches.clearRetainingCapacity();
         priv.workspace_git_dirty.clearRetainingCapacity();
+        priv.notifications.clearAll();
         // Reset counter so addWorkspaceWithDir assigns correct numbers below.
         priv.next_workspace_number = 1;
         priv.orchestration_workspace_idx = null;
@@ -2741,12 +4154,18 @@ pub const Application = extern struct {
         // Phase 2 tab creation.
         var tab_counts = std.ArrayListUnmanaged(u32){};
         var tab_titles_per_ws = std.ArrayListUnmanaged([]const [:0]const u8){};
+        var tab_snapshots_per_ws = std.ArrayListUnmanaged([]const session_mod.TabData){};
+        var active_tab_indices = std.ArrayListUnmanaged(u32){};
+        var tab_dirs_per_ws = std.ArrayListUnmanaged([]const [:0]const u8){};
 
         // If an orchestration workspace was created (index 0), seed its entry
         // in the parallel arrays so indices stay in sync with workspace indices.
         if (priv.orchestration_workspace_idx != null) {
             tab_counts.append(alloc, 1) catch {};
             tab_titles_per_ws.append(alloc, &[_][:0]const u8{}) catch {};
+            tab_snapshots_per_ws.append(alloc, &[_]session_mod.TabData{}) catch {};
+            active_tab_indices.append(alloc, 0) catch {};
+            tab_dirs_per_ws.append(alloc, &[_][:0]const u8{}) catch {};
         }
 
         // Re-populate from saved data.
@@ -2796,11 +4215,56 @@ pub const Application = extern struct {
             };
 
             // v3: extract tab count and titles from "tabs" array.
+            // v4: also restore workspace active tab index and per-tab dirs.
+            // v5: restore full tab snapshots including split trees.
             // v2: extract tab_count from "tab_count" field.
             // v1: default to 1 tab.
             var tab_count: u32 = 1;
+            var active_tab_index: u32 = 0;
             var tab_title_list = std.ArrayListUnmanaged([:0]const u8){};
-            if (format_version >= 3) {
+            var tab_snapshot_list = std.ArrayListUnmanaged(session_mod.TabData){};
+            var tab_dir_list = std.ArrayListUnmanaged([:0]const u8){};
+            if (format_version >= 4) {
+                switch (item) {
+                    .object => |obj| {
+                        if (obj.get("active_tab_index")) |atv| {
+                            switch (atv) {
+                                .integer => |n| if (n >= 0 and n <= std.math.maxInt(u32)) {
+                                    active_tab_index = @intCast(n);
+                                },
+                                else => {},
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+            if (format_version >= 5) {
+                switch (item) {
+                    .object => |obj| {
+                        if (obj.get("tabs")) |tabs_val| {
+                            switch (tabs_val) {
+                                .array => |tabs_arr| {
+                                    tab_count = @intCast(tabs_arr.items.len);
+                                    if (tab_count == 0) tab_count = 1;
+                                    for (tabs_arr.items) |tab_item| {
+                                        const snapshot = parseSessionTabData(alloc, tab_item) catch continue;
+                                        tab_snapshot_list.append(alloc, snapshot) catch {
+                                            var owned_snapshot = snapshot;
+                                            owned_snapshot.deinit(alloc);
+                                        };
+                                    }
+                                    if (tab_snapshot_list.items.len > 0) {
+                                        tab_count = @intCast(tab_snapshot_list.items.len);
+                                    }
+                                },
+                                else => {},
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            } else if (format_version >= 3) {
                 switch (item) {
                     .object => |obj| {
                         if (obj.get("tabs")) |tabs_val| {
@@ -2820,6 +4284,19 @@ pub const Application = extern struct {
                                                             };
                                                         },
                                                         else => {},
+                                                    }
+                                                }
+                                                if (format_version >= 4) {
+                                                    if (tab_obj.get("dir")) |dv| {
+                                                        switch (dv) {
+                                                            .string => |s| {
+                                                                const d = alloc.dupeZ(u8, s) catch continue;
+                                                                tab_dir_list.append(alloc, d) catch {
+                                                                    alloc.free(d);
+                                                                };
+                                                            },
+                                                            else => {},
+                                                        }
                                                     }
                                                 }
                                             },
@@ -2858,6 +4335,7 @@ pub const Application = extern struct {
                 log.warn("session restore: OOM allocating workspace dir", .{});
                 continue;
             };
+            const workspace_id = uuid.generate();
             const tab_view = adw.TabView.new();
             _ = tab_view.as(gobject.Object).ref();
             priv.workspace_names.append(alloc, name) catch {
@@ -2875,7 +4353,17 @@ pub const Application = extern struct {
                 log.warn("session restore: OOM appending workspace dir", .{});
                 continue;
             };
+            priv.workspace_ids.append(alloc, workspace_id) catch {
+                _ = priv.workspace_dirs.pop();
+                _ = priv.workspace_names.pop();
+                alloc.free(name);
+                alloc.free(dir);
+                tab_view.as(gobject.Object).unref();
+                log.warn("session restore: OOM appending workspace id", .{});
+                continue;
+            };
             priv.workspace_tab_views.append(alloc, tab_view) catch {
+                _ = priv.workspace_ids.pop();
                 _ = priv.workspace_dirs.pop();
                 _ = priv.workspace_names.pop();
                 alloc.free(name);
@@ -2886,6 +4374,7 @@ pub const Application = extern struct {
             };
             priv.workspace_git_branches.append(alloc, null) catch {
                 _ = priv.workspace_tab_views.pop();
+                _ = priv.workspace_ids.pop();
                 _ = priv.workspace_dirs.pop();
                 _ = priv.workspace_names.pop();
                 alloc.free(name);
@@ -2897,6 +4386,7 @@ pub const Application = extern struct {
             priv.workspace_git_dirty.append(alloc, false) catch {
                 _ = priv.workspace_git_branches.pop();
                 _ = priv.workspace_tab_views.pop();
+                _ = priv.workspace_ids.pop();
                 _ = priv.workspace_dirs.pop();
                 _ = priv.workspace_names.pop();
                 alloc.free(name);
@@ -2907,13 +4397,56 @@ pub const Application = extern struct {
             };
             // Non-fatal if tab_count/title tracking fails; window will fall back to defaults.
             tab_counts.append(alloc, tab_count) catch {};
-            // Store the collected tab titles (may be empty for v1/v2).
-            const owned_titles = tab_title_list.toOwnedSlice(alloc) catch blk: {
-                for (tab_title_list.items) |t| alloc.free(t);
-                tab_title_list.deinit(alloc);
-                break :blk &[_][:0]const u8{};
+            active_tab_indices.append(alloc, @min(active_tab_index, tab_count - 1)) catch {};
+            const owned_snapshots = if (tab_snapshot_list.items.len == 0)
+                &[_]session_mod.TabData{}
+            else
+                tab_snapshot_list.toOwnedSlice(alloc) catch blk: {
+                    for (tab_snapshot_list.items) |snapshot| {
+                        var owned_snapshot = snapshot;
+                        owned_snapshot.deinit(alloc);
+                    }
+                    tab_snapshot_list.deinit(alloc);
+                    break :blk &[_]session_mod.TabData{};
+                };
+            tab_snapshots_per_ws.append(alloc, owned_snapshots) catch {
+                if (owned_snapshots.len > 0) {
+                    for (owned_snapshots) |snapshot| {
+                        var owned_snapshot = snapshot;
+                        owned_snapshot.deinit(alloc);
+                    }
+                    alloc.free(owned_snapshots);
+                }
             };
-            tab_titles_per_ws.append(alloc, owned_titles) catch {};
+            // Store the collected tab titles (may be empty for v1/v2).
+            const owned_titles = if (tab_title_list.items.len == 0)
+                &[_][:0]const u8{}
+            else
+                tab_title_list.toOwnedSlice(alloc) catch blk: {
+                    for (tab_title_list.items) |t| alloc.free(t);
+                    tab_title_list.deinit(alloc);
+                    break :blk &[_][:0]const u8{};
+                };
+            tab_titles_per_ws.append(alloc, owned_titles) catch {
+                if (owned_titles.len > 0) {
+                    for (owned_titles) |t| alloc.free(t);
+                    alloc.free(owned_titles);
+                }
+            };
+            const owned_dirs = if (tab_dir_list.items.len == 0)
+                &[_][:0]const u8{}
+            else
+                tab_dir_list.toOwnedSlice(alloc) catch blk: {
+                    for (tab_dir_list.items) |tab_dir| alloc.free(tab_dir);
+                    tab_dir_list.deinit(alloc);
+                    break :blk &[_][:0]const u8{};
+                };
+            tab_dirs_per_ws.append(alloc, owned_dirs) catch {
+                if (owned_dirs.len > 0) {
+                    for (owned_dirs) |tab_dir| alloc.free(tab_dir);
+                    alloc.free(owned_dirs);
+                }
+            };
             priv.next_workspace_number += 1;
         }
 
@@ -2939,16 +4472,60 @@ pub const Application = extern struct {
         if (priv.restore_tab_titles) |old| {
             for (old) |titles| {
                 for (titles) |t| alloc.free(t);
-                alloc.free(titles);
+                if (titles.len > 0) alloc.free(titles);
             }
             alloc.free(old);
         }
         priv.restore_tab_titles = tab_titles_per_ws.toOwnedSlice(alloc) catch blk: {
             for (tab_titles_per_ws.items) |titles| {
                 for (titles) |t| alloc.free(t);
-                alloc.free(titles);
+                if (titles.len > 0) alloc.free(titles);
             }
             tab_titles_per_ws.deinit(alloc);
+            break :blk null;
+        };
+
+        if (priv.restore_tab_snapshots) |old| {
+            for (old) |snapshots| {
+                for (snapshots) |snapshot| {
+                    var owned_snapshot = snapshot;
+                    owned_snapshot.deinit(alloc);
+                }
+                if (snapshots.len > 0) alloc.free(snapshots);
+            }
+            alloc.free(old);
+        }
+        priv.restore_tab_snapshots = tab_snapshots_per_ws.toOwnedSlice(alloc) catch blk: {
+            for (tab_snapshots_per_ws.items) |snapshots| {
+                for (snapshots) |snapshot| {
+                    var owned_snapshot = snapshot;
+                    owned_snapshot.deinit(alloc);
+                }
+                if (snapshots.len > 0) alloc.free(snapshots);
+            }
+            tab_snapshots_per_ws.deinit(alloc);
+            break :blk null;
+        };
+
+        if (priv.restore_active_tab_indices) |old| alloc.free(old);
+        priv.restore_active_tab_indices = active_tab_indices.toOwnedSlice(alloc) catch blk: {
+            active_tab_indices.deinit(alloc);
+            break :blk null;
+        };
+
+        if (priv.restore_tab_dirs) |old| {
+            for (old) |dirs| {
+                for (dirs) |dir| alloc.free(dir);
+                if (dirs.len > 0) alloc.free(dirs);
+            }
+            alloc.free(old);
+        }
+        priv.restore_tab_dirs = tab_dirs_per_ws.toOwnedSlice(alloc) catch blk: {
+            for (tab_dirs_per_ws.items) |dirs| {
+                for (dirs) |dir| alloc.free(dir);
+                if (dirs.len > 0) alloc.free(dirs);
+            }
+            tab_dirs_per_ws.deinit(alloc);
             break :blk null;
         };
 
@@ -2962,6 +4539,33 @@ pub const Application = extern struct {
                 else => 0,
             };
             priv.active_workspace_idx = idx;
+        }
+
+        if (root.object.get("window_width")) |wv| {
+            switch (wv) {
+                .integer => |n| if (n > 0 and n <= std.math.maxInt(c_int)) {
+                    priv.restore_window_width = @intCast(n);
+                },
+                else => {},
+            }
+        }
+
+        if (root.object.get("window_height")) |hv| {
+            switch (hv) {
+                .integer => |n| if (n > 0 and n <= std.math.maxInt(c_int)) {
+                    priv.restore_window_height = @intCast(n);
+                },
+                else => {},
+            }
+        }
+
+        if (root.object.get("sidebar_width")) |sv| {
+            switch (sv) {
+                .integer => |n| if (n > 10 and n <= std.math.maxInt(c_int)) {
+                    priv.restore_sidebar_width = @intCast(n);
+                },
+                else => {},
+            }
         }
 
         // Restore pwd for git probing.
@@ -3306,6 +4910,7 @@ pub const Application = extern struct {
             port_text: ?[:0]const u8,
             branch_text: ?[:0]const u8,
             dir_text: ?[:0]const u8,
+            has_unread: bool,
         };
         var ctx = Ctx{
             .active_idx = active_idx,
@@ -3313,6 +4918,7 @@ pub const Application = extern struct {
             .port_text = port_text,
             .branch_text = branch_text,
             .dir_text = dir_text,
+            .has_unread = self.workspaceUnreadCount(active_idx) > 0,
         };
         const list = self.as(gtk.Application).getWindows();
         list.foreach(struct {
@@ -3320,7 +4926,7 @@ pub const Application = extern struct {
                 const c: *Ctx = @ptrCast(@alignCast(userdata orelse return));
                 const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
                 const win = gobject.ext.cast(Window, ptr) orelse return;
-                win.getSidebar().updateWorkspace(c.active_idx, c.name, c.port_text, c.branch_text, c.dir_text, true, false);
+                win.getSidebar().updateWorkspace(c.active_idx, c.name, c.port_text, c.branch_text, c.dir_text, true, c.has_unread);
             }
         }.cb, @ptrCast(&ctx));
     }
@@ -3371,6 +4977,7 @@ pub const Application = extern struct {
                 branch_val: ?[:0]const u8,
                 dir_val: ?[:0]const u8,
                 active: bool,
+                has_unread: bool,
             };
             var ctx = Ctx{
                 .idx = i,
@@ -3379,16 +4986,27 @@ pub const Application = extern struct {
                 .branch_val = branch_z,
                 .dir_val = dir_z,
                 .active = is_active,
+                .has_unread = self.workspaceUnreadCount(i) > 0,
             };
             list.foreach(struct {
                 fn cb(data: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
                     const c: *Ctx = @ptrCast(@alignCast(userdata orelse return));
                     const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
                     const win = gobject.ext.cast(Window, ptr) orelse return;
-                    win.getSidebar().updateWorkspace(c.idx, c.name_val, c.port_val, c.branch_val, c.dir_val, c.active, false);
+                    win.getSidebar().updateWorkspace(c.idx, c.name_val, c.port_val, c.branch_val, c.dir_val, c.active, c.has_unread);
                 }
             }.cb, @ptrCast(&ctx));
         }
+
+        const active_idx = priv.active_workspace_idx;
+        list.foreach(struct {
+            fn cb(data: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
+                const idx_ptr: *const u32 = @ptrCast(@alignCast(userdata orelse return));
+                const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
+                const win = gobject.ext.cast(Window, ptr) orelse return;
+                win.getSidebar().setActiveIndex(idx_ptr.*);
+            }
+        }.cb, @ptrCast(@constCast(&active_idx)));
     }
 
     /// Run the application. This is a replacement for `gio.Application.run`
@@ -4951,8 +6569,12 @@ const Action = struct {
                 // Termplex: mark surface with attention class for visual ring
                 v.rt_surface.gobj().as(gtk.Widget).addCssClass("termplex-attention");
 
-                // TODO: find the parent Window and update sidebar unread indicator
-                // for the workspace containing this surface.
+                _ = self.recordWorkspaceNotification(
+                    self.activeWorkspaceIndex(),
+                    n.title,
+                    n.body,
+                    .osc,
+                );
 
                 return;
             },
@@ -4980,6 +6602,12 @@ const Action = struct {
         // same, this notification may replace a previous notification
         const gio_app = self.as(gio.Application);
         gio_app.sendNotification(n.body, notification);
+        _ = self.recordWorkspaceNotification(
+            self.activeWorkspaceIndex(),
+            n.title,
+            n.body,
+            .osc,
+        );
     }
 
     pub fn equalizeSplits(target: apprt.Target) bool {
@@ -5296,10 +6924,43 @@ const Action = struct {
             .{},
         );
 
-        // Phase 2 session restore: if tab counts are pending, create tabs for
-        // all workspaces now and skip the default single-tab creation.
-        if (self.getRestoreTabCounts()) |tab_counts| {
+        // Phase 2 session restore: if full tab snapshots are pending, rebuild
+        // tabs and split trees for all workspaces before showing the window.
+        if (self.getRestoreTabSnapshots()) |tab_snapshots| {
+            const active_tab_indices = self.getRestoreActiveTabIndices();
+            for (tab_snapshots, 0..) |snapshots, ws_idx| {
+                const ws_index: u32 = @intCast(ws_idx);
+                const ws_dir = self.workspaceDir(ws_index);
+                const saved_active_tab_idx: u32 = if (active_tab_indices) |indices|
+                    (if (ws_idx < indices.len) indices[ws_idx] else 0)
+                else
+                    0;
+
+                if (self.workspaceTabView(ws_index)) |tv| {
+                    if (snapshots.len == 0) {
+                        win.createTabInView(tv, ws_dir);
+                    } else {
+                        for (snapshots) |*snapshot| {
+                            win.createRestoredTabInView(tv, snapshot, ws_dir);
+                        }
+                    }
+
+                    if (saved_active_tab_idx < @as(u32, @intCast(tv.getNPages()))) {
+                        const selected_page = tv.getNthPage(@intCast(saved_active_tab_idx));
+                        tv.setSelectedPage(selected_page);
+                    }
+                }
+            }
+            self.clearRestoreTabSnapshots();
+            self.clearRestoreActiveTabIndices();
+            self.clearRestoreTabCounts();
+            self.clearRestoreTabTitles();
+            self.clearRestoreTabDirs();
+        } else if (self.getRestoreTabCounts()) |tab_counts| {
+            // Legacy restore path for v1-v4 session files.
             const tab_titles = self.getRestoreTabTitles();
+            const tab_dirs = self.getRestoreTabDirs();
+            const active_tab_indices = self.getRestoreActiveTabIndices();
             const active_ws = self.activeWorkspaceIndex();
             for (tab_counts, 0..) |count, ws_idx| {
                 const ws_index: u32 = @intCast(ws_idx);
@@ -5309,22 +6970,38 @@ const Action = struct {
                     (if (ws_idx < t.len) t[ws_idx] else &[_][:0]const u8{})
                 else
                     &[_][:0]const u8{};
+                const dirs: []const [:0]const u8 = if (tab_dirs) |d|
+                    (if (ws_idx < d.len) d[ws_idx] else &[_][:0]const u8{})
+                else
+                    &[_][:0]const u8{};
+                const saved_active_tab_idx: u32 = if (active_tab_indices) |indices|
+                    (if (ws_idx < indices.len) indices[ws_idx] else 0)
+                else
+                    0;
                 if (ws_idx == active_ws) {
                     // Active workspace: create tabs via the window's newTab path.
                     var i: u32 = 0;
                     while (i < n) : (i += 1) {
                         const title: ?[:0]const u8 = if (i < titles.len) titles[i] else null;
+                        const tab_dir: ?[:0]const u8 = if (i < dirs.len) dirs[i] else ws_dir;
                         win.newTabForWindow(null, .{
-                            .working_directory = ws_dir,
+                            .working_directory = tab_dir,
                             .title = title,
                         });
+                    }
+                    if (self.workspaceTabView(ws_index)) |tv| {
+                        if (saved_active_tab_idx < @as(u32, @intCast(tv.getNPages()))) {
+                            const selected_page = tv.getNthPage(@intCast(saved_active_tab_idx));
+                            tv.setSelectedPage(selected_page);
+                        }
                     }
                 } else {
                     // Background workspace: create tabs directly in that TabView.
                     if (self.workspaceTabView(ws_index)) |tv| {
                         var i: u32 = 0;
                         while (i < n) : (i += 1) {
-                            win.createTabInView(tv, ws_dir);
+                            const tab_dir: ?[:0]const u8 = if (i < dirs.len) dirs[i] else ws_dir;
+                            win.createTabInView(tv, tab_dir);
                         }
                         // Apply saved titles to the pages in this TabView.
                         var j: c_int = 0;
@@ -5334,11 +7011,17 @@ const Action = struct {
                                 tv.getNthPage(j).setTitle(titles[idx]);
                             }
                         }
+                        if (saved_active_tab_idx < @as(u32, @intCast(tv.getNPages()))) {
+                            const selected_page = tv.getNthPage(@intCast(saved_active_tab_idx));
+                            tv.setSelectedPage(selected_page);
+                        }
                     }
                 }
             }
             self.clearRestoreTabCounts();
             self.clearRestoreTabTitles();
+            self.clearRestoreActiveTabIndices();
+            self.clearRestoreTabDirs();
         } else {
             // Normal startup: create a single initial tab.
             win.newTabForWindow(parent, .{
@@ -5348,9 +7031,14 @@ const Action = struct {
             });
         }
 
-        // Estimate the initial window size before presenting so the window
-        // manager can position it correctly.
-        if (win.getActiveSurface()) |surface| {
+        // Prefer restored window geometry when available; otherwise estimate
+        // an initial size before presenting so the window manager can place it.
+        const priv = self.private();
+        if (priv.restore_window_width) |width| {
+            if (priv.restore_window_height) |height| {
+                win.as(gtk.Window).setDefaultSize(width, height);
+            }
+        } else if (win.getActiveSurface()) |surface| {
             surface.estimateInitialSize();
             if (surface.getDefaultSize()) |size| {
                 win.as(gtk.Window).setDefaultSize(
@@ -5516,12 +7204,10 @@ const Action = struct {
         // Build the new orchestration section.
         var buf: [512]u8 = undefined;
         const section = if (enabled)
-            std.fmt.bufPrint(&buf,
-                "\n[orchestration]\nenabled = true\ndir = \"{s}\"\nagent_command = \"{s}\"\nagent_terminate_policy = \"keep\"\n",
-                .{
-                    dir orelse "~/.termplex/orchestration",
-                    agent_command orelse "claude",
-                }) catch return
+            std.fmt.bufPrint(&buf, "\n[orchestration]\nenabled = true\ndir = \"{s}\"\nagent_command = \"{s}\"\nagent_terminate_policy = \"keep\"\n", .{
+                dir orelse "~/.termplex/orchestration",
+                agent_command orelse "claude",
+            }) catch return
         else
             std.fmt.bufPrint(&buf, "\n[orchestration]\nenabled = false\n", .{}) catch return;
 

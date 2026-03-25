@@ -31,6 +31,11 @@ const CommandPalette = @import("command_palette.zig").CommandPalette;
 const Sidebar = @import("sidebar.zig").Sidebar;
 const WorkspaceTab = @import("workspace_tab.zig").WorkspaceTab;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
+const session_mod = @import("../../../termplex/core/session.zig");
+const workspace_mod = @import("../../../termplex/core/workspace.zig");
+const uuid = @import("../../../termplex/util/uuid.zig");
+
+const Uuid = uuid.Uuid;
 
 const log = std.log.scoped(.gtk_termplex_window);
 
@@ -264,6 +269,7 @@ pub const Window = extern struct {
         sidebar_saved_width: c_int = 180,
         sidebar_toggle_btn: *gtk.Button = undefined,
         sidebar_programmatic: bool = false,
+        sidebar_on_right: bool = false,
 
         /// When the tab overview is open and the user switches workspaces,
         /// we defer the actual switch until the overview finishes closing.
@@ -322,6 +328,7 @@ pub const Window = extern struct {
             // 1. Create the sidebar widget.
             const sidebar = Sidebar.new();
             priv_.sidebar = sidebar;
+            priv_.sidebar_on_right = Application.default().sidebarPosition() == .right;
 
             // Populate the sidebar from the Application's workspace list.
             // On first launch this will contain "Workspace 1".
@@ -381,17 +388,32 @@ pub const Window = extern struct {
             const current_content = adw_win.getContent();
             adw_win.setContent(null);
 
-            paned.setStartChild(sidebar.as(gtk.Widget));
             if (current_content) |content| {
-                paned.setEndChild(content);
+                if (priv_.sidebar_on_right) {
+                    paned.setStartChild(content);
+                    paned.setEndChild(sidebar.as(gtk.Widget));
+                } else {
+                    paned.setStartChild(sidebar.as(gtk.Widget));
+                    paned.setEndChild(content);
+                }
+            } else if (priv_.sidebar_on_right) {
+                paned.setEndChild(sidebar.as(gtk.Widget));
+            } else {
+                paned.setStartChild(sidebar.as(gtk.Widget));
             }
 
             // 4. Set the initial sidebar width.
-            paned.setPosition(180);
+            const sidebar_width = Application.default().initialSidebarWidth();
+            priv_.sidebar_saved_width = sidebar_width;
+            if (!priv_.sidebar_on_right) {
+                paned.setPosition(sidebar_width);
+            } else {
+                _ = glib.idleAdd(applyInitialSidebarPosition, self);
+            }
 
             // 5. Create a toggle button that appears when sidebar is hidden.
             const toggle_btn = gtk.Button.newWithLabel("\u{2630}"); // ☰
-            toggle_btn.as(gtk.Widget).setHalign(.start);
+            toggle_btn.as(gtk.Widget).setHalign(if (priv_.sidebar_on_right) .end else .start);
             toggle_btn.as(gtk.Widget).setValign(.center);
             toggle_btn.as(gtk.Widget).addCssClass("termplex-sidebar-toggle");
             toggle_btn.as(gtk.Widget).setVisible(0); // hidden by default (sidebar starts visible)
@@ -592,9 +614,45 @@ pub const Window = extern struct {
                 .working_directory = working_dir,
             },
         );
+        _ = self.appendTabWidgetToView(tab_view, tab);
+    }
+
+    pub fn createRestoredTabInView(
+        self: *Self,
+        tab_view: *adw.TabView,
+        restored: *const session_mod.TabData,
+        fallback_dir: ?[:0]const u8,
+    ) void {
+        const priv = self.private();
+        const tab = Tab.new(
+            priv.config,
+            .{
+                .working_directory = fallback_dir,
+            },
+        );
+        _ = self.appendTabWidgetToView(tab_view, tab);
+
+        if (restored.title) |title| {
+            const title_z = self.allocZString(title) orelse return;
+            defer Application.default().allocator().free(title_z);
+            tab.setTitleOverride(title_z);
+        }
+
+        const restored_tree = self.buildRestoredSurfaceTree(restored, fallback_dir) catch |err| {
+            log.warn("unable to restore split tree for tab: {}", .{err});
+            return;
+        };
+        if (restored_tree.focused_surface) |surface| {
+            tab.getSplitTree().setLastFocusedSurface(surface);
+        }
+        var tree = restored_tree.tree;
+        defer tree.deinit();
+        tab.getSplitTree().setTree(&tree);
+    }
+
+    fn appendTabWidgetToView(self: *Self, tab_view: *adw.TabView, tab: *Tab) *adw.TabPage {
         const page = tab_view.append(tab.as(gtk.Widget));
 
-        // Property bindings so the TabPage title/tooltip stay in sync with the Tab.
         _ = tab.as(gobject.Object).bindProperty(
             "title",
             page.as(gobject.Object),
@@ -608,7 +666,6 @@ pub const Window = extern struct {
             .{ .sync_create = true },
         );
 
-        // Connect split-tree signals so surface handlers are wired up.
         const split_tree = tab.getSplitTree();
         _ = SplitTree.signals.changed.connect(
             split_tree,
@@ -623,6 +680,114 @@ pub const Window = extern struct {
             split_tree.getTree(),
             self,
         );
+
+        return page;
+    }
+
+    const RestoredTreeBuild = struct {
+        tree: Surface.Tree,
+        focused_surface: ?*Surface,
+    };
+
+    fn buildRestoredSurfaceTree(
+        self: *Self,
+        restored: *const session_mod.TabData,
+        fallback_dir: ?[:0]const u8,
+    ) !RestoredTreeBuild {
+        const alloc = Application.default().allocator();
+        var surfaces = std.AutoHashMap(Uuid, *Surface).init(alloc);
+        defer surfaces.deinit();
+
+        errdefer {
+            var it = surfaces.valueIterator();
+            while (it.next()) |surface| {
+                surface.*.unref();
+            }
+        }
+
+        for (restored.surfaces) |surface_data| {
+            const surface_id = try uuid.parse(surface_data.id);
+            if (surfaces.contains(surface_id)) return error.DuplicateField;
+
+            const wd_z = blk: {
+                if (surface_data.working_directory.len > 0) {
+                    break :blk self.allocZString(surface_data.working_directory) orelse return error.OutOfMemory;
+                }
+                if (fallback_dir) |dir| break :blk dir;
+                break :blk null;
+            };
+            defer if (surface_data.working_directory.len > 0 and wd_z != null) Application.default().allocator().free(wd_z.?);
+
+            const title_z = if (surface_data.custom_title) |title|
+                self.allocZString(title) orelse return error.OutOfMemory
+            else
+                null;
+            defer if (title_z) |title| Application.default().allocator().free(title);
+
+            const surface = Surface.new(.{
+                .working_directory = wd_z,
+                .title = title_z,
+            });
+            _ = surface.refSink();
+            try surfaces.put(surface_id, surface);
+        }
+
+        var tree = try self.buildRestoredSurfaceTreeLayout(&restored.split_layout, &surfaces);
+        errdefer tree.deinit();
+
+        var focused_surface: ?*Surface = null;
+        if (restored.focused_surface_id) |focused_id| {
+            const parsed_id = uuid.parse(focused_id) catch null;
+            if (parsed_id) |id| {
+                focused_surface = surfaces.get(id);
+            }
+        }
+
+        var it = surfaces.valueIterator();
+        while (it.next()) |surface| {
+            surface.*.unref();
+        }
+
+        return .{
+            .tree = tree,
+            .focused_surface = focused_surface,
+        };
+    }
+
+    fn buildRestoredSurfaceTreeLayout(
+        self: *Self,
+        layout: *const workspace_mod.SplitLayout,
+        surfaces: *std.AutoHashMap(Uuid, *Surface),
+    ) !Surface.Tree {
+        const alloc = Application.default().allocator();
+
+        return switch (layout.*) {
+            .leaf => |leaf| blk: {
+                const surface = surfaces.get(leaf.surface_id) orelse return error.InvalidArgument;
+                break :blk try Surface.Tree.init(alloc, surface);
+            },
+            .split => |split| blk: {
+                var first = try self.buildRestoredSurfaceTreeLayout(split.first, surfaces);
+                defer first.deinit();
+                var second = try self.buildRestoredSurfaceTreeLayout(split.second, surfaces);
+                defer second.deinit();
+                break :blk try first.split(
+                    alloc,
+                    .root,
+                    switch (split.direction) {
+                        .horizontal => .right,
+                        .vertical => .down,
+                    },
+                    @floatCast(split.ratio),
+                    &second,
+                );
+            },
+        };
+    }
+
+    fn allocZString(self: *Self, text: []const u8) ?[:0]u8 {
+        _ = self;
+        return Application.default().allocator().dupeZ(u8, text) catch null;
     }
 
     fn newTabPage(
@@ -1109,7 +1274,51 @@ pub const Window = extern struct {
 
     /// Return the current sidebar paned position (sidebar width in pixels).
     pub fn getSidebarWidth(self: *Self) c_int {
-        return self.private().sidebar_paned.getPosition();
+        return self.effectiveSidebarWidth();
+    }
+
+    fn effectiveSidebarWidth(self: *Self) c_int {
+        const priv = self.private();
+        const pos = priv.sidebar_paned.getPosition();
+        if (!priv.sidebar_on_right) return pos;
+
+        const total = priv.sidebar_paned.as(gtk.Widget).getWidth();
+        if (total <= 0) return priv.sidebar_saved_width;
+
+        const width = total - pos;
+        return if (width > 0) width else 0;
+    }
+
+    fn collapsedSidebarPosition(self: *Self) c_int {
+        const priv = self.private();
+        if (!priv.sidebar_on_right) return 0;
+
+        const total = priv.sidebar_paned.as(gtk.Widget).getWidth();
+        return if (total > 0) total else 0;
+    }
+
+    fn restoredSidebarPosition(self: *Self) c_int {
+        const priv = self.private();
+        const restore_width = if (priv.sidebar_saved_width > 10) priv.sidebar_saved_width else 180;
+        if (!priv.sidebar_on_right) return restore_width;
+
+        const total = priv.sidebar_paned.as(gtk.Widget).getWidth();
+        if (total > 0) return @max(0, total - restore_width);
+        return 0;
+    }
+
+    fn applyInitialSidebarPosition(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        const priv = self.private();
+        if (!priv.sidebar_on_right) return @intFromBool(glib.SOURCE_REMOVE);
+
+        const total = priv.sidebar_paned.as(gtk.Widget).getWidth();
+        if (total <= 0) return @intFromBool(glib.SOURCE_CONTINUE);
+
+        priv.sidebar_programmatic = true;
+        defer priv.sidebar_programmatic = false;
+        priv.sidebar_paned.setPosition(self.restoredSidebarPosition());
+        return @intFromBool(glib.SOURCE_REMOVE);
     }
 
     /// Get the current window decoration value for this window.
@@ -1476,39 +1685,13 @@ pub const Window = extern struct {
 
     /// Execute the actual workspace switch (update app state, sidebar, and TabView).
     fn performWorkspaceSwitch(self: *Self, index: u32) void {
-        const priv = self.private();
         const app = Application.default();
-        const sidebar = priv.sidebar;
-
-        const old_idx = app.activeWorkspaceIndex();
 
         // Update active state in the Application.
         app.setActiveWorkspaceIndex(index);
-
-        // Update the old workspace tab to inactive.
-        if (old_idx != index) {
-            sidebar.updateWorkspace(
-                old_idx,
-                app.workspaceName(old_idx),
-                null,
-                null,
-                null,
-                false,
-                false,
-            );
-        }
-
-        // Update the new workspace tab to active.
-        sidebar.updateWorkspace(
-            index,
-            app.workspaceName(index),
-            null,
-            null,
-            null,
-            true,
-            false,
-        );
-        sidebar.setActiveIndex(index);
+        app.markWorkspaceNotificationsRead(index);
+        app.refreshAllWorkspaceSidebars();
+        app.syncActiveWorkspaceHeaders();
 
         // Switch TabView
         if (app.workspaceTabView(index)) |tv| {
@@ -1520,35 +1703,17 @@ pub const Window = extern struct {
     fn termplexOnNewWorkspace(userdata: ?*anyopaque) void {
         const win: *Self = @ptrCast(@alignCast(userdata orelse return));
         const app = Application.default();
-        const sidebar = win.private().sidebar;
 
         const new_idx = app.addWorkspace() orelse {
             log.warn("failed to create new workspace (out of memory)", .{});
             return;
         };
 
-        // Get the name that was just created.
-        const name = app.workspaceName(new_idx);
-
-        // Add the workspace tab to the sidebar.
-        sidebar.addWorkspace(name, null, null, null);
-
-        // Deactivate the old workspace tab visually.
-        const old_idx = app.activeWorkspaceIndex();
-        sidebar.updateWorkspace(
-            old_idx,
-            app.workspaceName(old_idx),
-            null,
-            null,
-            null,
-            false,
-            false,
-        );
-
         // Activate the new workspace.
         app.setActiveWorkspaceIndex(new_idx);
-        sidebar.updateWorkspace(new_idx, name, null, null, null, true, false);
-        sidebar.setActiveIndex(new_idx);
+        app.addWorkspaceToAllWindows(new_idx);
+        app.refreshAllWorkspaceSidebars();
+        app.syncActiveWorkspaceHeaders();
 
         // Switch to the new workspace's TabView and create an initial tab.
         if (app.workspaceTabView(new_idx)) |tv| {
@@ -1572,6 +1737,10 @@ pub const Window = extern struct {
         _ = userdata;
         const app = Application.default();
         app.renameWorkspace(index, new_name);
+        app.refreshAllWorkspaceSidebars();
+        if (index == app.activeWorkspaceIndex()) {
+            app.syncActiveWorkspaceHeaders();
+        }
     }
 
     /// Called when the user selects "Delete" from the workspace context menu.
@@ -1579,34 +1748,7 @@ pub const Window = extern struct {
     /// deleted, switches to an adjacent one first.
     fn termplexOnDeleteWorkspace(index: u32, userdata: ?*anyopaque) void {
         const win: *Self = @ptrCast(@alignCast(userdata orelse return));
-        const app = Application.default();
-
-        // Cannot delete the last workspace.
-        if (app.workspaceCount() <= 1) {
-            const toast = adw.Toast.new("Cannot delete the last workspace");
-            win.private().toast_overlay.addToast(toast);
-            return;
-        }
-
-        // If we're deleting the active workspace, switch to an adjacent one first.
-        if (app.activeWorkspaceIndex() == index) {
-            const new_idx: u32 = if (index > 0) index - 1 else 1;
-            if (app.workspaceTabView(new_idx)) |tv| {
-                app.setActiveWorkspaceIndex(new_idx);
-                win.switchToTabView(tv);
-                // Update sidebar highlights.
-                const sidebar = win.private().sidebar;
-                sidebar.updateWorkspace(index, app.workspaceName(index), null, null, null, false, false);
-                sidebar.updateWorkspace(new_idx, app.workspaceName(new_idx), null, null, null, true, false);
-                sidebar.setActiveIndex(new_idx);
-            }
-        }
-
-        // Remove from sidebar UI.
-        win.private().sidebar.removeWorkspace(index);
-
-        // Remove from application (closes tabs, frees resources).
-        app.removeWorkspace(index);
+        win.closeWorkspace(index);
     }
 
     /// Delegates inline directory change to the WorkspaceTab widget.
@@ -1623,6 +1765,39 @@ pub const Window = extern struct {
         _ = userdata;
         const app = Application.default();
         app.changeWorkspaceDir(index, new_dir);
+    }
+
+    pub fn closeWorkspace(self: *Self, index: u32) void {
+        const app = Application.default();
+
+        if (app.workspaceCount() <= 1) {
+            const toast = adw.Toast.new("Cannot delete the last workspace");
+            self.private().toast_overlay.addToast(toast);
+            return;
+        }
+
+        if (app.orchestrationWorkspaceIndex()) |orch_idx| {
+            if (index == orch_idx) {
+                const toast = adw.Toast.new("Cannot close the orchestration workspace");
+                self.private().toast_overlay.addToast(toast);
+                return;
+            }
+        }
+
+        const was_active = app.activeWorkspaceIndex() == index;
+        if (was_active) {
+            const new_idx: u32 = if (index > 0) index - 1 else 1;
+            app.setActiveWorkspaceIndex(new_idx);
+            app.markWorkspaceNotificationsRead(new_idx);
+            if (app.workspaceTabView(new_idx)) |tv| {
+                self.switchToTabView(tv);
+            }
+        }
+
+        app.removeWorkspaceFromAllWindows(index);
+        app.removeWorkspace(index);
+        app.refreshAllWorkspaceSidebars();
+        app.syncActiveWorkspaceHeaders();
     }
 
     //---------------------------------------------------------------
@@ -1724,6 +1899,13 @@ pub const Window = extern struct {
         const priv = self.private();
         priv.window_title.setTitle(name orelse "Termplex");
         priv.window_title.setSubtitle(dir orelse "");
+    }
+
+    /// Refresh the header title/subtitle from the current application state.
+    pub fn syncHeaderFromApp(self: *Self) void {
+        const app = Application.default();
+        const idx = app.activeWorkspaceIndex();
+        self.updateHeaderTitle(app.workspaceName(idx), app.workspaceDir(idx));
     }
 
     //---------------------------------------------------------------
@@ -2621,32 +2803,7 @@ pub const Window = extern struct {
         _: ?*glib.Variant,
         self: *Self,
     ) callconv(.c) void {
-        const app = Application.default();
-        const sidebar = self.private().sidebar;
-
-        const new_idx = app.addWorkspace() orelse {
-            log.warn("termplex-new-workspace: out of memory", .{});
-            return;
-        };
-        const name = app.workspaceName(new_idx);
-
-        // Deactivate the old workspace visually.
-        const old_idx = app.activeWorkspaceIndex();
-        sidebar.updateWorkspace(
-            old_idx,
-            app.workspaceName(old_idx),
-            null,
-            null,
-            null,
-            false,
-            false,
-        );
-
-        // Add to sidebar and activate the new workspace.
-        sidebar.addWorkspace(name, null, null, null);
-        app.setActiveWorkspaceIndex(new_idx);
-        sidebar.updateWorkspace(new_idx, name, null, null, null, true, false);
-        sidebar.setActiveIndex(new_idx);
+        termplexOnNewWorkspace(@ptrCast(self));
     }
 
     /// Close the active workspace.
@@ -2661,31 +2818,7 @@ pub const Window = extern struct {
         self: *Self,
     ) callconv(.c) void {
         const app = Application.default();
-        const count = app.workspaceCount();
-
-        if (count <= 1) {
-            // Last workspace — keep the app open, do not close.
-            log.info("termplex-close-workspace: last workspace, not closing (empty state)", .{});
-            return;
-        }
-
-        const active_idx = app.activeWorkspaceIndex();
-
-        // Remove from app state.
-        app.removeWorkspace(active_idx);
-
-        // Update the sidebar list.
-        const sidebar = self.getSidebar();
-        sidebar.removeWorkspace(active_idx);
-
-        // Select the new active workspace: prefer the one before the removed
-        // one, otherwise stay at the same index (which is now the next one).
-        const new_active: u32 = if (active_idx > 0) active_idx - 1 else 0;
-        app.setActiveWorkspaceIndex(new_active);
-        sidebar.updateWorkspace(new_active, app.workspaceName(new_active), null, null, null, true, false);
-        sidebar.setActiveIndex(new_active);
-
-        log.info("termplex-close-workspace: removed workspace {d}, now active={d}", .{ active_idx, new_active });
+        self.closeWorkspace(app.activeWorkspaceIndex());
     }
 
     /// Switch to the next workspace (wraps around only if not at the end).
@@ -2700,16 +2833,7 @@ pub const Window = extern struct {
         const current = app.activeWorkspaceIndex();
         if (current + 1 >= count) return;
         const next = current + 1;
-
-        const sidebar = self.private().sidebar;
-        sidebar.updateWorkspace(current, app.workspaceName(current), null, null, null, false, false);
-        app.setActiveWorkspaceIndex(next);
-        sidebar.updateWorkspace(next, app.workspaceName(next), null, null, null, true, false);
-        sidebar.setActiveIndex(next);
-
-        if (app.workspaceTabView(next)) |tv| {
-            self.switchToTabView(tv);
-        }
+        self.performWorkspaceSwitch(next);
     }
 
     /// Switch to the previous workspace.
@@ -2724,16 +2848,7 @@ pub const Window = extern struct {
         const current = app.activeWorkspaceIndex();
         if (current == 0) return;
         const prev = current - 1;
-
-        const sidebar = self.private().sidebar;
-        sidebar.updateWorkspace(current, app.workspaceName(current), null, null, null, false, false);
-        app.setActiveWorkspaceIndex(prev);
-        sidebar.updateWorkspace(prev, app.workspaceName(prev), null, null, null, true, false);
-        sidebar.setActiveIndex(prev);
-
-        if (app.workspaceTabView(prev)) |tv| {
-            self.switchToTabView(tv);
-        }
+        self.performWorkspaceSwitch(prev);
     }
 
     /// Toggle sidebar visibility.
@@ -2756,15 +2871,20 @@ pub const Window = extern struct {
         const pos = priv.sidebar_paned.getPosition();
         const sidebar_visible = priv.sidebar.as(gtk.Widget).getVisible() != 0;
 
-        if (sidebar_visible and pos <= 2) {
+        const should_hide = if (priv.sidebar_on_right) blk: {
+            const total = priv.sidebar_paned.as(gtk.Widget).getWidth();
+            break :blk total > 0 and pos >= total - 2;
+        } else pos <= 2;
+
+        if (sidebar_visible and should_hide) {
             // User dragged the divider to collapse — fully hide sidebar.
             if (pos > 0) {
                 // Save the last meaningful width (before this drag).
-                // sidebar_saved_width is already set from previous state.
+                priv.sidebar_saved_width = self.effectiveSidebarWidth();
             }
             priv.sidebar.as(gtk.Widget).setVisible(0);
             priv.sidebar_programmatic = true;
-            priv.sidebar_paned.setPosition(0);
+            priv.sidebar_paned.setPosition(self.collapsedSidebarPosition());
             priv.sidebar_programmatic = false;
             priv.sidebar_toggle_btn.as(gtk.Widget).setVisible(1);
         }
@@ -2780,17 +2900,17 @@ pub const Window = extern struct {
         priv.sidebar_programmatic = true;
         defer priv.sidebar_programmatic = false;
 
-        if (visible != 0 and pos > 0) {
+        if (visible != 0 and self.effectiveSidebarWidth() > 0) {
             // Sidebar is showing — save width and hide.
-            priv.sidebar_saved_width = pos;
+            _ = pos;
+            priv.sidebar_saved_width = self.effectiveSidebarWidth();
             sidebar_widget.setVisible(0);
-            paned.setPosition(0);
+            paned.setPosition(self.collapsedSidebarPosition());
             priv.sidebar_toggle_btn.as(gtk.Widget).setVisible(1);
         } else {
             // Sidebar is hidden — restore.
-            const restore_width = if (priv.sidebar_saved_width > 10) priv.sidebar_saved_width else 180;
             sidebar_widget.setVisible(1);
-            paned.setPosition(restore_width);
+            paned.setPosition(self.restoredSidebarPosition());
             priv.sidebar_toggle_btn.as(gtk.Widget).setVisible(0);
         }
     }

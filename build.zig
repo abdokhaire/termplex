@@ -50,6 +50,26 @@ pub fn build(b: *std.Build) !void {
         "test-valgrind",
         "Run tests under valgrind",
     );
+    const deb_step = b.step(
+        "deb",
+        "Build the native Debian package",
+    );
+    const appimage_step = b.step(
+        "appimage",
+        "Build the AppImage package",
+    );
+    const flatpak_step = b.step(
+        "flatpak",
+        "Build the Flatpak bundle",
+    );
+    const snap_package_step = b.step(
+        "snap-package",
+        "Build the Snap package",
+    );
+    const packages_step = b.step(
+        "packages",
+        "Build Linux packaging artifacts",
+    );
     const translations_step = b.step(
         "update-translations",
         "Update translation files",
@@ -89,6 +109,23 @@ pub fn build(b: *std.Build) !void {
         const check_step = b.step("distcheck", "Install and validate the dist tarball");
         check_step.dependOn(dist.check_step);
         check_step.dependOn(dist.install_step);
+    }
+
+    if (config.target.result.os.tag == .linux) {
+        const deb_cmd = b.addSystemCommand(&.{ "bash", "tools/package/build-deb.sh" });
+        const appimage_cmd = b.addSystemCommand(&.{ "bash", "tools/package/build-appimage.sh" });
+        const flatpak_cmd = b.addSystemCommand(&.{ "bash", "tools/package/build-flatpak.sh" });
+        const snap_cmd = b.addSystemCommand(&.{ "bash", "tools/package/build-snap.sh" });
+        const packages_cmd = b.addSystemCommand(&.{
+            "bash",
+            "tools/package/build-linux-packages.sh",
+            "--skip-missing",
+        });
+        deb_step.dependOn(&deb_cmd.step);
+        appimage_step.dependOn(&appimage_cmd.step);
+        flatpak_step.dependOn(&flatpak_cmd.step);
+        snap_package_step.dependOn(&snap_cmd.step);
+        packages_step.dependOn(&packages_cmd.step);
     }
 
     // libtermplex (internal, big)

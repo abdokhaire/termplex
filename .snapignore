@@ -1,0 +1,11 @@
+.git
+.agents
+.claude
+.flatpak-builder
+.zig-cache
+zig-out
+parts
+stage
+prime
+flatpak/repo
+flatpak/.flatpak-builder

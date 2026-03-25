@@ -44,6 +44,12 @@ jobs:
       - name: Validate Release Files
         run: |
           BASE="https://release.files.termplex.org/${TERMPLEX_VERSION}"
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex_${TERMPLEX_VERSION}_amd64.deb" | grep -q "^200$" || exit 1
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/Termplex-${TERMPLEX_VERSION}-x86_64.AppImage" | grep -q "^200$" || exit 1
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/com.termplex.app-${TERMPLEX_VERSION}-x86_64.flatpak" | grep -q "^200$" || exit 1
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/com.termplex.app-${TERMPLEX_VERSION}-aarch64.flatpak" | grep -q "^200$" || exit 1
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex_${TERMPLEX_VERSION}_amd64.snap" | grep -q "^200$" || exit 1
+          curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex_${TERMPLEX_VERSION}_arm64.snap" | grep -q "^200$" || exit 1
           curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex-${TERMPLEX_VERSION}.tar.gz" | grep -q "^200$" || exit 1
           curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex-${TERMPLEX_VERSION}.tar.gz.minisig" | grep -q "^200$" || exit 1
           curl -I -s -o /dev/null -w "%{http_code}" "${BASE}/termplex-source.tar.gz" | grep -q "^200$" || exit 1

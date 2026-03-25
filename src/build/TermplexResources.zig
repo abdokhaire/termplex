@@ -279,8 +279,12 @@ fn addLinuxAppResources(
         },
     });
 
-    const exe_abs_path = b.fmt(
+    const cli_exe_abs_path = b.fmt(
         "{s}/bin/termplex",
+        .{b.install_prefix},
+    );
+    const app_exe_abs_path = b.fmt(
+        "{s}/bin/termplex-app",
         .{b.install_prefix},
     );
 
@@ -352,7 +356,8 @@ fn addLinuxAppResources(
         }, .{
             .NAME = name,
             .APPID = app_id,
-            .TERMPLEX = exe_abs_path,
+            .TERMPLEX = cli_exe_abs_path,
+            .TERMPLEX_APP = app_exe_abs_path,
         });
 
         // Template output has a single header line we want to remove.

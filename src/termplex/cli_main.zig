@@ -7,7 +7,7 @@
 // Commands:
 //   ping
 //   tree
-//   workspace list|new [--name NAME]|select REF|rename REF NAME|close [REF]
+//   workspace list|new [--name NAME]|select WORKSPACE|rename WORKSPACE NAME|close [WORKSPACE]
 //   surface   list|new|split [--direction horizontal|vertical]|close [REF]|focus REF
 //   notify    --title "..." [--body "..."]
 //   notification list|clear [--workspace REF]
@@ -244,9 +244,9 @@ const usage_text =
     \\
     \\  workspace list
     \\  workspace new [--name NAME]
-    \\  workspace select REF
-    \\  workspace rename REF NAME
-    \\  workspace close [REF]
+    \\  workspace select WORKSPACE
+    \\  workspace rename WORKSPACE NAME
+    \\  workspace close [WORKSPACE]
     \\
     \\  surface list
     \\  surface new
@@ -310,6 +310,51 @@ fn positional(args: []const []const u8, pos: usize) ?[]const u8 {
     return null;
 }
 
+fn appendJsonEscapedString(
+    buf: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    value: []const u8,
+) !void {
+    try buf.append(allocator, '"');
+    for (value) |c| {
+        switch (c) {
+            '"', '\\' => {
+                try buf.append(allocator, '\\');
+                try buf.append(allocator, c);
+            },
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            else => try buf.append(allocator, c),
+        }
+    }
+    try buf.append(allocator, '"');
+}
+
+fn allocWorkspaceSelectorParams(
+    allocator: std.mem.Allocator,
+    field_name: []const u8,
+    workspace: []const u8,
+) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "{");
+    try appendJsonEscapedString(&buf, allocator, field_name);
+    try buf.append(allocator, ':');
+
+    if (std.fmt.parseUnsigned(u32, workspace, 10)) |idx| {
+        const idx_str = try std.fmt.allocPrint(allocator, "{d}", .{idx});
+        defer allocator.free(idx_str);
+        try buf.appendSlice(allocator, idx_str);
+    } else |_| {
+        try appendJsonEscapedString(&buf, allocator, workspace);
+    }
+
+    try buf.appendSlice(allocator, "}");
+    return buf.toOwnedSlice(allocator);
+}
+
 // ---------------------------------------------------------------------------
 // Command handlers
 // ---------------------------------------------------------------------------
@@ -354,11 +399,11 @@ fn cmdWorkspace(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     if (std.mem.eql(u8, sub, "select")) {
         const ref = positional(rest, 0) orelse {
-            try stderr.writeAll("error: workspace select requires a REF argument\n");
+            try stderr.writeAll("error: workspace select requires a workspace index or name\n");
             try stderr.flush();
             posix.exit(1);
         };
-        const params = try std.fmt.allocPrint(allocator, "{{\"ref\":\"{s}\"}}", .{ref});
+        const params = try allocWorkspaceSelectorParams(allocator, "ref", ref);
         defer allocator.free(params);
         try runRequest(allocator, "workspace.select", params);
         return;
@@ -366,7 +411,7 @@ fn cmdWorkspace(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     if (std.mem.eql(u8, sub, "rename")) {
         const ref = positional(rest, 0) orelse {
-            try stderr.writeAll("error: workspace rename requires REF and NAME arguments\n");
+            try stderr.writeAll("error: workspace rename requires a workspace index or name and a new name\n");
             try stderr.flush();
             posix.exit(1);
         };
@@ -375,11 +420,16 @@ fn cmdWorkspace(allocator: std.mem.Allocator, args: []const []const u8) !void {
             try stderr.flush();
             posix.exit(1);
         };
-        const params = try std.fmt.allocPrint(
-            allocator,
-            "{{\"ref\":\"{s}\",\"name\":\"{s}\"}}",
-            .{ ref, name },
-        );
+        const workspace_params = try allocWorkspaceSelectorParams(allocator, "ref", ref);
+        defer allocator.free(workspace_params);
+
+        var params_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer params_buf.deinit(allocator);
+        try params_buf.appendSlice(allocator, workspace_params[0 .. workspace_params.len - 1]);
+        try params_buf.appendSlice(allocator, ",\"name\":");
+        try appendJsonEscapedString(&params_buf, allocator, name);
+        try params_buf.appendSlice(allocator, "}");
+        const params = try params_buf.toOwnedSlice(allocator);
         defer allocator.free(params);
         try runRequest(allocator, "workspace.rename", params);
         return;
@@ -388,7 +438,7 @@ fn cmdWorkspace(allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (std.mem.eql(u8, sub, "close")) {
         const ref = positional(rest, 0);
         const params = if (ref) |r|
-            try std.fmt.allocPrint(allocator, "{{\"ref\":\"{s}\"}}", .{r})
+            try allocWorkspaceSelectorParams(allocator, "ref", r)
         else
             try allocator.dupe(u8, "{}");
         defer allocator.free(params);

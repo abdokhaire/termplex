@@ -9,8 +9,8 @@
 // Version mismatches are rejected with error.UnsupportedVersion.
 
 const std = @import("std");
-const workspace_mod = @import("workspace");
-const uuid_mod = @import("uuid");
+const workspace_mod = @import("./workspace.zig");
+const uuid_mod = @import("../util/uuid.zig");
 
 const SplitLayout = workspace_mod.SplitLayout;
 const SplitDirection = workspace_mod.SplitDirection;

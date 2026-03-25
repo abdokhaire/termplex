@@ -3,7 +3,7 @@ runtime: org.gnome.Platform
 runtime-version: "49"
 sdk: org.gnome.Sdk
 default-branch: tip
-command: termplex
+command: termplex-app
 finish-args:
   # 3D rendering
   - --device=dri
@@ -50,9 +50,10 @@ modules:
         path: ..
         skip:
           - flatpak/.flatpak-builder
+          - .flatpak-builder
           - flatpak/builddir
           - flatpak/repo
-          - zig-cache
+          - .zig-cache
           - zig-out
 
       - zig-packages.json

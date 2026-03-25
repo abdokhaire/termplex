@@ -8,7 +8,7 @@
 
 const std = @import("std");
 const workspace_mod = @import("workspace.zig");
-const uuid_mod = @import("uuid");
+const uuid_mod = @import("../util/uuid.zig");
 
 const Uuid = uuid_mod.Uuid;
 pub const Notification = workspace_mod.Notification;
