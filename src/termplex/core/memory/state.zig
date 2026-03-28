@@ -206,7 +206,10 @@ pub fn fromJson(allocator: std.mem.Allocator, json_str: []const u8) !?MemoryStat
     const ws_obj = ws_val.object;
 
     var ws_names: std.ArrayList([]const u8) = .empty;
-    defer ws_names.deinit(allocator);
+    defer {
+        for (ws_names.items) |n| allocator.free(n);
+        ws_names.deinit(allocator);
+    }
     var ws_states: std.ArrayList(WorkspaceState) = .empty;
     defer {
         for (ws_states.items) |*w| w.deinit(allocator);
@@ -247,7 +250,10 @@ fn parseWorkspace(allocator: std.mem.Allocator, val: std.json.Value) !WorkspaceS
     const surfaces_obj = surfaces_val.object;
 
     var ids: std.ArrayList([]const u8) = .empty;
-    defer ids.deinit(allocator);
+    defer {
+        for (ids.items) |id| allocator.free(id);
+        ids.deinit(allocator);
+    }
     var states: std.ArrayList(SurfaceState) = .empty;
     defer {
         for (states.items) |*s| s.deinit(allocator);
