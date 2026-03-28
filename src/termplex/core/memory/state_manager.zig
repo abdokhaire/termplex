@@ -141,8 +141,17 @@ pub const StateManager = struct {
         // Ensure we have a state object
         if (self.state == null) {
             const ws_names = self.allocator.alloc([]const u8, 0) catch return;
-            const wss = self.allocator.alloc(WorkspaceState, 0) catch return;
-            const now_ts = std.fmt.allocPrint(self.allocator, "{d}", .{std.time.timestamp()}) catch return;
+            const wss = self.allocator.alloc(WorkspaceState, 0) catch |err| {
+                self.allocator.free(ws_names);
+                log.warn("failed to init memory state: {}", .{err});
+                return;
+            };
+            const now_ts = std.fmt.allocPrint(self.allocator, "{d}", .{std.time.timestamp()}) catch |err| {
+                self.allocator.free(ws_names);
+                self.allocator.free(wss);
+                log.warn("failed to init memory state: {}", .{err});
+                return;
+            };
             self.state = .{
                 .version = state_mod.CURRENT_VERSION,
                 .last_updated = now_ts,
@@ -207,7 +216,9 @@ pub const StateManager = struct {
         const new_dir = try self.allocator.dupe(u8, event.workspace_dir);
         errdefer self.allocator.free(new_dir);
         const empty_ids = try self.allocator.alloc([]const u8, 0);
+        errdefer self.allocator.free(empty_ids);
         const empty_surfs = try self.allocator.alloc(SurfaceState, 0);
+        errdefer self.allocator.free(empty_surfs);
 
         const new_ws = WorkspaceState{
             .dir = new_dir,
@@ -237,8 +248,11 @@ pub const StateManager = struct {
         const new_id = try self.allocator.dupe(u8, event.surface_uuid);
         errdefer self.allocator.free(new_id);
         const empty_ports = try self.allocator.alloc(u16, 0);
+        errdefer self.allocator.free(empty_ports);
+        const wd = try self.allocator.dupe(u8, event.workspace_dir);
+        errdefer self.allocator.free(wd);
         const new_surf = SurfaceState{
-            .working_directory = try self.allocator.dupe(u8, event.workspace_dir),
+            .working_directory = wd,
             .last_command = null,
             .command_started_at = null,
             .process_pid = null,
