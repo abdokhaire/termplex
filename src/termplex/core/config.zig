@@ -100,6 +100,18 @@ pub const Orchestration = struct {
     agent_terminate_policy: []const u8,
 };
 
+/// Memory persistence configuration.
+pub const Memory = struct {
+    /// Whether the memory system is active.
+    enabled: bool,
+    /// Show resume prompt on startup.
+    auto_resume: bool,
+    /// Prompt orchestrator to save knowledge before shutdown.
+    flush_on_shutdown: bool,
+    /// Seconds between /proc fallback scans (0 = disabled).
+    proc_inspect_interval: u32,
+};
+
 /// Top-level Termplex configuration.
 ///
 /// All heap-allocated strings are owned by this struct. Call `deinit` to free.
@@ -124,6 +136,9 @@ pub const TermplexConfig = struct {
 
     // [orchestration]
     orchestration: Orchestration,
+
+    // [memory]
+    memory: Memory,
 
     /// Internal flag: true when all string fields are heap-allocated (dups).
     _owned: bool,
@@ -174,6 +189,12 @@ pub const TermplexConfig = struct {
                 .dir = "~/.termplex/orchestration",
                 .agent_command = "claude",
                 .agent_terminate_policy = "keep",
+            },
+            .memory = .{
+                .enabled = true,
+                .auto_resume = true,
+                .flush_on_shutdown = true,
+                .proc_inspect_interval = 30,
             },
             ._owned = false,
         };
@@ -432,6 +453,16 @@ pub fn parseConfig(allocator: std.mem.Allocator, toml: []const u8) !TermplexConf
             } else if (std.mem.eql(u8, key, "agent_terminate_policy")) {
                 allocator.free(orch_agent_terminate_policy);
                 orch_agent_terminate_policy = try allocator.dupe(u8, unquote(value));
+            }
+        } else if (std.mem.eql(u8, current_section, "memory")) {
+            if (std.mem.eql(u8, key, "enabled")) {
+                cfg.memory.enabled = parseBool(value) orelse cfg.memory.enabled;
+            } else if (std.mem.eql(u8, key, "auto_resume")) {
+                cfg.memory.auto_resume = parseBool(value) orelse cfg.memory.auto_resume;
+            } else if (std.mem.eql(u8, key, "flush_on_shutdown")) {
+                cfg.memory.flush_on_shutdown = parseBool(value) orelse cfg.memory.flush_on_shutdown;
+            } else if (std.mem.eql(u8, key, "proc_inspect_interval")) {
+                cfg.memory.proc_inspect_interval = std.fmt.parseInt(u32, value, 10) catch continue;
             }
         }
         // Unknown sections/keys are silently ignored.
@@ -833,4 +864,33 @@ test "orchestration enabled null when absent" {
     var cfg = try parseConfig(alloc, toml);
     defer cfg.deinit();
     try std.testing.expect(cfg.orchestration.enabled == null);
+}
+
+test "memory config defaults" {
+    const allocator = std.testing.allocator;
+    var cfg = TermplexConfig.default(allocator);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(true, cfg.memory.enabled);
+    try std.testing.expectEqual(true, cfg.memory.auto_resume);
+    try std.testing.expectEqual(true, cfg.memory.flush_on_shutdown);
+    try std.testing.expectEqual(@as(u32, 30), cfg.memory.proc_inspect_interval);
+}
+
+test "memory config parse" {
+    const allocator = std.testing.allocator;
+    const toml =
+        \\[memory]
+        \\enabled = false
+        \\auto_resume = false
+        \\flush_on_shutdown = false
+        \\proc_inspect_interval = 60
+    ;
+    var cfg = try parseConfig(allocator, toml);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(false, cfg.memory.enabled);
+    try std.testing.expectEqual(false, cfg.memory.auto_resume);
+    try std.testing.expectEqual(false, cfg.memory.flush_on_shutdown);
+    try std.testing.expectEqual(@as(u32, 60), cfg.memory.proc_inspect_interval);
 }
