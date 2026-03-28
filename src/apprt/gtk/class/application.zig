@@ -49,12 +49,18 @@ const session_mod = @import("../../../termplex/core/session.zig");
 const workspace_mod = @import("../../../termplex/core/workspace.zig");
 const termplex_config = @import("../../../termplex/core/config.zig");
 const agents = @import("../../../termplex/ipc/agents.zig");
+const memory_paths = @import("../../../termplex/core/memory/paths.zig");
+const memory_resume = @import("../../../termplex/core/memory/resume_manifest.zig");
+const memory_state = @import("../../../termplex/core/memory/state.zig");
 const memory_state_mgr = @import("../../../termplex/core/memory/state_manager.zig");
 const uuid = @import("../../../termplex/util/uuid.zig");
 
 const Uuid = uuid.Uuid;
 
 const log = std.log.scoped(.gtk_termplex_application);
+
+/// C setenv (linked via libc; used to export TERMPLEX_RESUME_MANIFEST).
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 /// Function used to funnel GLib/GObject/GTK log messages into Zig's logging
 /// system rather than just getting dumped directly to stderr.
@@ -4314,6 +4320,62 @@ pub const Application = extern struct {
             if (orch_idx) |idx| {
                 self.renameWorkspace(idx, "Orchestrator");
                 priv.orchestration_workspace_idx = idx;
+            }
+        }
+
+        // Build resume manifest if memory is enabled and state exists.
+        // This must happen BEFORE the orchestrator agent is launched so the
+        // TERMPLEX_RESUME_MANIFEST env var is visible to the agent process.
+        if (priv.memory_manager) |*mgr| {
+            if (mgr.getState()) |mem_state| {
+                // Read MEMORY.md
+                var global_paths = memory_paths.resolveGlobalPaths(alloc, priv.termplex_cfg.orchestration.dir) catch null;
+                defer if (global_paths) |*gp| gp.deinit(alloc);
+
+                var global_memory_owned: bool = false;
+                const global_memory: []const u8 = blk: {
+                    if (global_paths) |gp| {
+                        const f = std.fs.openFileAbsolute(gp.memory_md, .{}) catch break :blk "";
+                        defer f.close();
+                        const content = f.readToEndAlloc(alloc, 1024 * 1024) catch break :blk "";
+                        global_memory_owned = true;
+                        break :blk content;
+                    }
+                    break :blk "";
+                };
+                defer if (global_memory_owned) alloc.free(global_memory);
+
+                // Build manifest (no per-workspace memories for v1 simplicity)
+                const manifest = memory_resume.buildManifest(
+                    alloc,
+                    mem_state,
+                    global_memory,
+                    &.{},
+                    &.{},
+                ) catch null;
+                defer if (manifest) |m| alloc.free(m);
+
+                if (manifest) |m| {
+                    log.info("resume manifest built ({d} bytes)", .{m.len});
+                    // Write manifest to orchestration directory as resume_manifest.txt
+                    memory_paths.ensureDir(priv.termplex_cfg.orchestration.dir) catch {};
+                    const manifest_path = std.fmt.allocPrint(alloc, "{s}/resume_manifest.txt", .{priv.termplex_cfg.orchestration.dir}) catch null;
+                    defer if (manifest_path) |p| alloc.free(p);
+                    if (manifest_path) |path| {
+                        const mf = std.fs.createFileAbsolute(path, .{}) catch null;
+                        if (mf) |f| {
+                            defer f.close();
+                            f.writeAll(m) catch {};
+                            log.info("resume manifest written to {s}", .{path});
+                        }
+                        // Set TERMPLEX_RESUME_MANIFEST env var
+                        const path_z = alloc.dupeZ(u8, path) catch null;
+                        defer if (path_z) |p| alloc.free(p);
+                        if (path_z) |pz| {
+                            _ = setenv("TERMPLEX_RESUME_MANIFEST", pz.ptr, 1);
+                        }
+                    }
+                }
             }
         }
 
