@@ -85,6 +85,10 @@ pub const Message = union(enum) {
     /// The terminal has reported a change in the working directory.
     pwd_change: WriteReq,
 
+    /// An OSC 7337 orchestrator command event from the shell integration.
+    /// Payload format: "cmd_start;<pid>;<command>" or "cmd_end;<pid>;<exit_code>"
+    orchestrator_cmd: WriteReq,
+
     /// The terminal encountered a bell character.
     ring_bell,
 

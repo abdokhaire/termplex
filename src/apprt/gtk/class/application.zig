@@ -560,15 +560,17 @@ pub const Application = extern struct {
             defer if (orch_dir_z) |d| std.heap.c_allocator.free(d);
             const orch_idx = self.addWorkspaceWithDir(orch_dir_z);
             if (orch_idx) |idx| {
-                self.renameWorkspace(idx, "ORCHESTRATOR");
+                self.renameWorkspace(idx, "Orchestrator");
                 priv.orchestration_workspace_idx = idx;
                 log.info("created orchestration workspace at index {d}", .{idx});
             }
         }
 
         // Termplex: create the default "Workspace 1" (name, dir, and TabView).
-        _ = self.addWorkspaceWithDir(null) orelse
-            @panic("OOM: cannot create initial workspace");
+        if (self.workspaceCount() == 0) {
+            _ = self.addWorkspaceWithDir(null) orelse
+                @panic("OOM: cannot create initial workspace");
+        }
 
         // Termplex: start the IPC socket server.
         startIpcSocket(self) catch |err| {
@@ -875,6 +877,48 @@ pub const Application = extern struct {
         return self.addWorkspaceWithDir(null);
     }
 
+    const ChangeWorkspaceDirResult = enum {
+        updated,
+        duplicate,
+        invalid_index,
+        oom,
+    };
+
+    fn normalizeWorkspaceDir(self: *Self, dir: []const u8) ?[:0]const u8 {
+        const alloc = self.allocator();
+
+        const expanded: []const u8 = blk: {
+            if (dir.len > 0 and dir[0] == '~') {
+                const home = std.posix.getenv("HOME") orelse break :blk dir;
+                break :blk std.fmt.allocPrint(alloc, "{s}{s}", .{ home, dir[1..] }) catch return null;
+            }
+            break :blk alloc.dupe(u8, dir) catch return null;
+        };
+        defer alloc.free(expanded);
+
+        const realpath = std.fs.cwd().realpathAlloc(alloc, expanded) catch null;
+        if (realpath) |path| {
+            defer alloc.free(path);
+            return alloc.dupeZ(u8, path) catch null;
+        }
+
+        return alloc.dupeZ(u8, expanded) catch null;
+    }
+
+    pub fn workspaceIndexByDir(self: *Self, dir: []const u8) ?u32 {
+        const alloc = self.allocator();
+        const priv = self.private();
+
+        const normalized_dir = self.normalizeWorkspaceDir(dir) orelse return null;
+        defer alloc.free(normalized_dir);
+
+        for (priv.workspace_dirs.items, 0..) |ws_dir, idx| {
+            if (std.mem.eql(u8, ws_dir, normalized_dir)) return @intCast(idx);
+        }
+
+        return null;
+    }
+
     /// Create a new workspace with an auto-generated name and an optional
     /// explicit working directory.  When `dir` is null the new workspace
     /// inherits the active workspace's directory, or $HOME as a fallback.
@@ -892,24 +936,32 @@ pub const Application = extern struct {
         // Resolve directory: explicit > current workspace > $HOME
         const resolved_dir: [:0]const u8 = blk: {
             if (dir) |d| {
-                break :blk alloc.dupeZ(u8, d) catch {
+                break :blk self.normalizeWorkspaceDir(d) orelse {
                     alloc.free(name);
                     return null;
                 };
             }
             // Default to current workspace dir, or $HOME
             if (priv.workspace_dirs.items.len > 0 and priv.active_workspace_idx < priv.workspace_dirs.items.len) {
-                break :blk alloc.dupeZ(u8, priv.workspace_dirs.items[priv.active_workspace_idx]) catch {
+                break :blk self.normalizeWorkspaceDir(priv.workspace_dirs.items[priv.active_workspace_idx]) orelse {
                     alloc.free(name);
                     return null;
                 };
             }
             const home = std.posix.getenv("HOME") orelse "/tmp";
-            break :blk alloc.dupeZ(u8, home) catch {
+            break :blk self.normalizeWorkspaceDir(home) orelse {
                 alloc.free(name);
                 return null;
             };
         };
+
+        if (dir != null) {
+            if (self.workspaceIndexByDir(resolved_dir)) |existing_idx| {
+                alloc.free(name);
+                alloc.free(resolved_dir);
+                return existing_idx;
+            }
+        }
 
         // Create TabView for this workspace
         const tab_view = adw.TabView.new();
@@ -1182,22 +1234,25 @@ pub const Application = extern struct {
     ///
     /// Expands ~ to $HOME, updates workspace_dirs, probes git for
     /// the new path, and refreshes all sidebars.
-    pub fn changeWorkspaceDir(self: *Self, index: u32, new_dir: [:0]const u8) void {
+    pub fn changeWorkspaceDir(self: *Self, index: u32, new_dir: [:0]const u8) ChangeWorkspaceDirResult {
         const alloc = self.allocator();
         const priv = self.private();
 
-        if (index >= priv.workspace_dirs.items.len) return;
+        if (index >= priv.workspace_dirs.items.len) return .invalid_index;
 
-        // Expand ~ to $HOME for storage.
-        const resolved_dir: [:0]const u8 = blk: {
-            if (std.mem.startsWith(u8, new_dir, "~")) {
-                const home = std.posix.getenv("HOME") orelse break :blk alloc.dupeZ(u8, new_dir) catch return;
-                const expanded = std.fmt.allocPrint(alloc, "{s}{s}", .{ home, new_dir[1..] }) catch return;
-                defer alloc.free(expanded);
-                break :blk alloc.dupeZ(u8, expanded) catch return;
+        const resolved_dir = self.normalizeWorkspaceDir(new_dir) orelse return .oom;
+
+        if (std.mem.eql(u8, priv.workspace_dirs.items[index], resolved_dir)) {
+            alloc.free(resolved_dir);
+            return .updated;
+        }
+
+        if (self.workspaceIndexByDir(resolved_dir)) |existing_idx| {
+            if (existing_idx != index) {
+                alloc.free(resolved_dir);
+                return .duplicate;
             }
-            break :blk alloc.dupeZ(u8, new_dir) catch return;
-        };
+        }
 
         // Replace the old dir.
         alloc.free(priv.workspace_dirs.items[index]);
@@ -1221,6 +1276,7 @@ pub const Application = extern struct {
         }
 
         log.info("workspace {d} directory changed to: {s}", .{ index, resolved_dir });
+        return .updated;
     }
 
     /// Add a workspace row to every open Termplex window sidebar.
@@ -1872,8 +1928,9 @@ pub const Application = extern struct {
         ) catch null;
     }
 
-    /// Handle workspace.create — calls addWorkspaceWithDir() and returns the new index.
-    /// Accepts an optional "dir" field in "params".
+    /// Handle workspace.create — calls addWorkspaceWithDir() and returns the workspace index.
+    /// Accepts an optional "dir" field in "params". If a workspace already exists
+    /// for the requested directory, that existing workspace index is returned.
     fn ipcWorkspaceCreate(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
         const params_val = obj.get("params") orelse .null;
 
@@ -2101,8 +2158,17 @@ pub const Application = extern struct {
 
         arr_buf.appendSlice(alloc, "[") catch return null;
         var first = true;
+        const resolved_dir = self.normalizeWorkspaceDir(dir) orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"oom\",\"message\":\"out of memory\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        defer alloc.free(resolved_dir);
+
         for (priv.workspace_dirs.items, 0..) |ws_dir, idx| {
-            if (std.mem.eql(u8, ws_dir, dir)) {
+            if (std.mem.eql(u8, ws_dir, resolved_dir)) {
                 if (!first) arr_buf.appendSlice(alloc, ",") catch return null;
                 const name = priv.workspace_names.items[idx];
                 const tab_count: c_int = if (idx < priv.workspace_tab_views.items.len)
@@ -4145,7 +4211,7 @@ pub const Application = extern struct {
             defer if (orch_dir_z) |d| alloc.free(d);
             const orch_idx = self.addWorkspaceWithDir(orch_dir_z);
             if (orch_idx) |idx| {
-                self.renameWorkspace(idx, "ORCHESTRATOR");
+                self.renameWorkspace(idx, "Orchestrator");
                 priv.orchestration_workspace_idx = idx;
             }
         }
@@ -4191,9 +4257,9 @@ pub const Application = extern struct {
                 }
             };
 
-            // Skip any ORCHESTRATOR entry that might have been saved by an
+            // Skip any Orchestrator entry that might have been saved by an
             // older build; it is recreated on startup unconditionally.
-            if (std.mem.eql(u8, name_str, "ORCHESTRATOR")) continue;
+            if (std.mem.eql(u8, name_str, "ORCHESTRATOR") or std.mem.eql(u8, name_str, "Orchestrator")) continue;
 
             const home_fallback: []const u8 = std.posix.getenv("HOME") orelse "/tmp";
 
@@ -4330,11 +4396,18 @@ pub const Application = extern struct {
                 log.warn("session restore: OOM allocating workspace name", .{});
                 continue;
             };
-            const dir: [:0]const u8 = alloc.dupeZ(u8, dir_str_raw) catch {
+            const dir: [:0]const u8 = self.normalizeWorkspaceDir(dir_str_raw) orelse {
                 alloc.free(name);
-                log.warn("session restore: OOM allocating workspace dir", .{});
+                log.warn("session restore: OOM normalizing workspace dir", .{});
                 continue;
             };
+
+            if (self.workspaceIndexByDir(dir)) |_| {
+                alloc.free(name);
+                alloc.free(dir);
+                log.info("session restore: skipping duplicate workspace dir '{s}'", .{dir_str_raw});
+                continue;
+            }
             const workspace_id = uuid.generate();
             const tab_view = adw.TabView.new();
             _ = tab_view.as(gobject.Object).ref();
@@ -4581,6 +4654,18 @@ pub const Application = extern struct {
             format_version,
             priv.active_workspace_idx,
         });
+    }
+
+    // -----------------------------------------------------------------
+    // Termplex: OSC 7337 orchestrator command handling
+    // -----------------------------------------------------------------
+
+    /// Handle an orchestrator command event from a surface (triggered by OSC 7337).
+    /// The payload format is "cmd_start;<pid>;<command>" or "cmd_end;<pid>;<exit_code>".
+    pub fn handleOrchestratorCmd(self: *Self, core_surface: *CoreSurface, payload: []const u8) void {
+        _ = core_surface;
+        log.info("orchestrator cmd: {s}", .{payload});
+        _ = self;
     }
 
     // -----------------------------------------------------------------
@@ -7135,20 +7220,12 @@ const Action = struct {
         defer alloc.free(orch_dir_z);
         const orch_idx = self.addWorkspaceWithDir(orch_dir_z);
         if (orch_idx) |idx| {
-            self.renameWorkspace(idx, "ORCHESTRATOR");
+            self.renameWorkspace(idx, "Orchestrator");
             priv.orchestration_workspace_idx = idx;
             log.info("orchestration enabled: workspace created at index {d}", .{idx});
 
-            // Add workspace row to sidebar and apply orchestration styling.
-            if (self.as(gtk.Application).getActiveWindow()) |active_win| {
-                if (gobject.ext.cast(Window, active_win)) |win| {
-                    var orch_dir_buf: [512]u8 = undefined;
-                    const orch_dir_text = self.formatDirDisplay(idx, &orch_dir_buf);
-                    const sidebar = win.getSidebar();
-                    sidebar.setOrchestrationIndex(idx);
-                    sidebar.addWorkspace("ORCHESTRATOR", null, null, orch_dir_text);
-                }
-            }
+            self.refreshAllWorkspaceSidebars();
+            self.syncActiveWorkspaceHeaders();
         }
     }
 

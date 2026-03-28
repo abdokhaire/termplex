@@ -331,6 +331,7 @@ pub const StreamHandler = struct {
             .start_hyperlink => try self.startHyperlink(value.uri, value.id),
             .clipboard_contents => try self.clipboardContents(value.kind, value.data),
             .semantic_prompt => try self.semanticPrompt(value),
+            .orchestrator_cmd => self.orchestratorCmd(value.payload),
             .mouse_shape => try self.setMouseShape(value),
             .configure_charset => self.configureCharset(value.slot, value.charset),
             .set_attribute => {
@@ -1110,6 +1111,16 @@ pub const StreamHandler = struct {
         // We do this last so failures are still processed correctly
         // above.
         try self.terminal.semanticPrompt(cmd);
+    }
+
+    /// Forward an OSC 7337 orchestrator command payload to the surface.
+    fn orchestratorCmd(self: *StreamHandler, payload: []const u8) void {
+        if (payload.len == 0) return;
+        if (apprt.surface.Message.WriteReq.init(self.alloc, payload)) |req| {
+            self.surfaceMessageWriter(.{ .orchestrator_cmd = req });
+        } else |err| {
+            log.warn("error forwarding orchestrator cmd err={}", .{err});
+        }
     }
 
     fn reportPwd(self: *StreamHandler, url: []const u8) !void {

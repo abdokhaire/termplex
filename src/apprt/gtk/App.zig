@@ -9,6 +9,7 @@ const apprt = @import("../../apprt.zig");
 const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
 const CoreApp = @import("../../App.zig");
+const CoreSurface = @import("../../Surface.zig");
 
 const Application = @import("class/application.zig").Application;
 const Surface = @import("Surface.zig");
@@ -98,4 +99,10 @@ pub fn performIpc(
 /// Redraw the inspector for the given surface.
 pub fn redrawInspector(_: *App, surface: *Surface) void {
     surface.redrawInspector();
+}
+
+/// Forward an OSC 7337 orchestrator command from a core surface to the
+/// GTK application for state-manager processing.
+pub fn handleOrchestratorCmd(self: *App, core_surface: *CoreSurface, payload: []const u8) void {
+    self.app.handleOrchestratorCmd(core_surface, payload);
 }

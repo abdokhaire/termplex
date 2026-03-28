@@ -201,6 +201,7 @@ pub const Handler = struct {
             .clipboard_contents,
             .title_push,
             .title_pop,
+            .orchestrator_cmd,
             => {},
         }
     }

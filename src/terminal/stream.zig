@@ -126,6 +126,7 @@ pub const Action = union(Key) {
     kitty_color_report: kitty.color.OSC,
     color_operation: ColorOperation,
     semantic_prompt: SemanticPrompt,
+    orchestrator_cmd: OrchestratorCmd,
 
     pub const Key = lib.Enum(
         lib_target,
@@ -223,6 +224,7 @@ pub const Action = union(Key) {
             "kitty_color_report",
             "color_operation",
             "semantic_prompt",
+            "orchestrator_cmd",
         },
     );
 
@@ -329,6 +331,16 @@ pub const Action = union(Key) {
 
         pub fn cval(self: ReportPwd) ReportPwd.C {
             return .init(self.url);
+        }
+    };
+
+    pub const OrchestratorCmd = struct {
+        payload: []const u8,
+
+        pub const C = lib.String;
+
+        pub fn cval(self: OrchestratorCmd) OrchestratorCmd.C {
+            return .init(self.payload);
         }
     };
 
@@ -2047,6 +2059,10 @@ pub fn Stream(comptime Handler: type) type {
                     self.handler.vt(.progress_report, v);
                 },
 
+                .orchestrator_cmd => |v| {
+                    self.handler.vt(.orchestrator_cmd, .{ .payload = v });
+                },
+
                 .conemu_sleep,
                 .conemu_show_message_box,
                 .conemu_change_tab_title,
@@ -2059,7 +2075,6 @@ pub fn Stream(comptime Handler: type) type {
                 .kitty_text_sizing,
                 .kitty_clipboard_protocol,
                 .context_signal,
-                .orchestrator_cmd,
                 => {
                     log.debug("unimplemented OSC callback: {}", .{cmd});
                 },

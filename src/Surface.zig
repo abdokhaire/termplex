@@ -1057,6 +1057,12 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             );
         },
 
+        .orchestrator_cmd => |w| {
+            defer w.deinit();
+            const payload = w.slice();
+            self.rt_app.handleOrchestratorCmd(self, payload);
+        },
+
         .close => self.close(),
 
         .child_exited => |v| self.childExited(v),

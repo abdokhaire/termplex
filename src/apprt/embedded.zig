@@ -261,6 +261,10 @@ pub const App = struct {
         surface.queueInspectorRender();
     }
 
+    /// Handle an OSC 7337 orchestrator command event from a surface.
+    /// No-op in the embedded apprt.
+    pub fn handleOrchestratorCmd(_: *App, _: *CoreSurface, _: []const u8) void {}
+
     /// Perform a given action. Returns `true` if the action was able to be
     /// performed, `false` otherwise.
     pub fn performAction(
