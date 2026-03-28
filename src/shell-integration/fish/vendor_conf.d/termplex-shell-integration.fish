@@ -216,11 +216,15 @@ function __termplex_setup --on-event fish_prompt -d "Setup termplex integration"
     function __termplex_mark_output_start --on-event fish_preexec
         set --global __termplex_prompt_state pre-exec
         echo -en "\e]133;C\a"
+        # Report command to orchestrator memory (OSC 7337)
+        echo -en "\e]7337;cmd_start;$fish_pid;$argv\a"
     end
 
     function __termplex_mark_output_end --on-event fish_postexec
         set --global __termplex_prompt_state post-exec
         echo -en "\e]133;D;$status\a"
+        # Report command completion to orchestrator memory (OSC 7337)
+        echo -en "\e]7337;cmd_end;$fish_pid;$status\a"
     end
 
     # Report pwd. This is actually built-in to fish but only for terminals
