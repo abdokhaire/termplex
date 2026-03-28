@@ -231,6 +231,8 @@ function __termplex_precmd() {
   if test "$_termplex_executing" != ""; then
     # End of current command. Report its status.
     builtin printf "\e]133;D;%s;aid=%s\a" "$ret" "$BASHPID"
+    # Report command completion to orchestrator memory (OSC 7337)
+    builtin printf "\e]7337;cmd_end;%s;%d\a" "$$" "$ret"
   fi
 
   # Fresh line and start of prompt.
@@ -260,6 +262,8 @@ function __termplex_preexec() {
 
   # End of input, start of output.
   builtin printf "\e]133;C;\a"
+  # Report command to orchestrator memory (OSC 7337)
+  builtin printf "\e]7337;cmd_start;%s;%s\a" "$$" "${cmd//[[:cntrl:]]/}"
   _termplex_executing=1
 }
 
