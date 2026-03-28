@@ -49,6 +49,7 @@ const session_mod = @import("../../../termplex/core/session.zig");
 const workspace_mod = @import("../../../termplex/core/workspace.zig");
 const termplex_config = @import("../../../termplex/core/config.zig");
 const agents = @import("../../../termplex/ipc/agents.zig");
+const memory_state_mgr = @import("../../../termplex/core/memory/state_manager.zig");
 const uuid = @import("../../../termplex/util/uuid.zig");
 
 const Uuid = uuid.Uuid;
@@ -355,6 +356,15 @@ pub const Application = extern struct {
         /// Whether the orchestration agent has been launched in this session.
         orchestration_launched: bool = false,
 
+        // ----- Termplex memory state manager -----
+
+        /// Memory state manager for process tracking.
+        memory_manager: ?memory_state_mgr.StateManager = null,
+        /// GLib timer ID for debounced state saves (1s interval).
+        memory_debounce_timer: ?c_uint = null,
+        /// GLib timer ID for periodic proc inspection.
+        memory_proc_timer: ?c_uint = null,
+
         // ----- Termplex agent registry -----
 
         /// Registry of AI agents that have registered via IPC.
@@ -566,6 +576,31 @@ pub const Application = extern struct {
             }
         }
 
+        // Termplex: initialize memory state manager if memory is enabled.
+        if (priv.termplex_cfg.memory.enabled) {
+            priv.memory_manager = memory_state_mgr.StateManager.init(
+                std.heap.c_allocator,
+                priv.termplex_cfg.orchestration.dir,
+            );
+            // Try to load previous state
+            _ = priv.memory_manager.?.loadFromDisk() catch |err| {
+                log.warn("failed to load memory state: {}", .{err});
+            };
+
+            // Start debounce timer (1 second interval) for state persistence
+            priv.memory_debounce_timer = glib.timeoutAdd(1000, memoryDebounceSaveCallback, self);
+
+            // Start proc inspection timer if configured
+            const interval: u64 = priv.termplex_cfg.memory.proc_inspect_interval;
+            if (interval > 0) {
+                const interval_ms: c_uint = @intCast(@min(
+                    interval * 1000,
+                    @as(u64, std.math.maxInt(c_uint)),
+                ));
+                priv.memory_proc_timer = glib.timeoutAdd(interval_ms, memoryProcInspectCallback, self);
+            }
+        }
+
         // Termplex: create the default "Workspace 1" (name, dir, and TabView).
         if (self.workspaceCount() == 0) {
             _ = self.addWorkspaceWithDir(null) orelse
@@ -754,6 +789,54 @@ pub const Application = extern struct {
         if (priv.current_pwd) |p| {
             alloc.free(p);
             priv.current_pwd = null;
+        }
+
+        // Termplex: cancel memory debounce timer.
+        if (priv.memory_debounce_timer) |source| {
+            _ = glib.Source.remove(source);
+            priv.memory_debounce_timer = null;
+        }
+
+        // Termplex: cancel memory proc inspection timer.
+        if (priv.memory_proc_timer) |source| {
+            _ = glib.Source.remove(source);
+            priv.memory_proc_timer = null;
+        }
+
+        // Termplex: persist memory state on shutdown.
+        if (priv.memory_manager) |*mgr| {
+            // Pre-shutdown memory flush: write a prompt file so the
+            // orchestrator can save durable knowledge before exiting.
+            if (priv.termplex_cfg.memory.flush_on_shutdown) {
+                const flush_prompt = "Session ending. Review what happened this session and write any durable knowledge to memory files. If nothing new was learned, do nothing.";
+                const flush_path = std.fmt.allocPrint(alloc, "{s}/flush_prompt.txt", .{priv.termplex_cfg.orchestration.dir}) catch null;
+                defer if (flush_path) |p| alloc.free(p);
+                if (flush_path) |path| {
+                    const f = std.fs.createFileAbsolute(path, .{}) catch null;
+                    if (f) |file| {
+                        defer file.close();
+                        file.writeAll(flush_prompt) catch {};
+                    }
+                }
+            }
+
+            mgr.markShutdown();
+
+            // Save per-workspace state.json files.
+            if (mgr.getState()) |s| {
+                for (s.workspace_names) |ws_name| {
+                    mgr.saveWorkspaceState(ws_name) catch |err| {
+                        log.warn("failed to save workspace state for {s}: {}", .{ ws_name, err });
+                    };
+                }
+            }
+
+            // Save global state.json.
+            mgr.saveToDisk() catch |err| {
+                log.warn("failed to save memory state on shutdown: {}", .{err});
+            };
+            mgr.deinit();
+            priv.memory_manager = null;
         }
 
         // Termplex: free the loaded Termplex config.
@@ -3926,6 +4009,24 @@ pub const Application = extern struct {
         return @intFromBool(glib.SOURCE_CONTINUE);
     }
 
+    /// GLib timer callback: debounced save of memory state (fires every 1s).
+    fn memoryDebounceSaveCallback(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        const priv = self.private();
+        if (priv.memory_manager) |*mgr| {
+            mgr.debouncedSave();
+        }
+        return @intFromBool(glib.SOURCE_CONTINUE);
+    }
+
+    /// GLib timer callback: periodic process inspection via /proc.
+    /// For v1, this is a no-op placeholder. Full proc inspection requires
+    /// iterating all surfaces to get shell PIDs, which is complex.
+    /// Shell hooks are the primary detection mechanism.
+    fn memoryProcInspectCallback(_: ?*anyopaque) callconv(.c) c_int {
+        return @intFromBool(glib.SOURCE_CONTINUE);
+    }
+
     /// Collect current state and atomically write it to the session JSON file.
     fn autosaveSession(self: *Self) void {
         const alloc = self.allocator();
@@ -4664,8 +4765,52 @@ pub const Application = extern struct {
     /// The payload format is "cmd_start;<pid>;<command>" or "cmd_end;<pid>;<exit_code>".
     pub fn handleOrchestratorCmd(self: *Self, core_surface: *CoreSurface, payload: []const u8) void {
         _ = core_surface;
+        const priv = self.private();
+        var mgr = &(priv.memory_manager orelse return);
+
+        // Determine event kind from payload prefix.
+        var kind: memory_state_mgr.CommandEvent.Kind = undefined;
+        var rest: []const u8 = undefined;
+
+        if (std.mem.startsWith(u8, payload, "cmd_start;")) {
+            kind = .start;
+            rest = payload["cmd_start;".len..];
+        } else if (std.mem.startsWith(u8, payload, "cmd_end;")) {
+            kind = .end;
+            rest = payload["cmd_end;".len..];
+        } else {
+            return; // Unknown format
+        }
+
+        // Parse PID from rest (format: "<pid>;<data>")
+        const semi = std.mem.indexOfScalar(u8, rest, ';') orelse return;
+        const pid = std.fmt.parseInt(u32, rest[0..semi], 10) catch return;
+        const data = rest[semi + 1 ..];
+
+        // Use the active workspace name and dir as a best-effort approximation.
+        // Full per-surface workspace lookup is deferred to a future version.
+        const ws_idx = priv.active_workspace_idx;
+        const ws_name: []const u8 = if (ws_idx < priv.workspace_names.items.len)
+            priv.workspace_names.items[ws_idx]
+        else
+            "default";
+        const ws_dir: []const u8 = if (ws_idx < priv.workspace_dirs.items.len)
+            priv.workspace_dirs.items[ws_idx]
+        else
+            "/tmp";
+
+        const event = memory_state_mgr.CommandEvent{
+            .kind = kind,
+            .surface_uuid = "unknown", // Surface UUID tracking deferred to future version
+            .workspace_name = ws_name,
+            .workspace_dir = ws_dir,
+            .command = if (kind == .start) data else null,
+            .shell_pid = pid,
+            .exit_code = if (kind == .end) std.fmt.parseInt(i32, data, 10) catch null else null,
+        };
+
+        mgr.handleCommandEvent(event);
         log.info("orchestrator cmd: {s}", .{payload});
-        _ = self;
     }
 
     // -----------------------------------------------------------------
