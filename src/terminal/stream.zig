@@ -2059,6 +2059,7 @@ pub fn Stream(comptime Handler: type) type {
                 .kitty_text_sizing,
                 .kitty_clipboard_protocol,
                 .context_signal,
+                .orchestrator_cmd,
                 => {
                     log.debug("unimplemented OSC callback: {}", .{cmd});
                 },

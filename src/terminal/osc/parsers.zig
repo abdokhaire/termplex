@@ -11,6 +11,7 @@ pub const kitty_clipboard_protocol = @import("parsers/kitty_clipboard_protocol.z
 pub const kitty_color = @import("parsers/kitty_color.zig");
 pub const kitty_text_sizing = @import("parsers/kitty_text_sizing.zig");
 pub const mouse_shape = @import("parsers/mouse_shape.zig");
+pub const orchestrator_cmd = @import("parsers/orchestrator_cmd.zig");
 pub const osc9 = @import("parsers/osc9.zig");
 pub const report_pwd = @import("parsers/report_pwd.zig");
 pub const rxvt_extension = @import("parsers/rxvt_extension.zig");

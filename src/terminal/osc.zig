@@ -160,6 +160,10 @@ pub const Command = union(Key) {
     /// https://uapi-group.org/specifications/specs/osc_context/
     context_signal: parsers.context_signal.Command,
 
+    /// OSC 7337. Orchestrator command tracking for memory system.
+    /// Payload contains "cmd_start;<pid>;<command>" or "cmd_end;<pid>;<exit_code>"
+    orchestrator_cmd: [:0]const u8,
+
     pub const SemanticPrompt = parsers.semantic_prompt.Command;
 
     pub const KittyClipboardProtocol = parsers.kitty_clipboard_protocol.OSC;
@@ -193,6 +197,7 @@ pub const Command = union(Key) {
             "kitty_text_sizing",
             "kitty_clipboard_protocol",
             "context_signal",
+            "orchestrator_cmd",
         },
     );
 
@@ -345,6 +350,9 @@ pub const Parser = struct {
         @"52",
         @"55",
         @"66",
+        @"73",
+        @"733",
+        @"7337",
         @"77",
         @"104",
         @"110",
@@ -425,6 +433,7 @@ pub const Parser = struct {
             .kitty_text_sizing,
             .kitty_clipboard_protocol,
             .context_signal,
+            .orchestrator_cmd,
             => {},
         }
 
@@ -636,7 +645,18 @@ pub const Parser = struct {
 
             .@"7" => switch (c) {
                 ';' => self.writeToFixed(),
+                '3' => self.state = .@"73",
                 '7' => self.state = .@"77",
+                else => self.state = .invalid,
+            },
+
+            .@"73" => switch (c) {
+                '3' => self.state = .@"733",
+                else => self.state = .invalid,
+            },
+
+            .@"733" => switch (c) {
+                '7' => self.state = .@"7337",
                 else => self.state = .invalid,
             },
 
@@ -658,6 +678,7 @@ pub const Parser = struct {
             },
 
             .@"1337",
+            .@"7337",
             => switch (c) {
                 ';' => self.writeToFixed(),
                 else => self.state = .invalid,
@@ -750,6 +771,10 @@ pub const Parser = struct {
 
             .@"66" => parsers.kitty_text_sizing.parse(self, terminator_ch),
 
+            .@"73",
+            .@"733",
+            => null,
+
             .@"77" => null,
 
             .@"133" => parsers.semantic_prompt.parse(self, terminator_ch),
@@ -759,6 +784,8 @@ pub const Parser = struct {
             .@"777" => parsers.rxvt_extension.parse(self, terminator_ch),
 
             .@"1337" => parsers.iterm2.parse(self, terminator_ch),
+
+            .@"7337" => parsers.orchestrator_cmd.parse(self, terminator_ch),
 
             .@"5522" => parsers.kitty_clipboard_protocol.parse(self, terminator_ch),
         };
