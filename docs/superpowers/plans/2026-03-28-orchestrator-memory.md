@@ -36,7 +36,9 @@
 | `src/shell-integration/bash/termplex.bash` | Extend `__termplex_preexec`/`__termplex_precmd` with OSC 7337 |
 | `src/shell-integration/zsh/termplex-integration` | Extend precmd/preexec hooks with OSC 7337 |
 | `src/shell-integration/fish/vendor_conf.d/termplex-shell-integration.fish` | Extend fish hooks with OSC 7337 |
-| `src/apprt/gtk/class/application.zig` | Wire state manager: init, OSC event routing, shutdown flush, resume manifest injection |
+| `src/terminal/osc.zig` (or equivalent OSC parser) | Register OSC 7337 as a recognized sequence, parse cmd_start/cmd_end payloads |
+| `src/apprt/gtk/class/surface.zig` | Handle parsed OSC 7337 events, forward command start/end to state manager |
+| `src/apprt/gtk/class/application.zig` | Wire state manager: init, OSC event routing, debounce/periodic timers, shutdown flush + memory flush prompt, resume manifest injection |
 
 ---
 
@@ -433,7 +435,7 @@ fn writeWorkspace(jw: *std.json.Stringify, ws: WorkspaceState) !void {
     try jw.endObject();
 }
 
-fn writeSurface(jw: *std.json.Stringify, s: SurfaceState) !void {
+pub fn writeSurface(jw: *std.json.Stringify, s: SurfaceState) !void {
     try jw.beginObject();
 
     try jw.objectField("working_directory");
@@ -1089,13 +1091,13 @@ pub fn getChildPids(allocator: std.mem.Allocator, parent_pid: u32) ![]u32 {
 }
 
 /// Check if a PID is alive by sending signal 0.
+/// Returns true if the process exists and we have permission to signal it.
 pub fn isAlive(pid: u32) bool {
     const pid_i32: i32 = @intCast(pid);
-    const result = std.posix.kill(pid_i32, 0);
-    // kill returns void on success (Zig wraps errors)
-    _ = result;
-    return true; // If no error, process exists
-    // Note: in practice we need to handle the error case
+    // std.posix.kill returns an error union. Signal 0 doesn't kill,
+    // just checks if the process exists.
+    std.posix.kill(pid_i32, 0) catch return false;
+    return true;
 }
 
 /// Inspect a shell PID and find its deepest child process.
@@ -1297,8 +1299,9 @@ pub const StateManager = struct {
     pub fn markShutdown(self: *StateManager) void {
         var s = &(self.state orelse return);
 
-        // Update last_shutdown with current ISO 8601 timestamp
-        // For simplicity, use epoch seconds formatted
+        // Update last_shutdown with current timestamp.
+        // Use epoch seconds as string; the resume manifest builder
+        // can format it for human display.
         const now = std.time.timestamp();
         const ts = std.fmt.allocPrint(self.allocator, "{d}", .{now}) catch return;
 
@@ -1318,6 +1321,160 @@ pub const StateManager = struct {
         }
 
         self.dirty = true;
+    }
+
+    /// Handle an incoming command event (from OSC 7337 parsed by surface).
+    /// Creates workspace/surface entries if they don't exist yet.
+    /// Marks state as dirty for debounced write.
+    pub fn handleCommandEvent(self: *StateManager, event: CommandEvent) void {
+        // Ensure we have a state object
+        if (self.state == null) {
+            const ws_names = self.allocator.alloc([]const u8, 0) catch return;
+            const wss = self.allocator.alloc(WorkspaceState, 0) catch return;
+            const now_ts = std.fmt.allocPrint(self.allocator, "{d}", .{std.time.timestamp()}) catch return;
+            self.state = .{
+                .version = state_mod.CURRENT_VERSION,
+                .last_updated = now_ts,
+                .last_shutdown = null,
+                .workspace_names = ws_names,
+                .workspaces = wss,
+            };
+        }
+
+        var s = &(self.state.?);
+
+        // Find or create workspace
+        const ws_idx = blk: {
+            for (s.workspace_names, 0..) |name, i| {
+                if (std.mem.eql(u8, name, event.workspace_name)) break :blk i;
+            }
+            // Create new workspace entry
+            var names = std.ArrayList([]const u8).fromOwnedSlice(self.allocator, s.workspace_names);
+            names.append(self.allocator.dupe(u8, event.workspace_name) catch return) catch return;
+            s.workspace_names = names.toOwnedSlice() catch return;
+
+            var wss = std.ArrayList(WorkspaceState).fromOwnedSlice(self.allocator, s.workspaces);
+            const empty_ids = self.allocator.alloc([]const u8, 0) catch return;
+            const empty_surfs = self.allocator.alloc(SurfaceState, 0) catch return;
+            wss.append(.{
+                .dir = self.allocator.dupe(u8, event.workspace_dir) catch return,
+                .surface_ids = empty_ids,
+                .surfaces = empty_surfs,
+            }) catch return;
+            s.workspaces = wss.toOwnedSlice() catch return;
+            break :blk s.workspace_names.len - 1;
+        };
+
+        var ws = &s.workspaces[ws_idx];
+
+        // Find or create surface
+        const surf_idx = blk: {
+            for (ws.surface_ids, 0..) |id, i| {
+                if (std.mem.eql(u8, id, event.surface_uuid)) break :blk i;
+            }
+            // Create new surface entry
+            var ids = std.ArrayList([]const u8).fromOwnedSlice(self.allocator, ws.surface_ids);
+            ids.append(self.allocator.dupe(u8, event.surface_uuid) catch return) catch return;
+            ws.surface_ids = ids.toOwnedSlice() catch return;
+
+            const empty_ports = self.allocator.alloc(u16, 0) catch return;
+            var surfs = std.ArrayList(SurfaceState).fromOwnedSlice(self.allocator, ws.surfaces);
+            surfs.append(.{
+                .working_directory = self.allocator.dupe(u8, event.workspace_dir) catch return,
+                .last_command = null,
+                .command_started_at = null,
+                .process_pid = null,
+                .process_alive = false,
+                .detection_method = null,
+                .ports = empty_ports,
+            }) catch return;
+            ws.surfaces = surfs.toOwnedSlice() catch return;
+            break :blk ws.surface_ids.len - 1;
+        };
+
+        var surface = &ws.surfaces[surf_idx];
+
+        switch (event.kind) {
+            .start => {
+                // Update command info
+                if (surface.last_command) |old| self.allocator.free(old);
+                surface.last_command = if (event.command) |c| self.allocator.dupe(u8, c) catch null else null;
+
+                const now_str = std.fmt.allocPrint(self.allocator, "{d}", .{std.time.timestamp()}) catch null;
+                if (surface.command_started_at) |old| self.allocator.free(old);
+                surface.command_started_at = now_str;
+
+                surface.process_pid = event.shell_pid;
+                surface.process_alive = true;
+                surface.detection_method = .shell_hook;
+            },
+            .end => {
+                surface.process_alive = false;
+            },
+        }
+
+        self.dirty = true;
+    }
+
+    /// Debounced save: only writes if dirty. Call this from a GLib timer (1s interval).
+    pub fn debouncedSave(self: *StateManager) void {
+        if (!self.dirty) return;
+        self.saveToDisk() catch |err| {
+            log.warn("debounced save failed: {}", .{err});
+        };
+    }
+
+    /// Save per-workspace state.json for a specific workspace.
+    /// Creates .termplex/ directory if needed.
+    pub fn saveWorkspaceState(self: *StateManager, workspace_name: []const u8) !void {
+        const s = self.state orelse return;
+
+        for (s.workspace_names, s.workspaces) |name, ws| {
+            if (!std.mem.eql(u8, name, workspace_name)) continue;
+
+            var wp = try paths_mod.resolveWorkspacePaths(self.allocator, ws.dir);
+            defer wp.deinit(self.allocator);
+
+            // Ensure .termplex/ directory exists
+            try paths_mod.ensureDir(wp.dot_termplex_dir);
+
+            // Build per-workspace JSON (surfaces only, plus workspace_name)
+            var aw: std.io.Writer.Allocating = .init(self.allocator);
+            defer aw.deinit();
+            var jw: std.json.Stringify = .{ .writer = &aw.writer, .options = .{ .whitespace = .indent_2 } };
+
+            try jw.beginObject();
+            try jw.objectField("version");
+            try jw.write(state_mod.CURRENT_VERSION);
+            try jw.objectField("workspace_name");
+            try jw.write(name);
+            try jw.objectField("last_updated");
+            try jw.write(s.last_updated);
+            try jw.objectField("last_shutdown");
+            if (s.last_shutdown) |ls| try jw.write(ls) else try jw.write(null);
+            try jw.objectField("surfaces");
+            try jw.beginObject();
+            for (ws.surface_ids, ws.surfaces) |id, surface| {
+                try jw.objectField(id);
+                try state_mod.writeSurface(&jw, surface);
+            }
+            try jw.endObject();
+            try jw.endObject();
+
+            const json = try aw.toOwnedSlice();
+            defer self.allocator.free(json);
+
+            // Atomic write
+            const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{wp.state_json});
+            defer self.allocator.free(tmp_path);
+            {
+                const file = try std.fs.createFileAbsolute(tmp_path, .{});
+                defer file.close();
+                try file.writeAll(json);
+            }
+            try std.fs.renameAbsolute(tmp_path, wp.state_json);
+            return;
+        }
     }
 
     /// Get the loaded state (read-only). Returns null if not loaded.
@@ -1466,7 +1623,156 @@ git commit -m "feat(memory): add OSC 7337 command tracking to fish shell integra
 
 ---
 
-## Task 10: Application Integration — State Manager Initialization
+## Task 10: OSC 7337 Parser Registration
+
+Register OSC 7337 in the terminal's escape sequence parser so cmd_start/cmd_end payloads are recognized and routed.
+
+**Files:**
+- Modify: `src/terminal/osc.zig` (or the file containing the OSC command enum/parser)
+
+- [ ] **Step 1: Explore the OSC parser to find exact integration points**
+
+Read `src/terminal/osc.zig` and trace how existing OSC sequences (e.g., OSC 7 for CWD, OSC 133 for semantic prompts) are registered. Find:
+- The `Command` union or enum where OSC types are defined
+- The parser dispatch table or switch statement
+- How parsed OSC data flows to the surface widget
+
+Document the exact lines and patterns found.
+
+- [ ] **Step 2: Add OSC 7337 command type**
+
+Add a new variant to the OSC command union/enum for orchestrator memory events:
+
+```zig
+/// Orchestrator memory command tracking (OSC 7337).
+/// Format: "7337;cmd_start;<pid>;<command>" or "7337;cmd_end;<pid>;<exit_code>"
+orchestrator_cmd: struct {
+    kind: enum { cmd_start, cmd_end },
+    pid: u32,
+    payload: []const u8, // command string for start, exit code string for end
+},
+```
+
+- [ ] **Step 3: Add parser for OSC 7337 payload**
+
+Add a parser function that extracts the kind, PID, and payload from the raw OSC data. The format is `7337;cmd_start;<pid>;<command>` or `7337;cmd_end;<pid>;<exit_code>`.
+
+```zig
+fn parseOsc7337(data: []const u8) ?OrchestratorCmd {
+    // Skip "7337;" prefix
+    const rest = if (std.mem.startsWith(u8, data, "7337;")) data[5..] else return null;
+
+    if (std.mem.startsWith(u8, rest, "cmd_start;")) {
+        const after_kind = rest[10..];
+        const semi = std.mem.indexOfScalar(u8, after_kind, ';') orelse return null;
+        const pid_str = after_kind[0..semi];
+        const command = after_kind[semi + 1 ..];
+        const pid = std.fmt.parseInt(u32, pid_str, 10) catch return null;
+        return .{ .kind = .cmd_start, .pid = pid, .payload = command };
+    } else if (std.mem.startsWith(u8, rest, "cmd_end;")) {
+        const after_kind = rest[8..];
+        const semi = std.mem.indexOfScalar(u8, after_kind, ';') orelse return null;
+        const pid_str = after_kind[0..semi];
+        const exit_code = after_kind[semi + 1 ..];
+        const pid = std.fmt.parseInt(u32, pid_str, 10) catch return null;
+        return .{ .kind = .cmd_end, .pid = pid, .payload = exit_code };
+    }
+    return null;
+}
+```
+
+- [ ] **Step 4: Register in the parser dispatch**
+
+Add the `7337` case to the OSC dispatch switch statement so it calls the new parser.
+
+- [ ] **Step 5: Build to verify compilation**
+
+Run: `/opt/zig-x86_64-linux-0.15.2/zig build -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell`
+Expected: BUILD SUCCESS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/terminal/osc.zig
+git commit -m "feat(memory): register OSC 7337 parser for command tracking"
+```
+
+---
+
+## Task 11: Surface OSC 7337 Event Handling
+
+Handle parsed OSC 7337 events in the surface widget and forward them to the state manager.
+
+**Files:**
+- Modify: `src/apprt/gtk/class/surface.zig`
+- Modify: `src/apprt/gtk/class/application.zig` (add forwarding method)
+
+- [ ] **Step 1: Explore the surface OSC handler**
+
+Read `src/apprt/gtk/class/surface.zig` and find where OSC commands are handled. Look for the callback that processes parsed OSC commands from the terminal core (e.g., `oscCallback`, `handleOsc`, or similar). Document the exact function name and how it accesses the application instance.
+
+- [ ] **Step 2: Add OSC 7337 handler in surface**
+
+In the surface's OSC handler, add a case for the new `orchestrator_cmd` variant:
+
+```zig
+.orchestrator_cmd => |cmd| {
+    // Forward to application's state manager.
+    // The surface knows its own UUID and workspace.
+    const app = self.getApplication();
+    if (app) |a| {
+        a.handleMemoryCommandEvent(self, cmd);
+    }
+},
+```
+
+- [ ] **Step 3: Add forwarding method in application**
+
+In `application.zig`, add a public method that the surface calls:
+
+```zig
+/// Handle a memory command event from a surface (triggered by OSC 7337).
+pub fn handleMemoryCommandEvent(self: *Self, surface: *Surface, cmd: OrchestratorCmd) void {
+    const priv = self.private();
+    var mgr = &(priv.memory_manager orelse return);
+
+    // Determine workspace name and dir for this surface
+    const ws_info = self.getWorkspaceForSurface(surface) orelse return;
+
+    const event = memory_state_mgr.CommandEvent{
+        .kind = switch (cmd.kind) {
+            .cmd_start => .start,
+            .cmd_end => .end,
+        },
+        .surface_uuid = self.getSurfaceUuidString(surface) orelse return,
+        .workspace_name = ws_info.name,
+        .workspace_dir = ws_info.dir,
+        .command = if (cmd.kind == .cmd_start) cmd.payload else null,
+        .shell_pid = cmd.pid,
+        .exit_code = if (cmd.kind == .cmd_end) std.fmt.parseInt(i32, cmd.payload, 10) catch null else null,
+    };
+
+    mgr.handleCommandEvent(event);
+}
+```
+
+Note: The exact method to find which workspace a surface belongs to depends on the codebase. The implementer should trace how the existing session serialization finds the workspace for a surface (in `autosaveSession`/`appendSessionTabJson`).
+
+- [ ] **Step 4: Build to verify compilation**
+
+Run: `/opt/zig-x86_64-linux-0.15.2/zig build -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell`
+Expected: BUILD SUCCESS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/apprt/gtk/class/surface.zig src/apprt/gtk/class/application.zig
+git commit -m "feat(memory): handle OSC 7337 events in surface, forward to state manager"
+```
+
+---
+
+## Task 12: Application Integration — State Manager Initialization + Timers
 
 Wire the state manager into the application lifecycle. This is the largest integration task — it connects everything.
 
@@ -1489,6 +1795,10 @@ In the application's private data struct (search for `orchestration_workspace_id
 ```zig
     /// Memory state manager for process tracking.
     memory_manager: ?memory_state_mgr.StateManager = null,
+    /// GLib timer ID for debounced state saves (1s interval).
+    memory_debounce_timer: c_uint = 0,
+    /// GLib timer ID for periodic proc inspection.
+    memory_proc_timer: c_uint = 0,
 ```
 
 - [ ] **Step 2: Initialize state manager during startup**
@@ -1506,6 +1816,15 @@ if (priv.termplex_cfg.memory.enabled) {
     _ = priv.memory_manager.?.loadFromDisk() catch |err| {
         log.warn("failed to load memory state: {}", .{err});
     };
+
+    // Start debounce timer (1 second interval) for state persistence
+    priv.memory_debounce_timer = glib.timeoutAdd(1000, &memoryDebounceSaveCallback, self);
+
+    // Start proc inspection timer if configured
+    const interval = priv.termplex_cfg.memory.proc_inspect_interval;
+    if (interval > 0) {
+        priv.memory_proc_timer = glib.timeoutAdd(interval * 1000, &memoryProcInspectCallback, self);
+    }
 }
 ```
 
@@ -1514,9 +1833,40 @@ if (priv.termplex_cfg.memory.enabled) {
 In the application's `deinit()` function, before `priv.termplex_cfg.deinit()` (around line 760), add:
 
 ```zig
+// Pre-shutdown memory flush: prompt orchestrator to save knowledge
+if (priv.termplex_cfg.memory.flush_on_shutdown) {
+    if (priv.orchestration_workspace_idx) |orch_idx| {
+        // Write flush prompt to a file the orchestrator can detect,
+        // or send it as input to the orchestrator terminal surface.
+        // The orchestrator's system prompt tells it to check for this signal.
+        const flush_prompt = "Session ending. Review what happened this session and write any durable knowledge to memory files. If nothing new was learned, do nothing.";
+        const flush_path = std.fmt.allocPrint(alloc, "{s}/flush_prompt.txt", .{priv.termplex_cfg.orchestration.dir}) catch null;
+        defer if (flush_path) |p| alloc.free(p);
+        if (flush_path) |path| {
+            const f = std.fs.createFileAbsolute(path, .{}) catch null;
+            if (f) |file| {
+                defer file.close();
+                file.writeAll(flush_prompt) catch {};
+            }
+        }
+        _ = orch_idx; // Used to identify which workspace is orchestrator
+        // Note: For v1, the flush prompt is written as a file. In future,
+        // this could be injected as terminal input to the orchestrator surface.
+    }
+}
+
 // Persist memory state on shutdown
 if (priv.memory_manager) |*mgr| {
     mgr.markShutdown();
+    // Save per-workspace state.json files
+    if (mgr.getState()) |state| {
+        for (state.workspace_names) |ws_name| {
+            mgr.saveWorkspaceState(ws_name) catch |err| {
+                log.warn("failed to save workspace state for {s}: {}", .{ ws_name, err });
+            };
+        }
+    }
+    // Save global state.json
     mgr.saveToDisk() catch |err| {
         log.warn("failed to save memory state on shutdown: {}", .{err});
     };
@@ -1539,7 +1889,7 @@ git commit -m "feat(memory): wire state manager into application lifecycle"
 
 ---
 
-## Task 11: Application Integration — Resume Manifest Injection
+## Task 13: Application Integration — Resume Manifest Injection
 
 Inject the resume manifest into the orchestrator workspace on startup.
 
@@ -1600,17 +1950,24 @@ if (priv.memory_manager) |*mgr| {
 
         if (manifest) |m| {
             log.info("resume manifest built ({d} bytes)", .{m.len});
-            // TODO: Inject manifest into orchestrator agent's initial context.
-            // This depends on how the orchestrator agent command is launched.
-            // For now, write manifest to a file the agent can read on startup.
+            // Write manifest to orchestration directory as resume_manifest.txt.
+            // The orchestrator agent's system prompt instructs it to read this
+            // file on startup from <orchestration_dir>/resume_manifest.txt.
+            // This file is passed to the agent via the TERMPLEX_RESUME_MANIFEST
+            // environment variable when launching the agent command.
             const manifest_path = std.fmt.allocPrint(alloc, "{s}/resume_manifest.txt", .{priv.termplex_cfg.orchestration.dir}) catch null;
             defer if (manifest_path) |p| alloc.free(p);
             if (manifest_path) |path| {
+                try paths_mod.ensureDir(priv.termplex_cfg.orchestration.dir);
                 const mf = std.fs.createFileAbsolute(path, .{}) catch null;
                 if (mf) |f| {
                     defer f.close();
                     f.writeAll(m) catch {};
+                    log.info("resume manifest written to {s}", .{path});
                 }
+                // Set environment variable so the agent process can find it.
+                // The agent command launch code should pass this env var.
+                std.process.setEnvVar("TERMPLEX_RESUME_MANIFEST", path) catch {};
             }
         }
     }
@@ -1631,10 +1988,10 @@ git commit -m "feat(memory): inject resume manifest on orchestrator startup"
 
 ---
 
-## Task 12: Integration Test — Full Build and Manual Verification
+## Task 14: Integration Test — Full Build and Manual Verification
 
 **Files:**
-- All files from Tasks 1-11
+- All files from Tasks 1-13
 
 - [ ] **Step 1: Run all unit tests**
 
