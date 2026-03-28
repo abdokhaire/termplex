@@ -1627,74 +1627,121 @@ git commit -m "feat(memory): add OSC 7337 command tracking to fish shell integra
 
 Register OSC 7337 in the terminal's escape sequence parser so cmd_start/cmd_end payloads are recognized and routed.
 
+**Important context:** The OSC parser in `src/terminal/osc.zig` uses a **character-by-character state machine**, NOT string matching. Each digit of the OSC number is a separate state transition. You must follow this pattern exactly.
+
 **Files:**
-- Modify: `src/terminal/osc.zig` (or the file containing the OSC command enum/parser)
+- Modify: `src/terminal/osc.zig` (state machine, Command union, end() function)
 
-- [ ] **Step 1: Explore the OSC parser to find exact integration points**
+- [ ] **Step 1: Explore the OSC parser state machine**
 
-Read `src/terminal/osc.zig` and trace how existing OSC sequences (e.g., OSC 7 for CWD, OSC 133 for semantic prompts) are registered. Find:
-- The `Command` union or enum where OSC types are defined
-- The parser dispatch table or switch statement
-- How parsed OSC data flows to the surface widget
+Read `src/terminal/osc.zig` fully. Map out:
+1. The `Parser.State` enum (around lines 313-365) — find existing multi-digit states like `@"7"` (for OSC 7), `@"13"`, `@"133"` (for OSC 133)
+2. The state transitions in the state machine `switch` (around lines 600-700) — see how `@"7"` transitions on seeing `'3'` etc.
+3. The `end()` function — see how completed states dispatch to parsing functions
+4. The `Command` union (around line 25) — see how parsed results are stored
 
-Document the exact lines and patterns found.
+Document exact line numbers for each.
 
-- [ ] **Step 2: Add OSC 7337 command type**
+- [ ] **Step 2: Add intermediate states for 7337**
 
-Add a new variant to the OSC command union/enum for orchestrator memory events:
+In the `Parser.State` enum, add new states for the 4-digit OSC number. The state machine processes one digit at a time:
 
 ```zig
-/// Orchestrator memory command tracking (OSC 7337).
-/// Format: "7337;cmd_start;<pid>;<command>" or "7337;cmd_end;<pid>;<exit_code>"
-orchestrator_cmd: struct {
-    kind: enum { cmd_start, cmd_end },
-    pid: u32,
-    payload: []const u8, // command string for start, exit code string for end
+// Add to State enum alongside existing states like @"7", @"13", @"133"
+@"73",    // Seen "73" — could become 733 or 7337
+@"733",   // Seen "733" — could become 7337
+@"7337",  // Seen "7337" — complete OSC number, now collecting payload
+```
+
+- [ ] **Step 3: Add state transitions**
+
+In the state machine's switch statement, add transitions. Find the existing `@"7"` state (which handles OSC 7 for CWD). It currently has a `';' =>` branch for "7;". Add a `'3' =>` branch:
+
+```zig
+// In the @"7" state handler:
+'3' => {
+    self.state = .@"73";
+},
+
+// New state handlers:
+.@"73" => switch (c) {
+    '3' => self.state = .@"733",
+    ';' => { /* handle OSC 73; if needed, otherwise reset */ },
+    else => self.state = .ground,
+},
+.@"733" => switch (c) {
+    '7' => self.state = .@"7337",
+    else => self.state = .ground,
+},
+.@"7337" => switch (c) {
+    ';' => {
+        // OSC number complete. Start collecting payload data.
+        // Transition to a state that accumulates the rest into the data buffer.
+        self.state = .string_data; // or equivalent payload collection state
+        self.osc_type = .orchestrator_cmd;
+    },
+    else => self.state = .ground,
 },
 ```
 
-- [ ] **Step 3: Add parser for OSC 7337 payload**
+**Note:** The exact state names, transition patterns, and payload collection mechanism depend on how the existing parser handles multi-digit OSC numbers (e.g., OSC 133). The implementer MUST study how OSC 133 is implemented and follow the identical pattern for 7337.
 
-Add a parser function that extracts the kind, PID, and payload from the raw OSC data. The format is `7337;cmd_start;<pid>;<command>` or `7337;cmd_end;<pid>;<exit_code>`.
+- [ ] **Step 4: Add Command union variant**
+
+Add to the `Command` union:
 
 ```zig
-fn parseOsc7337(data: []const u8) ?OrchestratorCmd {
-    // Skip "7337;" prefix
-    const rest = if (std.mem.startsWith(u8, data, "7337;")) data[5..] else return null;
-
-    if (std.mem.startsWith(u8, rest, "cmd_start;")) {
-        const after_kind = rest[10..];
-        const semi = std.mem.indexOfScalar(u8, after_kind, ';') orelse return null;
-        const pid_str = after_kind[0..semi];
-        const command = after_kind[semi + 1 ..];
-        const pid = std.fmt.parseInt(u32, pid_str, 10) catch return null;
-        return .{ .kind = .cmd_start, .pid = pid, .payload = command };
-    } else if (std.mem.startsWith(u8, rest, "cmd_end;")) {
-        const after_kind = rest[8..];
-        const semi = std.mem.indexOfScalar(u8, after_kind, ';') orelse return null;
-        const pid_str = after_kind[0..semi];
-        const exit_code = after_kind[semi + 1 ..];
-        const pid = std.fmt.parseInt(u32, pid_str, 10) catch return null;
-        return .{ .kind = .cmd_end, .pid = pid, .payload = exit_code };
-    }
-    return null;
-}
+/// Orchestrator memory command tracking (OSC 7337).
+orchestrator_cmd: struct {
+    kind: enum { cmd_start, cmd_end },
+    pid: u32,
+    payload: [:0]const u8,
+},
 ```
 
-- [ ] **Step 4: Register in the parser dispatch**
+- [ ] **Step 5: Add payload parser in end() function**
 
-Add the `7337` case to the OSC dispatch switch statement so it calls the new parser.
+In the `end()` function, add a case for the `@"7337"` state that parses the collected payload string. The payload format is `cmd_start;<pid>;<command>` or `cmd_end;<pid>;<exit_code>`:
 
-- [ ] **Step 5: Build to verify compilation**
+```zig
+.@"7337" => {
+    const data = self.getPayloadData(); // however the parser exposes collected data
+    // Parse "cmd_start;<pid>;<command>" or "cmd_end;<pid>;<exit_code>"
+    if (std.mem.startsWith(u8, data, "cmd_start;")) {
+        const rest = data["cmd_start;".len..];
+        const semi = std.mem.indexOfScalar(u8, rest, ';') orelse return null;
+        const pid = std.fmt.parseInt(u32, rest[0..semi], 10) catch return null;
+        return .{ .orchestrator_cmd = .{
+            .kind = .cmd_start,
+            .pid = pid,
+            .payload = rest[semi + 1 ..],
+        } };
+    } else if (std.mem.startsWith(u8, data, "cmd_end;")) {
+        const rest = data["cmd_end;".len..];
+        const semi = std.mem.indexOfScalar(u8, rest, ';') orelse return null;
+        const pid = std.fmt.parseInt(u32, rest[0..semi], 10) catch return null;
+        return .{ .orchestrator_cmd = .{
+            .kind = .cmd_end,
+            .pid = pid,
+            .payload = rest[semi + 1 ..],
+        } };
+    }
+    return null;
+},
+```
+
+**Note:** The exact API for accessing collected payload data and returning the command varies by how the existing parser works. Study the OSC 133 handler in `end()` for the exact pattern.
+
+- [ ] **Step 6: Build to verify compilation**
 
 Run: `/opt/zig-x86_64-linux-0.15.2/zig build -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell`
 Expected: BUILD SUCCESS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/terminal/osc.zig
-git commit -m "feat(memory): register OSC 7337 parser for command tracking"
+git commit -m "feat(memory): register OSC 7337 state machine + parser for command tracking"
 ```
 
 ---
@@ -1828,6 +1875,38 @@ if (priv.termplex_cfg.memory.enabled) {
 }
 ```
 
+Also add the GLib timer callback functions. These follow the existing pattern used by `autosaveCallback` (around line 3923 in application.zig). Add as private functions in the application class:
+
+```zig
+/// GLib timer callback: debounced save of memory state (fires every 1s).
+/// Follows same pattern as autosaveCallback.
+fn memoryDebounceSaveCallback(ud: ?*anyopaque) callconv(.c) c_int {
+    const self: *Self = @ptrCast(@alignCast(ud orelse return 0));
+    const priv = self.private();
+    if (priv.memory_manager) |*mgr| {
+        mgr.debouncedSave();
+    }
+    return 1; // Return 1 to keep the timer running
+}
+
+/// GLib timer callback: periodic process inspection via /proc (fires every N seconds).
+fn memoryProcInspectCallback(ud: ?*anyopaque) callconv(.c) c_int {
+    const self: *Self = @ptrCast(@alignCast(ud orelse return 0));
+    const priv = self.private();
+    var mgr = &(priv.memory_manager orelse return 1);
+
+    // Iterate all surfaces, inspect shell children for those without recent shell hook events
+    // This is the fallback detection — it fills in state for surfaces that don't have
+    // shell integration loaded.
+    // Implementation note: iterate workspace_tab_views to find surfaces,
+    // get their shell PIDs, call process_inspector.inspectShellChildren(),
+    // and update state via mgr.handleCommandEvent() with detection_method = .proc_inspection
+    _ = mgr;
+
+    return 1; // Return 1 to keep the timer running
+}
+```
+
 - [ ] **Step 3: Add shutdown persistence to deinit**
 
 In the application's `deinit()` function, before `priv.termplex_cfg.deinit()` (around line 760), add:
@@ -1958,16 +2037,22 @@ if (priv.memory_manager) |*mgr| {
             const manifest_path = std.fmt.allocPrint(alloc, "{s}/resume_manifest.txt", .{priv.termplex_cfg.orchestration.dir}) catch null;
             defer if (manifest_path) |p| alloc.free(p);
             if (manifest_path) |path| {
-                try paths_mod.ensureDir(priv.termplex_cfg.orchestration.dir);
+                try memory_paths.ensureDir(priv.termplex_cfg.orchestration.dir);
                 const mf = std.fs.createFileAbsolute(path, .{}) catch null;
                 if (mf) |f| {
                     defer f.close();
                     f.writeAll(m) catch {};
                     log.info("resume manifest written to {s}", .{path});
                 }
-                // Set environment variable so the agent process can find it.
-                // The agent command launch code should pass this env var.
-                std.process.setEnvVar("TERMPLEX_RESUME_MANIFEST", path) catch {};
+                // Set environment variable so the orchestrator agent can find it.
+                // Use POSIX setenv (std.process.setEnvVar does not exist in Zig 0.15.2).
+                // The agent command is launched as a child process of the terminal,
+                // which inherits this env var.
+                const path_z = alloc.dupeZ(u8, path) catch null;
+                defer if (path_z) |p| alloc.free(p);
+                if (path_z) |pz| {
+                    _ = std.c.setenv("TERMPLEX_RESUME_MANIFEST", pz.ptr, 1);
+                }
             }
         }
     }
