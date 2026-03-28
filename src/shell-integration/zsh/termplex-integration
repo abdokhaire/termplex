@@ -119,6 +119,8 @@ _termplex_deferred_init() {
                 # There might be an unclosed OSC 133 C. Close that.
                 builtin print -nu $_termplex_fd '\e]133;D\a'
             fi
+            # Report command completion to orchestrator memory (OSC 7337)
+            builtin print -nu $_termplex_fd '\e]7337;cmd_end;'$$';'$cmd_status'\a'
         fi
 
         builtin local mark1=$'%{\e]133;A;cl=line\a%}'
@@ -230,6 +232,8 @@ _termplex_deferred_init() {
         # belonging to the command (as if the user typed it into zle) rather
         # than command output.
         builtin print -nu $_termplex_fd '\e]133;C\a'
+        # Report command to orchestrator memory (OSC 7337)
+        builtin print -nu $_termplex_fd '\e]7337;cmd_start;'$$';'"${1//[[:cntrl:]]}"'\a'
         (( _termplex_state = 1 ))
     }
 
