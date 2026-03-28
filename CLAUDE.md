@@ -35,7 +35,7 @@ Termplex is a workspace-centric terminal multiplexer for Linux, forked from [Gho
 
 - **App ID:** `com.termplex.app`
 - **Binary:** `termplex-app`
-- **Config path:** `~/.config/termplex/config.termplex`
+- **Config path:** `~/.config/termplex/config.toml`
 - **State path:** `~/.local/state/termplex/`
 - **Cache path:** `~/.cache/termplex/`
 - **Env var prefix:** `TERMPLEX_`
