@@ -125,37 +125,45 @@ Human-readable and AI-readable knowledge that the orchestrator accumulates over 
 
 ### Mechanism 1: Shell Integration Hooks (Primary)
 
-Extend existing shell integration scripts with preexec and precmd hooks that report commands via OSC escape sequences.
+Extend the existing shell integration hooks to emit additional OSC escape sequences for command tracking. The `__termplex_preexec` and `__termplex_precmd` functions already exist in `src/shell-integration/bash/termplex.bash` (and equivalents for other shells) for semantic prompt marking (OSC 133). We add OSC 7337 emissions to these existing functions — not new functions.
 
-**OSC 7337 protocol:**
+**OSC 7337 protocol** (private-use range, no known conflicts with iTerm2/Kitty/WezTerm/Ghostty OSC sequences):
 
 ```
 Command start:  ESC ] 7337 ; cmd_start ; <shell_pid> ; <command_string> BEL
 Command end:    ESC ] 7337 ; cmd_end ; <shell_pid> ; <exit_code> BEL
 ```
 
-**Bash implementation (extend src/shell-integration/bash/termplex.bash):**
+**Bash implementation (extend existing hooks in src/shell-integration/bash/termplex.bash):**
 
 ```bash
+# Added to the existing __termplex_preexec function (do NOT create a new function)
 __termplex_preexec() {
+    # ... existing OSC 133 prompt marking code ...
+    # NEW: report command to state manager
     printf '\e]7337;cmd_start;%s;%s\a' "$$" "$1"
 }
 
+# Added to the existing __termplex_precmd function (do NOT create a new function)
 __termplex_precmd() {
     local exit_code=$?
+    # ... existing OSC 133 prompt marking code ...
+    # NEW: report command completion to state manager
     printf '\e]7337;cmd_end;%s;%d\a' "$$" "$exit_code"
 }
 ```
 
-Similar hooks for zsh (preexec/precmd), fish (fish_preexec/fish_postexec), elvish, and nushell.
+Similar extensions for zsh (preexec/precmd), fish (fish_preexec/fish_postexec), elvish, and nushell — all extend existing hook functions.
 
 The terminal surface receives these OSC sequences, parses them, and forwards command start/end events to the state manager.
+
+**Shell PID to surface mapping:** Each terminal surface owns a PTY with a known child shell PID (the surface spawns the shell process and tracks its PID). When an OSC 7337 sequence arrives on a surface's PTY, the surface already knows its own identity — it forwards the event to the state manager tagged with the surface's UUID (from `getOrCreateSurfaceUuid()`, the same UUID system used by session persistence). No PID-to-surface lookup table is needed; the surface receiving the OSC sequence IS the surface.
 
 **Data captured via shell hooks:**
 - Exact command string
 - Start/end timing
 - Exit code
-- Shell PID (maps to surface)
+- Surface identity (implicit from which surface received the OSC sequence)
 
 ### Mechanism 2: Process Tree Inspection (Fallback)
 
@@ -318,13 +326,13 @@ src/termplex/core/memory/
   memory_paths.zig        — Resolves paths for global + per-workspace memory/state files
 ```
 
-### Shell Integration Extensions
+### Shell Integration Extensions (modify existing hook functions)
 
 ```
 src/shell-integration/
-  bash/termplex.bash      — Add __termplex_preexec / __termplex_precmd
-  zsh/termplex.zsh        — Add preexec / precmd hooks
-  fish/termplex.fish      — Add fish_preexec / fish_postexec
+  bash/termplex.bash      — Extend existing __termplex_preexec / __termplex_precmd with OSC 7337
+  zsh/termplex.zsh        — Extend existing preexec / precmd hooks with OSC 7337
+  fish/termplex.fish      — Extend existing fish_preexec / fish_postexec with OSC 7337
   elvish/                 — Extend if feasible
   nushell/                — Extend if feasible
 ```
@@ -345,15 +353,17 @@ Register OSC 7337 handler in terminal escape sequence parser. Routes parsed even
 
 ### Configuration
 
-New section in ~/.config/termplex/config.termplex:
+New `Memory` struct in `src/termplex/core/config.zig` (following the existing pattern of `Session`, `Orchestration` structs), exposed as `[memory]` section in `~/.config/termplex/config.toml`:
 
-```
+```toml
 [memory]
 enabled = true
 auto_resume = true
 flush_on_shutdown = true
 proc_inspect_interval = 30
 ```
+
+The global state.json path respects the configured `orchestration.dir` — it is stored at `<orchestration.dir>/state.json` (default: `~/.termplex/orchestration/state.json`).
 
 ### Relationship to Existing Session Persistence
 
