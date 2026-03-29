@@ -1,17 +1,24 @@
 # Termplex Orchestration Skill
 
-## What is Termplex?
+## Purpose
 
-Termplex is a workspace-centric terminal multiplexer. You are running inside the Orchestration Workspace — a special workspace that lets you manage all other workspaces, tabs, and terminals.
+This skill teaches an agent how to operate Termplex from the special `Orchestrator` workspace using `termplex-ctl`.
 
-You control Termplex using the `termplex-ctl` CLI tool, which communicates with Termplex over a Unix socket.
+Use it to:
+- inspect workspaces and tabs
+- send commands into terminals
+- read terminal output
+- track registered agents
+- check high-level runtime status
+
+`termplex-ctl` talks to Termplex over a Unix socket and returns JSON by default.
 
 ## Setup
 
-On startup, register yourself as an agent:
+When running inside the orchestrator tab, register on startup:
 
 ```bash
-termplex-ctl agent register --workspace "ORCHESTRATOR" --tab 0 --type claude --pid <your_pid>
+termplex-ctl agent register --workspace "Orchestrator" --tab 0 --type codex --pid <your_pid>
 ```
 
 On exit, unregister:
@@ -20,100 +27,162 @@ On exit, unregister:
 termplex-ctl agent unregister --pid <your_pid>
 ```
 
-## Commands Reference
+## Core Commands
 
-### Workspace Management
-
-```bash
-termplex-ctl workspace list                                    # List all workspaces
-termplex-ctl workspace create --name "backend" --dir ~/proj    # Create workspace
-termplex-ctl workspace select --name "backend"                 # Switch to workspace
-termplex-ctl workspace select --index 1                        # Switch by index
-termplex-ctl workspace close --name "backend"                  # Close workspace
-termplex-ctl workspace rename --name "old" --new-name "new"    # Rename workspace
-```
-
-### Tab Management
+### Workspace inspection
 
 ```bash
-termplex-ctl tab list --workspace "backend"                                    # List tabs
-termplex-ctl tab create --workspace "backend" --title "editor" --command vim   # Create tab with command
-termplex-ctl tab create --workspace "backend" --dir ~/proj/tests               # Create tab with dir
+termplex-ctl workspace list
+termplex-ctl status
 ```
 
-### Terminal Interaction
+Use `workspace list` to discover available workspaces and the active one.
+Use `status` for top-level runtime state reported by the server.
+
+### Workspace control
 
 ```bash
-termplex-ctl surface send --workspace "backend" --tab 0 "npm test\n"   # Send text (\n = Enter)
-termplex-ctl surface read --workspace "backend" --tab 0 --lines 30     # Read terminal output
+termplex-ctl workspace create --name "backend" --dir ~/projects/backend
+termplex-ctl workspace select --name "backend"
+termplex-ctl workspace select --index 1
+termplex-ctl workspace rename --name "old" --new-name "new"
+termplex-ctl workspace close --name "backend"
 ```
 
-### Agent Management
+### Tab inspection
 
 ```bash
-termplex-ctl agent list                                                        # List all agents
-termplex-ctl agent register --workspace "backend" --tab 0 --type claude --pid 1234   # Register
-termplex-ctl agent unregister --pid 1234                                       # Unregister
-termplex-ctl agent terminate --pid 1234                                        # Kill agent
+termplex-ctl tab list --workspace "backend"
 ```
+
+Use `tab list` after selecting or creating a workspace to discover tab indices.
+
+### Tab creation
+
+```bash
+termplex-ctl tab create --workspace "backend" --title "editor" --command "nvim"
+termplex-ctl tab create --workspace "backend" --title "server" --command "npm run dev"
+termplex-ctl tab create --workspace "backend" --title "tests" --dir ~/projects/backend
+```
+
+### Terminal interaction
+
+```bash
+termplex-ctl surface send --workspace "backend" --tab 1 "npm test\n"
+termplex-ctl surface read --workspace "backend" --tab 1 --lines 50
+```
+
+Use `surface send` to type into a terminal.
+Use `surface read` to inspect what is running or what command output was produced.
+
+### Agent inspection
+
+```bash
+termplex-ctl agent list
+termplex-ctl agent register --workspace "backend" --tab 0 --type claude --pid 1234
+termplex-ctl agent terminate --pid 1234
+```
+
+`agent list` is the authoritative way to see which AI agents have registered with Termplex.
 
 ### Utility
 
 ```bash
-termplex-ctl ping       # Check if Termplex is running
-termplex-ctl status     # Get system status
+termplex-ctl ping
+termplex-ctl status
 ```
 
-## Workflow Patterns
+## How To Inspect A Workspace
 
-### Create a development workspace
+To learn what exists in a workspace:
 
 ```bash
-termplex-ctl workspace create --name "backend" --dir ~/projects/backend
-termplex-ctl tab create --workspace "backend" --title "editor" --command "nvim"
-termplex-ctl tab create --workspace "backend" --title "server" --command "npm run dev"
-termplex-ctl tab create --workspace "backend" --title "tests"
+termplex-ctl workspace list
+termplex-ctl tab list --workspace "backend"
 ```
 
-### Run a command and check output
+To learn what is running in a tab:
 
 ```bash
-termplex-ctl surface send --workspace "backend" --tab 2 "npm test\n"
-sleep 5
-termplex-ctl surface read --workspace "backend" --tab 2 --lines 30
+termplex-ctl surface read --workspace "backend" --tab 0 --lines 80
 ```
 
-### Launch a sub-agent in a workspace
+To interact and verify:
 
 ```bash
-termplex-ctl tab create --workspace "backend" --title "code-review" --command "claude"
-termplex-ctl agent list  # Check it registered
+termplex-ctl surface send --workspace "backend" --tab 0 "pwd\n"
+termplex-ctl surface send --workspace "backend" --tab 0 "ps\n"
+termplex-ctl surface read --workspace "backend" --tab 0 --lines 80
 ```
 
-### Check all running agents
+To see AI-managed tabs and agents:
 
 ```bash
 termplex-ctl agent list
 ```
 
-## Output Format
+## Important Limitation
 
-All commands return JSON by default:
+Termplex does not currently expose a dedicated per-workspace process inventory API.
+
+An agent should infer "what is running" from:
+- `tab list` for workspace structure
+- `surface read` for terminal output
+- commands it sends with `surface send`
+- `agent list` for registered AI agents
+- `status` for server-level state
+
+If you need process-level detail inside a workspace, send a shell command into the target terminal and then read the output back.
+
+## Workflow Patterns
+
+### Create and inspect a development workspace
+
+```bash
+termplex-ctl workspace create --name "backend" --dir ~/projects/backend
+termplex-ctl tab create --workspace "backend" --title "server" --command "npm run dev"
+termplex-ctl tab create --workspace "backend" --title "tests"
+termplex-ctl tab list --workspace "backend"
+termplex-ctl surface read --workspace "backend" --tab 0 --lines 50
+```
+
+### Run a command and check the result
+
+```bash
+termplex-ctl surface send --workspace "backend" --tab 1 "npm test\n"
+sleep 3
+termplex-ctl surface read --workspace "backend" --tab 1 --lines 80
+```
+
+### Probe the environment in a tab
+
+```bash
+termplex-ctl surface send --workspace "backend" --tab 0 "pwd\n"
+termplex-ctl surface send --workspace "backend" --tab 0 "ls\n"
+termplex-ctl surface read --workspace "backend" --tab 0 --lines 80
+```
+
+## Output
+
+Commands return JSON by default:
 
 ```json
 {"ok": true, "result": {...}, "id": 1}
 {"ok": false, "error": {"code": "...", "message": "..."}, "id": 1}
 ```
 
-Add `--human` for readable output: `termplex-ctl --human workspace list`
+Use human-readable output when needed:
+
+```bash
+termplex-ctl --human workspace list
+```
 
 ## Guidelines
 
-- Always register yourself as an agent on startup
-- Always unregister on exit
-- Use `--workspace` and `--tab` flags explicitly
-- Parse JSON output for reliable automation
-- Tab indices shift when tabs are closed — re-query `tab list` after closing tabs
-- Check `agent list` before spawning duplicate agents
-- Use `surface send` with `\n` to simulate pressing Enter
-- `surface read` returns plain text (ANSI escapes stripped)
+- Register on startup and unregister on exit.
+- Prefer explicit `--workspace` and `--tab` flags.
+- Re-run `tab list` after creating or closing tabs because indices can shift.
+- Use `surface read` as the main way to inspect live terminal state.
+- Use `agent list` before creating another agent tab for the same task.
+- Use `surface send` with `\n` to press Enter.
+- Treat `Orchestrator` as the reserved orchestration workspace name.
