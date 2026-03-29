@@ -596,15 +596,10 @@ pub const Application = extern struct {
             // Start debounce timer (1 second interval) for state persistence
             priv.memory_debounce_timer = glib.timeoutAdd(1000, memoryDebounceSaveCallback, self);
 
-            // Start proc inspection timer if configured
-            const interval: u64 = priv.termplex_cfg.memory.proc_inspect_interval;
-            if (interval > 0) {
-                const interval_ms: c_uint = @intCast(@min(
-                    interval * 1000,
-                    @as(u64, std.math.maxInt(c_uint)),
-                ));
-                priv.memory_proc_timer = glib.timeoutAdd(interval_ms, memoryProcInspectCallback, self);
-            }
+            // Proc inspection timer deferred to v2 — shell hooks are the
+            // primary detection mechanism.  The memory_proc_timer field is
+            // retained so the timer can be wired up in a future version
+            // without changing the Private struct layout.
         }
 
         // Termplex: create the default "Workspace 1" (name, dir, and TabView).
@@ -4025,13 +4020,9 @@ pub const Application = extern struct {
         return @intFromBool(glib.SOURCE_CONTINUE);
     }
 
-    /// GLib timer callback: periodic process inspection via /proc.
-    /// For v1, this is a no-op placeholder. Full proc inspection requires
-    /// iterating all surfaces to get shell PIDs, which is complex.
-    /// Shell hooks are the primary detection mechanism.
-    fn memoryProcInspectCallback(_: ?*anyopaque) callconv(.c) c_int {
-        return @intFromBool(glib.SOURCE_CONTINUE);
-    }
+    // memoryProcInspectCallback deferred to v2 — shell hooks are the
+    // primary detection mechanism. Proc inspection requires iterating
+    // all surfaces to get shell PIDs, which is complex.
 
     /// Collect current state and atomically write it to the session JSON file.
     fn autosaveSession(self: *Self) void {
@@ -4345,13 +4336,51 @@ pub const Application = extern struct {
                 };
                 defer if (global_memory_owned) alloc.free(global_memory);
 
-                // Build manifest (no per-workspace memories for v1 simplicity)
+                // Read per-workspace memory.md files
+                var ws_mem_names: std.ArrayListUnmanaged([]const u8) = .empty;
+                var ws_mem_contents: std.ArrayListUnmanaged([]const u8) = .empty;
+                // Track which contents were heap-allocated for cleanup
+                var ws_mem_owned: std.ArrayListUnmanaged(bool) = .empty;
+                defer {
+                    for (ws_mem_contents.items, ws_mem_owned.items) |content, owned| {
+                        if (owned) alloc.free(content);
+                    }
+                    ws_mem_names.deinit(alloc);
+                    ws_mem_contents.deinit(alloc);
+                    ws_mem_owned.deinit(alloc);
+                }
+
+                for (mem_state.workspace_names, mem_state.workspaces) |ws_name_m, ws| {
+                    var wp = memory_paths.resolveWorkspacePaths(alloc, ws.dir) catch continue;
+                    defer wp.deinit(alloc);
+
+                    const ws_memory: []const u8 = blk: {
+                        const f = std.fs.openFileAbsolute(wp.memory_md, .{}) catch break :blk "";
+                        defer f.close();
+                        break :blk f.readToEndAlloc(alloc, 1024 * 1024) catch break :blk "";
+                    };
+                    const owned = ws_memory.len > 0;
+
+                    ws_mem_names.append(alloc, ws_name_m) catch continue;
+                    ws_mem_contents.append(alloc, ws_memory) catch {
+                        if (owned) alloc.free(ws_memory);
+                        continue;
+                    };
+                    ws_mem_owned.append(alloc, owned) catch {
+                        // Pop the content we just added since we can't track ownership
+                        _ = ws_mem_contents.pop();
+                        if (owned) alloc.free(ws_memory);
+                        continue;
+                    };
+                }
+
+                // Build manifest with per-workspace memories
                 const manifest = memory_resume.buildManifest(
                     alloc,
                     mem_state,
                     global_memory,
-                    &.{},
-                    &.{},
+                    ws_mem_names.items,
+                    ws_mem_contents.items,
                 ) catch null;
                 defer if (manifest) |m| alloc.free(m);
 
@@ -4861,9 +4890,15 @@ pub const Application = extern struct {
         else
             "/tmp";
 
+        // Use shell PID as a unique surface identifier. Each terminal surface
+        // has a unique shell PID, so this avoids state collisions in
+        // multi-terminal workspaces. A proper UUID mapping is deferred to v2.
+        var surf_id_buf: [32]u8 = undefined;
+        const surface_id = std.fmt.bufPrint(&surf_id_buf, "shell-{d}", .{pid}) catch "unknown";
+
         const event = memory_state_mgr.CommandEvent{
             .kind = kind,
-            .surface_uuid = "unknown", // Surface UUID tracking deferred to future version
+            .surface_uuid = surface_id,
             .workspace_name = ws_name,
             .workspace_dir = ws_dir,
             .command = if (kind == .start) data else null,

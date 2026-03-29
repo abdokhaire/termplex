@@ -14,10 +14,33 @@ const paths_mod = @import("paths.zig");
 
 const log = std.log.scoped(.memory_state);
 
+const epoch = std.time.epoch;
+
 const MemoryState = state_mod.MemoryState;
 const SurfaceState = state_mod.SurfaceState;
 const WorkspaceState = state_mod.WorkspaceState;
 const DetectionMethod = state_mod.DetectionMethod;
+
+/// Format the current time as an ISO 8601 UTC string (e.g. "2026-03-28T14:30:00Z").
+/// Caller owns the returned slice.
+fn iso8601Now(allocator: std.mem.Allocator) ![]const u8 {
+    const ts = std.time.timestamp();
+    const secs: u64 = @intCast(if (ts < 0) 0 else ts);
+    const es = epoch.EpochSeconds{ .secs = secs };
+    const epoch_day = es.getEpochDay();
+    const day_seconds = es.getDaySeconds();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+
+    return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+        year_day.year,
+        month_day.month.numeric(),
+        @as(u32, month_day.day_index) + 1,
+        day_seconds.getHoursIntoDay(),
+        day_seconds.getMinutesIntoHour(),
+        day_seconds.getSecondsIntoMinute(),
+    });
+}
 
 /// A command event received from a shell hook (OSC 7337).
 pub const CommandEvent = struct {
@@ -112,9 +135,8 @@ pub const StateManager = struct {
     pub fn markShutdown(self: *StateManager) void {
         const s = &(self.state orelse return);
 
-        // Update last_shutdown with current timestamp.
-        const now = std.time.timestamp();
-        const ts = std.fmt.allocPrint(self.allocator, "{d}", .{now}) catch return;
+        // Update last_shutdown with current ISO 8601 timestamp.
+        const ts = iso8601Now(self.allocator) catch return;
 
         if (s.last_shutdown) |old| self.allocator.free(old);
         s.last_shutdown = ts;
@@ -146,7 +168,7 @@ pub const StateManager = struct {
                 log.warn("failed to init memory state: {}", .{err});
                 return;
             };
-            const now_ts = std.fmt.allocPrint(self.allocator, "{d}", .{std.time.timestamp()}) catch |err| {
+            const now_ts = iso8601Now(self.allocator) catch |err| {
                 self.allocator.free(ws_names);
                 self.allocator.free(wss);
                 log.warn("failed to init memory state: {}", .{err});
@@ -193,7 +215,7 @@ pub const StateManager = struct {
                 if (surface.last_command) |old| self.allocator.free(old);
                 surface.last_command = if (event.command) |c| self.allocator.dupe(u8, c) catch null else null;
 
-                const now_str = std.fmt.allocPrint(self.allocator, "{d}", .{std.time.timestamp()}) catch null;
+                const now_str = iso8601Now(self.allocator) catch null;
                 if (surface.command_started_at) |old| self.allocator.free(old);
                 surface.command_started_at = now_str;
 
