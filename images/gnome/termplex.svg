@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="shell" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f1923"/>
+      <stop offset="100%" stop-color="#182536"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#142131"/>
+      <stop offset="100%" stop-color="#0d1621"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6ff3ff"/>
+      <stop offset="100%" stop-color="#00c6ee"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="228" fill="url(#shell)"/>
+  <rect x="28" y="28" width="968" height="968" rx="204" fill="none" stroke="#243447" stroke-width="12"/>
+
+  <rect x="118" y="118" width="788" height="788" rx="88" fill="#101923" stroke="#243447" stroke-width="8"/>
+  <rect x="118" y="118" width="210" height="788" rx="88" fill="url(#panel)"/>
+  <rect x="328" y="118" width="578" height="112" fill="#162232"/>
+  <rect x="328" y="230" width="578" height="676" fill="#182434"/>
+
+  <circle cx="388" cy="174" r="11" fill="#00d4ff"/>
+  <circle cx="425" cy="174" r="11" fill="#4ade80"/>
+  <circle cx="462" cy="174" r="11" fill="#f59e0b"/>
+
+  <rect x="162" y="186" width="116" height="12" rx="6" fill="#31445b"/>
+  <rect x="162" y="230" width="92" height="10" rx="5" fill="#31445b"/>
+  <rect x="162" y="274" width="76" height="10" rx="5" fill="#31445b"/>
+
+  <rect x="156" y="380" width="12" height="140" rx="6" fill="url(#accent)"/>
+  <rect x="188" y="398" width="102" height="12" rx="6" fill="#def9ff"/>
+  <rect x="188" y="442" width="72" height="10" rx="5" fill="#6f8198"/>
+
+  <rect x="156" y="586" width="136" height="86" rx="22" fill="#112433" stroke="#1f6178" stroke-width="4"/>
+  <path d="M197 629l26-30h23l-26 30 26 30h-23z" fill="url(#accent)"/>
+  <rect x="233" y="620" width="36" height="18" rx="9" fill="#c7f6ff"/>
+
+  <path d="M430 442l92 92-92 92" fill="none" stroke="url(#accent)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="584" y="518" width="186" height="34" rx="17" fill="#dbf9ff"/>
+
+  <rect x="402" y="660" width="324" height="128" rx="30" fill="#1d3245" stroke="#245872" stroke-width="6"/>
+  <rect x="446" y="706" width="198" height="12" rx="6" fill="#7b8ea6"/>
+  <rect x="446" y="744" width="138" height="12" rx="6" fill="#7b8ea6"/>
+</svg>
