@@ -1762,9 +1762,25 @@ pub const Window = extern struct {
     }
 
     fn termplexOnChangeDirComplete(index: u32, new_dir: [:0]const u8, userdata: ?*anyopaque) void {
-        _ = userdata;
         const app = Application.default();
-        app.changeWorkspaceDir(index, new_dir);
+        const result = app.changeWorkspaceDir(index, new_dir);
+        const win: *Self = @ptrCast(@alignCast(userdata orelse return));
+
+        switch (result) {
+            .updated => {},
+            .duplicate => {
+                const toast = adw.Toast.new("A workspace for that directory already exists");
+                win.private().toast_overlay.addToast(toast);
+            },
+            .invalid_index => {
+                const toast = adw.Toast.new("Workspace no longer exists");
+                win.private().toast_overlay.addToast(toast);
+            },
+            .oom => {
+                const toast = adw.Toast.new("Failed to update workspace directory");
+                win.private().toast_overlay.addToast(toast);
+            },
+        }
     }
 
     pub fn closeWorkspace(self: *Self, index: u32) void {

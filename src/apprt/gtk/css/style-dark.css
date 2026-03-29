@@ -15,7 +15,7 @@
 
 .termplex-sidebar {
   background-color: #131d2b;
-  border-right: 1px solid #243447;
+  border-right: none;
 }
 
 .termplex-sidebar list,
@@ -42,7 +42,7 @@
   color: #00d4ff;
   padding: 14px 16px;
   letter-spacing: 3px;
-  border-bottom: 1px solid #243447;
+  border-bottom: none;
 }
 
 .termplex-tab-port {
