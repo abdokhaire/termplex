@@ -112,6 +112,25 @@ pub const Memory = struct {
     proc_inspect_interval: u32,
 };
 
+/// Terminal transcript and command history persistence configuration.
+pub const TerminalHistory = struct {
+    /// Terminal transcript persistence is enabled by default for developer productivity.
+    /// It stores local command output and command metadata, which may include secrets.
+    enabled: bool,
+    /// "off", "layout_only", or "transcript".
+    restore_mode: []const u8,
+    /// Maximum retained transcript lines for each terminal surface.
+    max_lines_per_surface: u32,
+    /// Maximum retained transcript bytes for each terminal surface.
+    max_bytes_per_surface: u64,
+    /// Whether alternate-screen output should be captured.
+    persist_alternate_screen: bool,
+    /// Show a restore marker before a fresh shell starts below replayed output.
+    replay_notice: bool,
+    /// Remove transcript and metadata older than this many days. 0 disables retention cleanup.
+    retention_days: u32,
+};
+
 /// Top-level Termplex configuration.
 ///
 /// All heap-allocated strings are owned by this struct. Call `deinit` to free.
@@ -139,6 +158,9 @@ pub const TermplexConfig = struct {
 
     // [memory]
     memory: Memory,
+
+    // [terminal_history]
+    terminal_history: TerminalHistory,
 
     /// Internal flag: true when all string fields are heap-allocated (dups).
     _owned: bool,
@@ -196,6 +218,15 @@ pub const TermplexConfig = struct {
                 .flush_on_shutdown = true,
                 .proc_inspect_interval = 30,
             },
+            .terminal_history = .{
+                .enabled = true,
+                .restore_mode = "transcript",
+                .max_lines_per_surface = 5000,
+                .max_bytes_per_surface = 10 * 1024 * 1024,
+                .persist_alternate_screen = false,
+                .replay_notice = true,
+                .retention_days = 90,
+            },
             ._owned = false,
         };
     }
@@ -230,6 +261,7 @@ pub const TermplexConfig = struct {
             self.allocator.free(self.orchestration.dir);
             self.allocator.free(self.orchestration.agent_command);
             self.allocator.free(self.orchestration.agent_terminate_policy);
+            self.allocator.free(self.terminal_history.restore_mode);
         }
         self._owned = false;
     }
@@ -342,6 +374,8 @@ pub fn parseConfig(allocator: std.mem.Allocator, toml: []const u8) !TermplexConf
     errdefer allocator.free(orch_agent_command);
     var orch_agent_terminate_policy = try allocator.dupe(u8, cfg.orchestration.agent_terminate_policy);
     errdefer allocator.free(orch_agent_terminate_policy);
+    var terminal_history_restore_mode = try allocator.dupe(u8, cfg.terminal_history.restore_mode);
+    errdefer allocator.free(terminal_history_restore_mode);
 
     // Current section name (empty string = before any section header).
     var current_section: []const u8 = "";
@@ -465,6 +499,29 @@ pub fn parseConfig(allocator: std.mem.Allocator, toml: []const u8) !TermplexConf
             } else if (std.mem.eql(u8, key, "proc_inspect_interval")) {
                 cfg.memory.proc_inspect_interval = std.fmt.parseInt(u32, value, 10) catch continue;
             }
+        } else if (std.mem.eql(u8, current_section, "terminal_history")) {
+            if (std.mem.eql(u8, key, "enabled")) {
+                cfg.terminal_history.enabled = parseBool(value) orelse cfg.terminal_history.enabled;
+            } else if (std.mem.eql(u8, key, "restore_mode")) {
+                const mode = unquote(value);
+                if (std.mem.eql(u8, mode, "off") or
+                    std.mem.eql(u8, mode, "layout_only") or
+                    std.mem.eql(u8, mode, "transcript"))
+                {
+                    allocator.free(terminal_history_restore_mode);
+                    terminal_history_restore_mode = try allocator.dupe(u8, mode);
+                }
+            } else if (std.mem.eql(u8, key, "max_lines_per_surface")) {
+                cfg.terminal_history.max_lines_per_surface = std.fmt.parseInt(u32, value, 10) catch continue;
+            } else if (std.mem.eql(u8, key, "max_bytes_per_surface")) {
+                cfg.terminal_history.max_bytes_per_surface = std.fmt.parseInt(u64, value, 10) catch continue;
+            } else if (std.mem.eql(u8, key, "persist_alternate_screen")) {
+                cfg.terminal_history.persist_alternate_screen = parseBool(value) orelse cfg.terminal_history.persist_alternate_screen;
+            } else if (std.mem.eql(u8, key, "replay_notice")) {
+                cfg.terminal_history.replay_notice = parseBool(value) orelse cfg.terminal_history.replay_notice;
+            } else if (std.mem.eql(u8, key, "retention_days")) {
+                cfg.terminal_history.retention_days = std.fmt.parseInt(u32, value, 10) catch continue;
+            }
         }
         // Unknown sections/keys are silently ignored.
     }
@@ -489,6 +546,7 @@ pub fn parseConfig(allocator: std.mem.Allocator, toml: []const u8) !TermplexConf
     cfg.orchestration.dir = orch_dir;
     cfg.orchestration.agent_command = orch_agent_command;
     cfg.orchestration.agent_terminate_policy = orch_agent_terminate_policy;
+    cfg.terminal_history.restore_mode = terminal_history_restore_mode;
     cfg._owned = true;
 
     return cfg;
@@ -894,4 +952,42 @@ test "memory config parse" {
     try std.testing.expectEqual(false, cfg.memory.auto_resume);
     try std.testing.expectEqual(false, cfg.memory.flush_on_shutdown);
     try std.testing.expectEqual(@as(u32, 60), cfg.memory.proc_inspect_interval);
+}
+
+test "terminal history config defaults" {
+    const allocator = std.testing.allocator;
+    var cfg = TermplexConfig.default(allocator);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(true, cfg.terminal_history.enabled);
+    try std.testing.expectEqualStrings("transcript", cfg.terminal_history.restore_mode);
+    try std.testing.expectEqual(@as(u32, 5000), cfg.terminal_history.max_lines_per_surface);
+    try std.testing.expectEqual(@as(u64, 10 * 1024 * 1024), cfg.terminal_history.max_bytes_per_surface);
+    try std.testing.expectEqual(false, cfg.terminal_history.persist_alternate_screen);
+    try std.testing.expectEqual(true, cfg.terminal_history.replay_notice);
+    try std.testing.expectEqual(@as(u32, 90), cfg.terminal_history.retention_days);
+}
+
+test "terminal history config parse" {
+    const allocator = std.testing.allocator;
+    const toml =
+        \\[terminal_history]
+        \\enabled = false
+        \\restore_mode = "layout_only"
+        \\max_lines_per_surface = 200
+        \\max_bytes_per_surface = 1048576
+        \\persist_alternate_screen = true
+        \\replay_notice = false
+        \\retention_days = 14
+    ;
+    var cfg = try parseConfig(allocator, toml);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(false, cfg.terminal_history.enabled);
+    try std.testing.expectEqualStrings("layout_only", cfg.terminal_history.restore_mode);
+    try std.testing.expectEqual(@as(u32, 200), cfg.terminal_history.max_lines_per_surface);
+    try std.testing.expectEqual(@as(u64, 1048576), cfg.terminal_history.max_bytes_per_surface);
+    try std.testing.expectEqual(true, cfg.terminal_history.persist_alternate_screen);
+    try std.testing.expectEqual(false, cfg.terminal_history.replay_notice);
+    try std.testing.expectEqual(@as(u32, 14), cfg.terminal_history.retention_days);
 }
