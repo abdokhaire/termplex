@@ -23,4 +23,5 @@ else
 
 test {
     _ = entrypoint;
+    _ = @import("termplex/core/terminal_history.zig");
 }
