@@ -259,8 +259,9 @@ pub fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
         return std.fs.path.join(allocator, &[_][]const u8{ home, ".config", "termplex", "config.toml" });
     } else |_| {}
 
-    // Last resort: relative path.
-    return allocator.dupe(u8, ".config/termplex/config.toml");
+    // No absolute base path available — return an error instead of a
+    // relative path which would be unpredictable and fail on openFileAbsolute.
+    return error.NoHomeDir;
 }
 
 // ---------------------------------------------------------------------------

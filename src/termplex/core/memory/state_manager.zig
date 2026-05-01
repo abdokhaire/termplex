@@ -42,6 +42,12 @@ fn iso8601Now(allocator: std.mem.Allocator) ![]const u8 {
     });
 }
 
+fn refreshLastUpdated(self: *StateManager, s: *MemoryState) void {
+    const ts = iso8601Now(self.allocator) catch return;
+    self.allocator.free(s.last_updated);
+    s.last_updated = ts;
+}
+
 /// A command event received from a shell hook (OSC 7337).
 pub const CommandEvent = struct {
     pub const Kind = enum { start, end };
@@ -191,7 +197,10 @@ pub const StateManager = struct {
                 if (std.mem.eql(u8, name, event.workspace_name)) break :blk i;
             }
             // Create new workspace entry — grow the parallel arrays
-            self.growWorkspaceArrays(s, event) catch return;
+            self.growWorkspaceArrays(s, event) catch |err| {
+                log.warn("failed to grow workspace arrays: {}", .{err});
+                return;
+            };
             break :blk s.workspace_names.len - 1;
         };
 
@@ -203,7 +212,10 @@ pub const StateManager = struct {
                 if (std.mem.eql(u8, id, event.surface_uuid)) break :blk i;
             }
             // Create new surface entry — grow the parallel arrays
-            self.growSurfaceArrays(ws, event) catch return;
+            self.growSurfaceArrays(ws, event) catch |err| {
+                log.warn("failed to grow surface arrays: {}", .{err});
+                return;
+            };
             break :blk ws.surface_ids.len - 1;
         };
 
@@ -228,10 +240,15 @@ pub const StateManager = struct {
             },
         }
 
+        refreshLastUpdated(self, s);
         self.dirty = true;
     }
 
     /// Grow workspace_names and workspaces arrays by one entry.
+    ///
+    /// Both arrays are grown atomically: if the second allocation fails,
+    /// the first is rolled back so the parallel-array invariant
+    /// (workspace_names.len == workspaces.len) is preserved.
     fn growWorkspaceArrays(self: *StateManager, s: *MemoryState, event: CommandEvent) !void {
         const new_name = try self.allocator.dupe(u8, event.workspace_name);
         errdefer self.allocator.free(new_name);
@@ -248,17 +265,21 @@ pub const StateManager = struct {
             .surfaces = empty_surfs,
         };
 
-        // Grow names array
+        // Allocate both new arrays before mutating state so that an OOM
+        // on the second allocation doesn't leave the arrays out of sync.
         const old_names = s.workspace_names;
         const new_names = try self.allocator.alloc([]const u8, old_names.len + 1);
+        errdefer self.allocator.free(new_names);
+
+        const old_wss = s.workspaces;
+        const new_wss = try self.allocator.alloc(WorkspaceState, old_wss.len + 1);
+        // Both allocations succeeded — now it is safe to mutate state.
+
         @memcpy(new_names[0..old_names.len], old_names);
         new_names[old_names.len] = new_name;
         self.allocator.free(old_names);
         s.workspace_names = new_names;
 
-        // Grow workspaces array
-        const old_wss = s.workspaces;
-        const new_wss = try self.allocator.alloc(WorkspaceState, old_wss.len + 1);
         @memcpy(new_wss[0..old_wss.len], old_wss);
         new_wss[old_wss.len] = new_ws;
         self.allocator.free(old_wss);
@@ -266,6 +287,10 @@ pub const StateManager = struct {
     }
 
     /// Grow surface_ids and surfaces arrays by one entry.
+    ///
+    /// Both arrays are grown atomically: if the second allocation fails,
+    /// the first is rolled back so the parallel-array invariant
+    /// (surface_ids.len == surfaces.len) is preserved.
     fn growSurfaceArrays(self: *StateManager, ws: *WorkspaceState, event: CommandEvent) !void {
         const new_id = try self.allocator.dupe(u8, event.surface_uuid);
         errdefer self.allocator.free(new_id);
@@ -283,17 +308,21 @@ pub const StateManager = struct {
             .ports = empty_ports,
         };
 
-        // Grow ids array
+        // Allocate both new arrays before mutating state so that an OOM
+        // on the second allocation doesn't leave the arrays out of sync.
         const old_ids = ws.surface_ids;
         const new_ids = try self.allocator.alloc([]const u8, old_ids.len + 1);
+        errdefer self.allocator.free(new_ids);
+
+        const old_surfs = ws.surfaces;
+        const new_surfs = try self.allocator.alloc(SurfaceState, old_surfs.len + 1);
+        // Both allocations succeeded — now it is safe to mutate state.
+
         @memcpy(new_ids[0..old_ids.len], old_ids);
         new_ids[old_ids.len] = new_id;
         self.allocator.free(old_ids);
         ws.surface_ids = new_ids;
 
-        // Grow surfaces array
-        const old_surfs = ws.surfaces;
-        const new_surfs = try self.allocator.alloc(SurfaceState, old_surfs.len + 1);
         @memcpy(new_surfs[0..old_surfs.len], old_surfs);
         new_surfs[old_surfs.len] = new_surf;
         self.allocator.free(old_surfs);
@@ -443,6 +472,42 @@ test "state manager handle command end marks process dead" {
 
     const s = mgr.getState().?;
     try std.testing.expectEqual(false, s.workspaces[0].surfaces[0].process_alive);
+}
+
+test "state manager refreshes last_updated on subsequent command events" {
+    const allocator = std.testing.allocator;
+    var mgr = StateManager.init(allocator, "/tmp/test-orch");
+    defer mgr.deinit();
+
+    mgr.handleCommandEvent(.{
+        .kind = .start,
+        .surface_uuid = "test-uuid-1234",
+        .workspace_name = "backend",
+        .workspace_dir = "/home/user/backend",
+        .command = "pytest",
+        .shell_pid = 1234,
+        .exit_code = null,
+    });
+
+    const sentinel = "2000-01-01T00:00:00Z";
+    {
+        const s = &(mgr.state.?);
+        allocator.free(s.last_updated);
+        s.last_updated = try allocator.dupe(u8, sentinel);
+    }
+
+    mgr.handleCommandEvent(.{
+        .kind = .end,
+        .surface_uuid = "test-uuid-1234",
+        .workspace_name = "backend",
+        .workspace_dir = "/home/user/backend",
+        .command = null,
+        .shell_pid = 1234,
+        .exit_code = 0,
+    });
+
+    const s = mgr.getState().?;
+    try std.testing.expect(!std.mem.eql(u8, sentinel, s.last_updated));
 }
 
 test "state manager markShutdown marks all dead" {

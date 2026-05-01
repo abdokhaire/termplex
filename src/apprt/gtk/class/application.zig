@@ -50,6 +50,7 @@ const workspace_mod = @import("../../../termplex/core/workspace.zig");
 const termplex_config = @import("../../../termplex/core/config.zig");
 const agents = @import("../../../termplex/ipc/agents.zig");
 const memory_paths = @import("../../../termplex/core/memory/paths.zig");
+const memory_orchestrator_context = @import("../../../termplex/core/memory/orchestrator_context.zig");
 const memory_resume = @import("../../../termplex/core/memory/resume_manifest.zig");
 const memory_state = @import("../../../termplex/core/memory/state.zig");
 const memory_state_mgr = @import("../../../termplex/core/memory/state_manager.zig");
@@ -4245,7 +4246,7 @@ pub const Application = extern struct {
         const session_path = getSessionPath(alloc) orelse return;
         defer alloc.free(session_path);
 
-        const contents = std.fs.cwd().readFileAlloc(alloc, session_path, 1024 * 64) catch |err| {
+        const contents = std.fs.cwd().readFileAlloc(alloc, session_path, 1024 * 1024) catch |err| {
             switch (err) {
                 error.FileNotFound => log.debug("no session file found at {s}, using defaults", .{session_path}),
                 else => log.warn("session restore: failed to read {s}: {}", .{ session_path, err }),
@@ -4277,9 +4278,13 @@ pub const Application = extern struct {
         // Explicit 3 → v3 (v2 + tabs[] array with per-tab title).
         // Explicit 4 → v4 (v3 + workspace active_tab_index + per-tab dir).
         // Explicit 5 → v5 (full split/session snapshots per tab).
+        const max_supported_version: i64 = 5;
         const format_version: u32 = if (root.object.get("version")) |vv|
             switch (vv) {
-                .integer => |n| @as(u32, @intCast(std.math.clamp(n, 1, 5))),
+                .integer => |n| if (n < 1 or n > max_supported_version) {
+                    log.warn("session restore: unsupported format version {d}, expected 1-{d}", .{ n, max_supported_version });
+                    return;
+                } else @as(u32, @intCast(n)),
                 else => 1,
             }
         else
@@ -4855,7 +4860,6 @@ pub const Application = extern struct {
     /// Handle an orchestrator command event from a surface (triggered by OSC 7337).
     /// The payload format is "cmd_start;<pid>;<command>" or "cmd_end;<pid>;<exit_code>".
     pub fn handleOrchestratorCmd(self: *Self, core_surface: *CoreSurface, payload: []const u8) void {
-        _ = core_surface;
         const priv = self.private();
         var mgr = &(priv.memory_manager orelse return);
 
@@ -4878,17 +4882,7 @@ pub const Application = extern struct {
         const pid = std.fmt.parseInt(u32, rest[0..semi], 10) catch return;
         const data = rest[semi + 1 ..];
 
-        // Use the active workspace name and dir as a best-effort approximation.
-        // Full per-surface workspace lookup is deferred to a future version.
-        const ws_idx = priv.active_workspace_idx;
-        const ws_name: []const u8 = if (ws_idx < priv.workspace_names.items.len)
-            priv.workspace_names.items[ws_idx]
-        else
-            "default";
-        const ws_dir: []const u8 = if (ws_idx < priv.workspace_dirs.items.len)
-            priv.workspace_dirs.items[ws_idx]
-        else
-            "/tmp";
+        const resolved_context = self.resolveOrchestratorSurfaceContext(core_surface);
 
         // Use shell PID as a unique surface identifier. Each terminal surface
         // has a unique shell PID, so this avoids state collisions in
@@ -4899,8 +4893,8 @@ pub const Application = extern struct {
         const event = memory_state_mgr.CommandEvent{
             .kind = kind,
             .surface_uuid = surface_id,
-            .workspace_name = ws_name,
-            .workspace_dir = ws_dir,
+            .workspace_name = resolved_context.workspace_name,
+            .workspace_dir = resolved_context.workspace_dir,
             .command = if (kind == .start) data else null,
             .shell_pid = pid,
             .exit_code = if (kind == .end) std.fmt.parseInt(i32, data, 10) catch null else null,
@@ -4908,6 +4902,65 @@ pub const Application = extern struct {
 
         mgr.handleCommandEvent(event);
         log.info("orchestrator cmd: {s}", .{payload});
+    }
+
+    fn resolveOrchestratorSurfaceContext(self: *Self, core_surface: *CoreSurface) memory_orchestrator_context.ResolvedSurfaceContext {
+        const priv = self.private();
+        const alloc = self.allocator();
+        const ws_idx = priv.active_workspace_idx;
+        const fallback_workspace_name: []const u8 = if (ws_idx < priv.workspace_names.items.len)
+            priv.workspace_names.items[ws_idx]
+        else
+            "default";
+        const fallback_workspace_dir: []const u8 = if (ws_idx < priv.workspace_dirs.items.len)
+            priv.workspace_dirs.items[ws_idx]
+        else
+            "/tmp";
+
+        var contexts: std.ArrayListUnmanaged(memory_orchestrator_context.SurfaceContext) = .empty;
+        defer contexts.deinit(alloc);
+
+        for (priv.workspace_tab_views.items, 0..) |tab_view, workspace_idx| {
+            const workspace_name: []const u8 = if (workspace_idx < priv.workspace_names.items.len)
+                priv.workspace_names.items[workspace_idx]
+            else
+                fallback_workspace_name;
+            const workspace_dir: []const u8 = if (workspace_idx < priv.workspace_dirs.items.len)
+                priv.workspace_dirs.items[workspace_idx]
+            else
+                fallback_workspace_dir;
+
+            var tab_idx: c_int = 0;
+            while (tab_idx < tab_view.getNPages()) : (tab_idx += 1) {
+                const page = tab_view.getNthPage(tab_idx);
+                const tab = gobject.ext.cast(Tab, page.getChild()) orelse continue;
+                {
+                    const entries = collectTabSurfaceEntries(tab, alloc) orelse continue;
+                    defer alloc.free(entries);
+
+                    for (entries) |entry| {
+                        const candidate_core_surface = entry.surface.core() orelse continue;
+                        contexts.append(alloc, .{
+                            .core_surface_ptr = @intFromPtr(candidate_core_surface),
+                            .workspace_name = workspace_name,
+                            .workspace_dir = workspace_dir,
+                        }) catch {
+                            return .{
+                                .workspace_name = fallback_workspace_name,
+                                .workspace_dir = fallback_workspace_dir,
+                            };
+                        };
+                    }
+                }
+            }
+        }
+
+        return memory_orchestrator_context.selectSurfaceContext(
+            fallback_workspace_name,
+            fallback_workspace_dir,
+            contexts.items,
+            @intFromPtr(core_surface),
+        );
     }
 
     // -----------------------------------------------------------------

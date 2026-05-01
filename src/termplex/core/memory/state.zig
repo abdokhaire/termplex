@@ -176,7 +176,7 @@ pub fn fromJson(allocator: std.mem.Allocator, json_str: []const u8) !?MemoryStat
     // Version check
     const version_val = obj.get("version") orelse return null;
     const version = switch (version_val) {
-        .integer => |i| @as(u32, @intCast(i)),
+        .integer => |i| if (i < 0 or i > std.math.maxInt(u32)) return null else @as(u32, @intCast(i)),
         else => return null,
     };
     if (version != CURRENT_VERSION) return error.UnsupportedVersion;
@@ -296,7 +296,7 @@ fn parseSurface(allocator: std.mem.Allocator, val: std.json.Value) !SurfaceState
     const process_pid: ?u32 = blk: {
         const pid_val = obj.get("process_pid") orelse break :blk null;
         switch (pid_val) {
-            .integer => |i| break :blk @as(u32, @intCast(i)),
+            .integer => |i| break :blk if (i < 0 or i > std.math.maxInt(u32)) null else @as(u32, @intCast(i)),
             .null => break :blk null,
             else => break :blk null,
         }
@@ -326,7 +326,11 @@ fn parseSurface(allocator: std.mem.Allocator, val: std.json.Value) !SurfaceState
         if (ports_val == .array) {
             for (ports_val.array.items) |p| {
                 switch (p) {
-                    .integer => |i| try ports_list.append(allocator, @as(u16, @intCast(i))),
+                    .integer => |i| {
+                        if (i >= 0 and i <= std.math.maxInt(u16)) {
+                            try ports_list.append(allocator, @as(u16, @intCast(i)));
+                        }
+                    },
                     else => {},
                 }
             }

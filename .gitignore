@@ -29,3 +29,6 @@ vgcore.*
 parts/
 prime/
 stage/
+
+.remember/
+.superpowers/

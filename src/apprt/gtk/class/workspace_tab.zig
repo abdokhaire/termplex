@@ -406,6 +406,14 @@ pub const WorkspaceTab = extern struct {
         }
         // When dir_text is null, keep current label text visible (no else branch).
 
+        // Update name label CSS class for active state.
+        const name_widget = priv.name_label.as(gtk.Widget);
+        if (is_active) {
+            name_widget.addCssClass("termplex-tab-name-active");
+        } else {
+            name_widget.removeCssClass("termplex-tab-name-active");
+        }
+
         // Update left border CSS classes for active / unread state.
         const border_widget = priv.left_border.as(gtk.Widget);
         if (is_active) {

@@ -115,8 +115,9 @@ pub fn getSessionPath(allocator: std.mem.Allocator) ![]u8 {
         return std.fs.path.join(allocator, &[_][]const u8{ home, ".local", "state", "termplex", "session.json" });
     } else |_| {}
 
-    // Last resort: use a relative path (unlikely in practice).
-    return allocator.dupe(u8, ".local/state/termplex/session.json");
+    // No absolute base path available — return an error instead of a
+    // relative path which would be unpredictable and fail on openFileAbsolute.
+    return error.NoHomeDir;
 }
 
 // ---------------------------------------------------------------------------

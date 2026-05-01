@@ -20,7 +20,7 @@ pub const AgentType = enum {
 };
 
 pub const Agent = struct {
-    agent_id: [6]u8, // hex string
+    agent_id: [8]u8, // hex string (full u32 range)
     workspace: []const u8, // workspace name (owned)
     tab: u32,
     agent_type: AgentType,
@@ -48,10 +48,10 @@ pub const AgentRegistry = struct {
     }
 
     /// Register a new agent. Returns the agent_id hex string.
-    pub fn register(self: *AgentRegistry, workspace: []const u8, tab: u32, agent_type: AgentType, pid: i32) ![6]u8 {
-        // Generate agent_id from counter
-        var id_buf: [6]u8 = undefined;
-        _ = std.fmt.bufPrint(&id_buf, "{x:0>6}", .{self.next_id}) catch return error.OutOfMemory;
+    pub fn register(self: *AgentRegistry, workspace: []const u8, tab: u32, agent_type: AgentType, pid: i32) ![8]u8 {
+        // Generate agent_id from counter (8 hex chars covers full u32 range)
+        var id_buf: [8]u8 = undefined;
+        _ = std.fmt.bufPrint(&id_buf, "{x:0>8}", .{self.next_id}) catch return error.OutOfMemory;
         self.next_id += 1;
 
         const ws_owned = try self.allocator.dupe(u8, workspace);
@@ -163,7 +163,7 @@ test "agent registry register and unregister" {
 
     const id = try registry.register("backend", 0, .claude, 12345);
     try std.testing.expectEqual(@as(usize, 1), registry.agents.items.len);
-    try std.testing.expectEqualStrings("000001", &id);
+    try std.testing.expectEqualStrings("00000001", &id);
 
     const found = registry.unregister(12345);
     try std.testing.expect(found);

@@ -1,3 +1,68 @@
 .transparent {
   background-color: transparent;
 }
+
+/* ----- High-contrast dark overrides for Termplex sidebar ----- */
+
+.termplex-sidebar {
+  background-color: #000000;
+  border-right: 1px solid #ffffff;
+}
+
+.termplex-tab-name {
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.termplex-tab-name-active {
+  color: #ffffff;
+}
+
+.termplex-tab-dir {
+  color: #e0e0e0;
+}
+
+.termplex-sidebar-active {
+  background-color: #ffffff;
+}
+
+.termplex-sidebar-unread {
+  background-color: #ffff00;
+}
+
+.termplex-port-badge {
+  color: #00ff00;
+  font-weight: 700;
+}
+
+.termplex-tab-port {
+  color: #00ff00;
+}
+
+.termplex-tab-action:hover {
+  background-color: #ffffff;
+  color: #000000;
+}
+
+.termplex-tab-action-delete:hover {
+  background-color: #ff0000;
+  color: #ffffff;
+}
+
+.termplex-new-workspace-button {
+  border: 1px solid #ffffff;
+  color: #ffffff;
+}
+
+.termplex-new-workspace-button:hover {
+  background-color: #ffffff;
+  color: #000000;
+}
+
+.termplex-orchestrator-row {
+  border-top: 1px solid #ffffff;
+}
+
+.termplex-orchestrator-label .termplex-tab-name {
+  color: #ffff00;
+}

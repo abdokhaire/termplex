@@ -280,6 +280,10 @@ pub const Window = extern struct {
         /// If true, reopen the tab overview after a deferred workspace switch.
         reopen_overview_after_switch: bool = false,
 
+        /// GLib source ID for the deferred workspace switch timer so it
+        /// can be cancelled in dispose() to avoid use-after-free.
+        deferred_switch_timer: ?c_uint = null,
+
         /// Signal handler IDs for the active TabView (for disconnect/reconnect).
         tab_view_handler_ids: [7]c_ulong = .{0} ** 7,
 
@@ -1802,10 +1806,20 @@ pub const Window = extern struct {
 
         const was_active = app.activeWorkspaceIndex() == index;
         if (was_active) {
-            const new_idx: u32 = if (index > 0) index - 1 else 1;
+            // When deleting index 0, the next workspace (at index 1) will
+            // slide to index 0 after removal, so use 0 as the post-removal
+            // target. For any other index, the workspace before it is stable.
+            const new_idx: u32 = if (index > 0) index - 1 else 0;
+            // We need the pre-removal TabView pointer (at the target position
+            // before the array shifts), so grab it before removeWorkspace runs.
+            // For index > 0: new_idx points to the workspace before the deleted
+            // one — its position doesn't change.
+            // For index == 0: new_idx is 0 which is the workspace being deleted,
+            // so we need the one at index 1 instead.
+            const tv_idx: u32 = if (index > 0) new_idx else 1;
             app.setActiveWorkspaceIndex(new_idx);
             app.markWorkspaceNotificationsRead(new_idx);
-            if (app.workspaceTabView(new_idx)) |tv| {
+            if (app.workspaceTabView(tv_idx)) |tv| {
                 self.switchToTabView(tv);
             }
         }
@@ -1930,6 +1944,17 @@ pub const Window = extern struct {
     fn dispose(self: *Self) callconv(.c) void {
         const priv = self.private();
 
+        // Cancel any pending GLib timers to avoid use-after-free if
+        // the window is destroyed while an animation timer is running.
+        if (priv.tab_overview_focus_timer) |timer| {
+            _ = glib.Source.remove(timer);
+            priv.tab_overview_focus_timer = null;
+        }
+        if (priv.deferred_switch_timer) |timer| {
+            _ = glib.Source.remove(timer);
+            priv.deferred_switch_timer = null;
+        }
+
         priv.command_palette.set(null);
 
         if (priv.config) |v| {
@@ -2033,8 +2058,12 @@ pub const Window = extern struct {
                 _ = glib.Source.remove(timer);
                 priv.tab_overview_focus_timer = null;
             }
+            // Cancel any previously scheduled deferred switch
+            if (priv.deferred_switch_timer) |timer| {
+                _ = glib.Source.remove(timer);
+            }
             // Schedule the workspace switch after the animation completes
-            _ = glib.timeoutAdd(
+            priv.deferred_switch_timer = glib.timeoutAdd(
                 500,
                 deferredWorkspaceSwitch,
                 self,
@@ -2070,11 +2099,23 @@ pub const Window = extern struct {
     fn deferredWorkspaceSwitch(ud: ?*anyopaque) callconv(.c) c_int {
         const self: *Self = @ptrCast(@alignCast(ud orelse return 0));
         const priv = self.private();
+        // Timer has fired — clear the stored ID so dispose() won't try to cancel it.
+        priv.deferred_switch_timer = null;
         if (priv.pending_workspace_switch) |index| {
             priv.pending_workspace_switch = null;
             const should_reopen = priv.reopen_overview_after_switch;
             priv.reopen_overview_after_switch = false;
             self.performWorkspaceSwitch(index);
+            // Schedule a focus recovery timer after the workspace switch,
+            // mirroring the workaround for the libadwaita focus-loss bug.
+            if (priv.tab_overview_focus_timer) |timer| {
+                _ = glib.Source.remove(timer);
+            }
+            priv.tab_overview_focus_timer = glib.timeoutAdd(
+                500,
+                tabOverviewFocusTimer,
+                self,
+            );
             // Reopen the tab overview if it was open before the switch.
             if (should_reopen) {
                 priv.tab_overview.setOpen(1);

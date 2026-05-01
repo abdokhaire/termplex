@@ -318,13 +318,18 @@ pub const Sidebar = extern struct {
         const tab: *WorkspaceTab = @ptrCast(@alignCast(child_widget));
         tab.update(name, port_text, branch_text, dir_text, is_active, has_unread);
 
-        // Apply orchestrator styling to the tab widget so the CSS descendant
+        // Apply or remove orchestrator styling so the CSS descendant
         // selector `.termplex-orchestrator-label .termplex-tab-name` can reach
-        // the inner name label.
+        // the inner name label.  We always toggle both add/remove so the class
+        // is cleaned up when the orchestration index changes.
         if (priv.orchestration_idx) |orch_idx| {
             if (index == orch_idx) {
                 tab.as(gtk.Widget).addCssClass("termplex-orchestrator-label");
+            } else {
+                tab.as(gtk.Widget).removeCssClass("termplex-orchestrator-label");
             }
+        } else {
+            tab.as(gtk.Widget).removeCssClass("termplex-orchestrator-label");
         }
     }
 
