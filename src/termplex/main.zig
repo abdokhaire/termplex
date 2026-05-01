@@ -16,6 +16,7 @@ pub const core = struct {
     pub const port_scanner = @import("core/port_scanner.zig");
     pub const session = @import("core/session.zig");
     pub const terminal_history = @import("core/terminal_history.zig");
+    pub const terminal_history_db = @import("core/terminal_history_db.zig");
 };
 pub const ipc = struct {
     pub const socket_server = @import("ipc/socket_server.zig");

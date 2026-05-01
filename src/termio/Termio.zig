@@ -626,8 +626,23 @@ pub fn resetSynchronizedOutput(self: *Termio) void {
     self.renderer_wakeup.notify() catch {};
 }
 
+fn clearPersistedHistory(self: *Termio) void {
+    if (self.history_writer) |*writer| {
+        writer.pending.clearRetainingCapacity();
+        writer.last_flush_ns = std.time.nanoTimestamp();
+    }
+    self.history_sanitizer.pending.clearRetainingCapacity();
+    if (self.history_path) |path| {
+        terminal_history.clearTranscript(path) catch |err| {
+            log.warn("terminal history clear failed: {}", .{err});
+        };
+    }
+}
+
 /// Clear the screen.
 pub fn clearScreen(self: *Termio, td: *ThreadData, history: bool) !void {
+    if (history) self.clearPersistedHistory();
+
     {
         self.renderer_state.mutex.lock();
         defer self.renderer_state.mutex.unlock();

@@ -1,0 +1,656 @@
+const std = @import("std");
+
+const SQLITE_OK = 0;
+const SQLITE_ROW = 100;
+const SQLITE_DONE = 101;
+const SQLITE_NULL = 5;
+const SQLITE_OPEN_READWRITE = 0x00000002;
+const SQLITE_OPEN_CREATE = 0x00000004;
+const SQLITE_OPEN_FULLMUTEX = 0x00010000;
+
+const sqlite3 = opaque {};
+const sqlite3_stmt = opaque {};
+const sqlite3_destructor_type = ?*const fn (?*anyopaque) callconv(.c) void;
+
+const Sqlite = struct {
+    lib: std.DynLib,
+
+    open_v2: *const fn ([*:0]const u8, *?*sqlite3, c_int, ?[*:0]const u8) callconv(.c) c_int,
+    close: *const fn (*sqlite3) callconv(.c) c_int,
+    exec: *const fn (*sqlite3, [*:0]const u8, ?*anyopaque, ?*anyopaque, *?[*:0]u8) callconv(.c) c_int,
+    free: *const fn (?*anyopaque) callconv(.c) void,
+    prepare_v2: *const fn (*sqlite3, [*:0]const u8, c_int, *?*sqlite3_stmt, ?*anyopaque) callconv(.c) c_int,
+    finalize: *const fn (*sqlite3_stmt) callconv(.c) c_int,
+    bind_text: *const fn (*sqlite3_stmt, c_int, [*]const u8, c_int, sqlite3_destructor_type) callconv(.c) c_int,
+    bind_null: *const fn (*sqlite3_stmt, c_int) callconv(.c) c_int,
+    bind_int64: *const fn (*sqlite3_stmt, c_int, i64) callconv(.c) c_int,
+    step: *const fn (*sqlite3_stmt) callconv(.c) c_int,
+    column_text: *const fn (*sqlite3_stmt, c_int) callconv(.c) ?[*]const u8,
+    column_bytes: *const fn (*sqlite3_stmt, c_int) callconv(.c) c_int,
+    column_type: *const fn (*sqlite3_stmt, c_int) callconv(.c) c_int,
+    column_int64: *const fn (*sqlite3_stmt, c_int) callconv(.c) i64,
+    last_insert_rowid: *const fn (*sqlite3) callconv(.c) i64,
+
+    fn load() !Sqlite {
+        var lib = std.DynLib.open("libsqlite3.so.0") catch |primary_err| blk: {
+            break :blk std.DynLib.open("libsqlite3.so") catch return primary_err;
+        };
+        errdefer lib.close();
+
+        return .{
+            .lib = lib,
+            .open_v2 = lib.lookup(@TypeOf(@as(Sqlite, undefined).open_v2), "sqlite3_open_v2") orelse return error.SqliteSymbolMissing,
+            .close = lib.lookup(@TypeOf(@as(Sqlite, undefined).close), "sqlite3_close") orelse return error.SqliteSymbolMissing,
+            .exec = lib.lookup(@TypeOf(@as(Sqlite, undefined).exec), "sqlite3_exec") orelse return error.SqliteSymbolMissing,
+            .free = lib.lookup(@TypeOf(@as(Sqlite, undefined).free), "sqlite3_free") orelse return error.SqliteSymbolMissing,
+            .prepare_v2 = lib.lookup(@TypeOf(@as(Sqlite, undefined).prepare_v2), "sqlite3_prepare_v2") orelse return error.SqliteSymbolMissing,
+            .finalize = lib.lookup(@TypeOf(@as(Sqlite, undefined).finalize), "sqlite3_finalize") orelse return error.SqliteSymbolMissing,
+            .bind_text = lib.lookup(@TypeOf(@as(Sqlite, undefined).bind_text), "sqlite3_bind_text") orelse return error.SqliteSymbolMissing,
+            .bind_null = lib.lookup(@TypeOf(@as(Sqlite, undefined).bind_null), "sqlite3_bind_null") orelse return error.SqliteSymbolMissing,
+            .bind_int64 = lib.lookup(@TypeOf(@as(Sqlite, undefined).bind_int64), "sqlite3_bind_int64") orelse return error.SqliteSymbolMissing,
+            .step = lib.lookup(@TypeOf(@as(Sqlite, undefined).step), "sqlite3_step") orelse return error.SqliteSymbolMissing,
+            .column_text = lib.lookup(@TypeOf(@as(Sqlite, undefined).column_text), "sqlite3_column_text") orelse return error.SqliteSymbolMissing,
+            .column_bytes = lib.lookup(@TypeOf(@as(Sqlite, undefined).column_bytes), "sqlite3_column_bytes") orelse return error.SqliteSymbolMissing,
+            .column_type = lib.lookup(@TypeOf(@as(Sqlite, undefined).column_type), "sqlite3_column_type") orelse return error.SqliteSymbolMissing,
+            .column_int64 = lib.lookup(@TypeOf(@as(Sqlite, undefined).column_int64), "sqlite3_column_int64") orelse return error.SqliteSymbolMissing,
+            .last_insert_rowid = lib.lookup(@TypeOf(@as(Sqlite, undefined).last_insert_rowid), "sqlite3_last_insert_rowid") orelse return error.SqliteSymbolMissing,
+        };
+    }
+
+    fn deinit(self: *Sqlite) void {
+        self.lib.close();
+    }
+};
+
+pub const ProjectUpsert = struct {
+    workspace_id: []const u8,
+    workspace_name: []const u8,
+    workspace_dir: []const u8,
+    git_remote_url: ?[]const u8 = null,
+    git_branch: ?[]const u8 = null,
+    git_dirty: bool = false,
+    timestamp: []const u8,
+};
+
+pub const ProjectRecord = struct {
+    workspace_id: []const u8,
+    workspace_name: []const u8,
+    workspace_dir: []const u8,
+    git_remote_url: ?[]const u8,
+    git_branch: ?[]const u8,
+    git_dirty: bool,
+    updated_at: []const u8,
+
+    pub fn deinit(self: *ProjectRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.workspace_id);
+        allocator.free(self.workspace_name);
+        allocator.free(self.workspace_dir);
+        if (self.git_remote_url) |v| allocator.free(v);
+        if (self.git_branch) |v| allocator.free(v);
+        allocator.free(self.updated_at);
+    }
+};
+
+pub const SurfaceUpsert = struct {
+    history_id: []const u8,
+    workspace_id: []const u8,
+    workspace_name: []const u8,
+    workspace_dir: []const u8,
+    working_directory: []const u8,
+    env_fingerprint: ?[]const u8 = null,
+    transcript_path: []const u8,
+    status: []const u8 = "active",
+    last_exit_code: ?i32 = null,
+    timestamp: []const u8,
+};
+
+pub const CommandStart = struct {
+    history_id: []const u8,
+    workspace_id: []const u8,
+    workspace_name: []const u8,
+    workspace_dir: []const u8,
+    command: []const u8,
+    started_at: []const u8,
+    source: []const u8,
+};
+
+pub const CommandFinish = struct {
+    history_id: []const u8,
+    ended_at: []const u8,
+    exit_code: ?i32,
+};
+
+pub const CommandRecord = struct {
+    id: i64,
+    history_id: []const u8,
+    workspace_id: []const u8,
+    workspace_name: []const u8,
+    workspace_dir: []const u8,
+    command: []const u8,
+    started_at: []const u8,
+    ended_at: ?[]const u8,
+    exit_code: ?i32,
+    source: []const u8,
+
+    pub fn deinit(self: *CommandRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.history_id);
+        allocator.free(self.workspace_id);
+        allocator.free(self.workspace_name);
+        allocator.free(self.workspace_dir);
+        allocator.free(self.command);
+        allocator.free(self.started_at);
+        if (self.ended_at) |v| allocator.free(v);
+        allocator.free(self.source);
+    }
+};
+
+pub const CommandList = struct {
+    items: []CommandRecord,
+
+    pub fn deinit(self: CommandList, allocator: std.mem.Allocator) void {
+        for (self.items) |*item| item.deinit(allocator);
+        allocator.free(self.items);
+    }
+};
+
+pub const RecentQuery = struct {
+    limit: u32 = 20,
+    workspace_id: ?[]const u8 = null,
+    history_id: ?[]const u8 = null,
+};
+
+pub const Database = struct {
+    allocator: std.mem.Allocator,
+    sqlite: Sqlite,
+    handle: *sqlite3,
+
+    pub fn open(allocator: std.mem.Allocator, path: []const u8) !Database {
+        const parent = std.fs.path.dirname(path) orelse return error.InvalidPath;
+        std.fs.makeDirAbsolute(parent) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        const path_z = try allocator.dupeZ(u8, path);
+        defer allocator.free(path_z);
+
+        var sqlite = try Sqlite.load();
+        errdefer sqlite.deinit();
+
+        var handle: ?*sqlite3 = null;
+        const flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX;
+        if (sqlite.open_v2(path_z.ptr, &handle, flags, null) != SQLITE_OK) {
+            if (handle) |h| _ = sqlite.close(h);
+            return error.OpenFailed;
+        }
+
+        return .{
+            .allocator = allocator,
+            .sqlite = sqlite,
+            .handle = handle.?,
+        };
+    }
+
+    pub fn deinit(self: *Database) void {
+        _ = self.sqlite.close(self.handle);
+        self.sqlite.deinit();
+    }
+
+    fn exec(self: *Database, sql: [:0]const u8) !void {
+        var err_msg: ?[*:0]u8 = null;
+        defer if (err_msg) |msg| self.sqlite.free(@ptrCast(msg));
+        if (self.sqlite.exec(self.handle, sql.ptr, null, null, &err_msg) != SQLITE_OK) {
+            return error.SqlExecFailed;
+        }
+    }
+
+    fn prepare(self: *Database, sql: [:0]const u8) !Statement {
+        var stmt: ?*sqlite3_stmt = null;
+        if (self.sqlite.prepare_v2(self.handle, sql.ptr, -1, &stmt, null) != SQLITE_OK) {
+            return error.SqlPrepareFailed;
+        }
+        return .{
+            .allocator = self.allocator,
+            .sqlite = &self.sqlite,
+            .stmt = stmt.?,
+        };
+    }
+
+    pub fn migrate(self: *Database) !void {
+        try self.exec(
+            \\PRAGMA journal_mode = WAL;
+            \\PRAGMA foreign_keys = ON;
+            \\PRAGMA busy_timeout = 250;
+            \\CREATE TABLE IF NOT EXISTS schema_migrations (
+            \\  version INTEGER PRIMARY KEY,
+            \\  applied_at TEXT NOT NULL
+            \\);
+            \\CREATE TABLE IF NOT EXISTS terminal_projects (
+            \\  workspace_id TEXT PRIMARY KEY,
+            \\  workspace_name TEXT NOT NULL,
+            \\  workspace_dir TEXT NOT NULL,
+            \\  git_remote_url TEXT,
+            \\  git_branch TEXT,
+            \\  git_dirty INTEGER NOT NULL DEFAULT 0,
+            \\  created_at TEXT NOT NULL,
+            \\  updated_at TEXT NOT NULL,
+            \\  deleted_at TEXT
+            \\);
+            \\CREATE TABLE IF NOT EXISTS terminal_surfaces (
+            \\  history_id TEXT PRIMARY KEY,
+            \\  workspace_id TEXT NOT NULL,
+            \\  workspace_name TEXT NOT NULL,
+            \\  workspace_dir TEXT NOT NULL,
+            \\  working_directory TEXT NOT NULL,
+            \\  env_fingerprint TEXT,
+            \\  transcript_path TEXT NOT NULL,
+            \\  status TEXT NOT NULL DEFAULT 'active',
+            \\  last_exit_code INTEGER,
+            \\  created_at TEXT NOT NULL,
+            \\  updated_at TEXT NOT NULL,
+            \\  deleted_at TEXT,
+            \\  FOREIGN KEY(workspace_id) REFERENCES terminal_projects(workspace_id)
+            \\);
+            \\CREATE TABLE IF NOT EXISTS command_history (
+            \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\  history_id TEXT NOT NULL,
+            \\  workspace_id TEXT NOT NULL,
+            \\  workspace_name TEXT NOT NULL,
+            \\  workspace_dir TEXT NOT NULL,
+            \\  command TEXT NOT NULL,
+            \\  started_at TEXT NOT NULL,
+            \\  ended_at TEXT,
+            \\  exit_code INTEGER,
+            \\  source TEXT NOT NULL,
+            \\  created_at TEXT NOT NULL,
+            \\  updated_at TEXT NOT NULL
+            \\);
+            \\CREATE INDEX IF NOT EXISTS idx_command_history_started_at
+            \\  ON command_history(started_at DESC);
+            \\CREATE INDEX IF NOT EXISTS idx_command_history_workspace_started
+            \\  ON command_history(workspace_id, started_at DESC);
+            \\CREATE INDEX IF NOT EXISTS idx_command_history_surface_started
+            \\  ON command_history(history_id, started_at DESC);
+            \\CREATE INDEX IF NOT EXISTS idx_terminal_projects_dir
+            \\  ON terminal_projects(workspace_dir);
+            \\CREATE INDEX IF NOT EXISTS idx_terminal_surfaces_workspace
+            \\  ON terminal_surfaces(workspace_id, updated_at DESC);
+            \\INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+            \\VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+        );
+    }
+
+    pub fn upsertProject(self: *Database, input: ProjectUpsert) !void {
+        var stmt = try self.prepare(
+            \\INSERT INTO terminal_projects (
+            \\  workspace_id, workspace_name, workspace_dir, git_remote_url, git_branch,
+            \\  git_dirty, created_at, updated_at, deleted_at
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            \\ON CONFLICT(workspace_id) DO UPDATE SET
+            \\  workspace_name = excluded.workspace_name,
+            \\  workspace_dir = excluded.workspace_dir,
+            \\  git_remote_url = excluded.git_remote_url,
+            \\  git_branch = excluded.git_branch,
+            \\  git_dirty = excluded.git_dirty,
+            \\  updated_at = excluded.updated_at,
+            \\  deleted_at = NULL
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, input.workspace_id);
+        try stmt.bindText(2, input.workspace_name);
+        try stmt.bindText(3, input.workspace_dir);
+        try stmt.bindOptionalText(4, input.git_remote_url);
+        try stmt.bindOptionalText(5, input.git_branch);
+        try stmt.bindInt64(6, @as(i64, if (input.git_dirty) 1 else 0));
+        try stmt.bindText(7, input.timestamp);
+        try stmt.bindText(8, input.timestamp);
+        try stmt.stepDone();
+    }
+
+    pub fn ensureProject(self: *Database, input: ProjectUpsert) !void {
+        var stmt = try self.prepare(
+            \\INSERT OR IGNORE INTO terminal_projects (
+            \\  workspace_id, workspace_name, workspace_dir, git_remote_url, git_branch,
+            \\  git_dirty, created_at, updated_at, deleted_at
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, input.workspace_id);
+        try stmt.bindText(2, input.workspace_name);
+        try stmt.bindText(3, input.workspace_dir);
+        try stmt.bindOptionalText(4, input.git_remote_url);
+        try stmt.bindOptionalText(5, input.git_branch);
+        try stmt.bindInt64(6, @as(i64, if (input.git_dirty) 1 else 0));
+        try stmt.bindText(7, input.timestamp);
+        try stmt.bindText(8, input.timestamp);
+        try stmt.stepDone();
+    }
+
+    pub fn getProject(self: *Database, workspace_id: []const u8) !ProjectRecord {
+        var stmt = try self.prepare(
+            \\SELECT workspace_id, workspace_name, workspace_dir, git_remote_url,
+            \\       git_branch, git_dirty, updated_at
+            \\FROM terminal_projects
+            \\WHERE workspace_id = ? AND deleted_at IS NULL
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, workspace_id);
+        if (!try stmt.stepRow()) return error.NotFound;
+        return try stmt.readProjectRecord();
+    }
+
+    pub fn upsertSurface(self: *Database, input: SurfaceUpsert) !void {
+        var stmt = try self.prepare(
+            \\INSERT INTO terminal_surfaces (
+            \\  history_id, workspace_id, workspace_name, workspace_dir, working_directory,
+            \\  env_fingerprint, transcript_path, status, last_exit_code, created_at, updated_at, deleted_at
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            \\ON CONFLICT(history_id) DO UPDATE SET
+            \\  workspace_id = excluded.workspace_id,
+            \\  workspace_name = excluded.workspace_name,
+            \\  workspace_dir = excluded.workspace_dir,
+            \\  working_directory = excluded.working_directory,
+            \\  env_fingerprint = excluded.env_fingerprint,
+            \\  transcript_path = excluded.transcript_path,
+            \\  status = excluded.status,
+            \\  last_exit_code = excluded.last_exit_code,
+            \\  updated_at = excluded.updated_at,
+            \\  deleted_at = NULL
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, input.history_id);
+        try stmt.bindText(2, input.workspace_id);
+        try stmt.bindText(3, input.workspace_name);
+        try stmt.bindText(4, input.workspace_dir);
+        try stmt.bindText(5, input.working_directory);
+        try stmt.bindOptionalText(6, input.env_fingerprint);
+        try stmt.bindText(7, input.transcript_path);
+        try stmt.bindText(8, input.status);
+        try stmt.bindOptionalInt(9, input.last_exit_code);
+        try stmt.bindText(10, input.timestamp);
+        try stmt.bindText(11, input.timestamp);
+        try stmt.stepDone();
+    }
+
+    pub fn startCommand(self: *Database, input: CommandStart) !i64 {
+        var stmt = try self.prepare(
+            \\INSERT INTO command_history (
+            \\  history_id, workspace_id, workspace_name, workspace_dir, command, started_at, source, created_at, updated_at
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, input.history_id);
+        try stmt.bindText(2, input.workspace_id);
+        try stmt.bindText(3, input.workspace_name);
+        try stmt.bindText(4, input.workspace_dir);
+        try stmt.bindText(5, input.command);
+        try stmt.bindText(6, input.started_at);
+        try stmt.bindText(7, input.source);
+        try stmt.bindText(8, input.started_at);
+        try stmt.bindText(9, input.started_at);
+        try stmt.stepDone();
+        return self.sqlite.last_insert_rowid(self.handle);
+    }
+
+    pub fn finishLatestCommand(self: *Database, input: CommandFinish) !void {
+        var stmt = try self.prepare(
+            \\UPDATE command_history
+            \\SET ended_at = ?, exit_code = ?, updated_at = ?
+            \\WHERE id = (
+            \\  SELECT id FROM command_history
+            \\  WHERE history_id = ? AND ended_at IS NULL
+            \\  ORDER BY started_at DESC, id DESC
+            \\  LIMIT 1
+            \\)
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, input.ended_at);
+        try stmt.bindOptionalInt(2, input.exit_code);
+        try stmt.bindText(3, input.ended_at);
+        try stmt.bindText(4, input.history_id);
+        try stmt.stepDone();
+    }
+
+    pub fn listRecentCommands(self: *Database, query: RecentQuery) !CommandList {
+        var stmt = try self.prepare(
+            \\SELECT id, history_id, workspace_id, workspace_name, workspace_dir,
+            \\       command, started_at, ended_at, exit_code, source
+            \\FROM command_history
+            \\WHERE (?1 IS NULL OR workspace_id = ?1)
+            \\  AND (?2 IS NULL OR history_id = ?2)
+            \\ORDER BY started_at DESC, id DESC
+            \\LIMIT ?3
+        );
+        defer stmt.deinit();
+        try stmt.bindOptionalText(1, query.workspace_id);
+        try stmt.bindOptionalText(2, query.history_id);
+        try stmt.bindInt64(3, query.limit);
+
+        var items: std.ArrayListUnmanaged(CommandRecord) = .empty;
+        errdefer {
+            for (items.items) |*item| item.deinit(self.allocator);
+            items.deinit(self.allocator);
+        }
+        while (try stmt.stepRow()) {
+            try items.append(self.allocator, try stmt.readCommandRecord());
+        }
+        return .{ .items = try items.toOwnedSlice(self.allocator) };
+    }
+
+    pub fn pruneCommandsOlderThan(self: *Database, cutoff_iso: []const u8) !void {
+        var stmt = try self.prepare(
+            \\DELETE FROM command_history
+            \\WHERE started_at < ?
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, cutoff_iso);
+        try stmt.stepDone();
+    }
+
+    pub fn deleteSurface(self: *Database, history_id: []const u8) !void {
+        var delete_commands = try self.prepare(
+            \\DELETE FROM command_history
+            \\WHERE history_id = ?
+        );
+        defer delete_commands.deinit();
+        try delete_commands.bindText(1, history_id);
+        try delete_commands.stepDone();
+
+        var delete_surface = try self.prepare(
+            \\DELETE FROM terminal_surfaces
+            \\WHERE history_id = ?
+        );
+        defer delete_surface.deinit();
+        try delete_surface.bindText(1, history_id);
+        try delete_surface.stepDone();
+    }
+
+    pub fn deleteProject(self: *Database, workspace_id: []const u8, timestamp: []const u8) !void {
+        var delete_commands = try self.prepare(
+            \\DELETE FROM command_history
+            \\WHERE workspace_id = ?
+        );
+        defer delete_commands.deinit();
+        try delete_commands.bindText(1, workspace_id);
+        try delete_commands.stepDone();
+
+        var delete_surfaces = try self.prepare(
+            \\DELETE FROM terminal_surfaces
+            \\WHERE workspace_id = ?
+        );
+        defer delete_surfaces.deinit();
+        try delete_surfaces.bindText(1, workspace_id);
+        try delete_surfaces.stepDone();
+
+        var mark_project = try self.prepare(
+            \\UPDATE terminal_projects
+            \\SET deleted_at = ?, updated_at = ?
+            \\WHERE workspace_id = ?
+        );
+        defer mark_project.deinit();
+        try mark_project.bindText(1, timestamp);
+        try mark_project.bindText(2, timestamp);
+        try mark_project.bindText(3, workspace_id);
+        try mark_project.stepDone();
+    }
+};
+
+const Statement = struct {
+    allocator: std.mem.Allocator,
+    sqlite: *const Sqlite,
+    stmt: *sqlite3_stmt,
+
+    fn deinit(self: *Statement) void {
+        _ = self.sqlite.finalize(self.stmt);
+    }
+
+    fn bindText(self: *Statement, index: c_int, value: []const u8) !void {
+        if (self.sqlite.bind_text(self.stmt, index, value.ptr, @intCast(value.len), null) != SQLITE_OK) {
+            return error.SqlBindFailed;
+        }
+    }
+
+    fn bindOptionalText(self: *Statement, index: c_int, value: ?[]const u8) !void {
+        if (value) |text| return self.bindText(index, text);
+        if (self.sqlite.bind_null(self.stmt, index) != SQLITE_OK) return error.SqlBindFailed;
+    }
+
+    fn bindInt64(self: *Statement, index: c_int, value: anytype) !void {
+        if (self.sqlite.bind_int64(self.stmt, index, @intCast(value)) != SQLITE_OK) {
+            return error.SqlBindFailed;
+        }
+    }
+
+    fn bindOptionalInt(self: *Statement, index: c_int, value: ?i32) !void {
+        if (value) |int_value| return self.bindInt64(index, int_value);
+        if (self.sqlite.bind_null(self.stmt, index) != SQLITE_OK) return error.SqlBindFailed;
+    }
+
+    fn stepDone(self: *Statement) !void {
+        const rc = self.sqlite.step(self.stmt);
+        if (rc != SQLITE_DONE) return error.SqlStepFailed;
+    }
+
+    fn stepRow(self: *Statement) !bool {
+        const rc = self.sqlite.step(self.stmt);
+        return switch (rc) {
+            SQLITE_ROW => true,
+            SQLITE_DONE => false,
+            else => error.SqlStepFailed,
+        };
+    }
+
+    fn readTextAlloc(self: *Statement, index: c_int) ![]const u8 {
+        const raw = self.sqlite.column_text(self.stmt, index) orelse return self.allocator.dupe(u8, "");
+        const len: usize = @intCast(self.sqlite.column_bytes(self.stmt, index));
+        return self.allocator.dupe(u8, raw[0..len]);
+    }
+
+    fn readOptionalTextAlloc(self: *Statement, index: c_int) !?[]const u8 {
+        if (self.sqlite.column_type(self.stmt, index) == SQLITE_NULL) return null;
+        return try self.readTextAlloc(index);
+    }
+
+    fn readOptionalInt(self: *Statement, index: c_int) ?i32 {
+        if (self.sqlite.column_type(self.stmt, index) == SQLITE_NULL) return null;
+        return @intCast(self.sqlite.column_int64(self.stmt, index));
+    }
+
+    fn readProjectRecord(self: *Statement) !ProjectRecord {
+        return .{
+            .workspace_id = try self.readTextAlloc(0),
+            .workspace_name = try self.readTextAlloc(1),
+            .workspace_dir = try self.readTextAlloc(2),
+            .git_remote_url = try self.readOptionalTextAlloc(3),
+            .git_branch = try self.readOptionalTextAlloc(4),
+            .git_dirty = self.sqlite.column_int64(self.stmt, 5) != 0,
+            .updated_at = try self.readTextAlloc(6),
+        };
+    }
+
+    fn readCommandRecord(self: *Statement) !CommandRecord {
+        return .{
+            .id = self.sqlite.column_int64(self.stmt, 0),
+            .history_id = try self.readTextAlloc(1),
+            .workspace_id = try self.readTextAlloc(2),
+            .workspace_name = try self.readTextAlloc(3),
+            .workspace_dir = try self.readTextAlloc(4),
+            .command = try self.readTextAlloc(5),
+            .started_at = try self.readTextAlloc(6),
+            .ended_at = try self.readOptionalTextAlloc(7),
+            .exit_code = self.readOptionalInt(8),
+            .source = try self.readTextAlloc(9),
+        };
+    }
+};
+
+test "terminal history db migrates and records command lifecycle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    try db.upsertProject(.{
+        .workspace_id = "workspace-1",
+        .workspace_name = "backend",
+        .workspace_dir = "/home/user/backend",
+        .git_remote_url = "git@github.com:example/backend.git",
+        .git_branch = "main",
+        .git_dirty = true,
+        .timestamp = "2026-05-01T10:00:00Z",
+    });
+
+    try db.upsertSurface(.{
+        .history_id = "hist-1",
+        .workspace_id = "workspace-1",
+        .workspace_name = "backend",
+        .workspace_dir = "/home/user/backend",
+        .working_directory = "/home/user/backend",
+        .env_fingerprint = "env-1",
+        .transcript_path = "/tmp/hist-1.ansi",
+        .status = "active",
+        .last_exit_code = null,
+        .timestamp = "2026-05-01T10:00:00Z",
+    });
+
+    _ = try db.startCommand(.{
+        .history_id = "hist-1",
+        .workspace_id = "workspace-1",
+        .workspace_name = "backend",
+        .workspace_dir = "/home/user/backend",
+        .command = "npm test",
+        .started_at = "2026-05-01T10:00:01Z",
+        .source = "osc_7337",
+    });
+    try db.finishLatestCommand(.{
+        .history_id = "hist-1",
+        .ended_at = "2026-05-01T10:00:05Z",
+        .exit_code = 0,
+    });
+
+    try db.ensureProject(.{
+        .workspace_id = "workspace-1",
+        .workspace_name = "backend",
+        .workspace_dir = "/home/user/backend",
+        .timestamp = "2026-05-01T10:00:06Z",
+    });
+
+    const recent = try db.listRecentCommands(.{ .limit = 10 });
+    defer recent.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), recent.items.len);
+    try std.testing.expectEqualStrings("npm test", recent.items[0].command);
+    try std.testing.expectEqual(@as(?i32, 0), recent.items[0].exit_code);
+
+    var project = try db.getProject("workspace-1");
+    defer project.deinit(allocator);
+    try std.testing.expectEqualStrings("backend", project.workspace_name);
+    try std.testing.expectEqual(true, project.git_dirty);
+}

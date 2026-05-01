@@ -47,6 +47,7 @@ const notification_mod = @import("../../../termplex/core/notification.zig");
 const port_scanner = @import("../../../termplex/core/port_scanner.zig");
 const session_mod = @import("../../../termplex/core/session.zig");
 const terminal_history = @import("../../../termplex/core/terminal_history.zig");
+const terminal_history_db = @import("../../../termplex/core/terminal_history_db.zig");
 const workspace_mod = @import("../../../termplex/core/workspace.zig");
 const termplex_config = @import("../../../termplex/core/config.zig");
 const agents = @import("../../../termplex/ipc/agents.zig");
@@ -368,6 +369,8 @@ pub const Application = extern struct {
 
         /// Memory state manager for process tracking.
         memory_manager: ?memory_state_mgr.StateManager = null,
+        /// SQLite store for terminal history metadata and command records.
+        terminal_history_db: ?terminal_history_db.Database = null,
         /// GLib timer ID for debounced state saves (1s interval).
         memory_debounce_timer: ?c_uint = null,
         /// GLib timer ID for periodic proc inspection.
@@ -620,6 +623,11 @@ pub const Application = extern struct {
             restoreSession(self);
         }
 
+        // Termplex: initialize terminal history metadata after workspace restore
+        // so startup-only placeholder workspaces are not recorded as projects.
+        self.initTerminalHistoryDatabase();
+        self.upsertAllTerminalHistoryProjects();
+
         // Signals
         _ = gobject.Object.signals.notify.connect(
             self,
@@ -842,6 +850,12 @@ pub const Application = extern struct {
             priv.memory_manager = null;
         }
 
+        // Termplex: close the terminal history metadata database.
+        if (priv.terminal_history_db) |*db| {
+            db.deinit();
+            priv.terminal_history_db = null;
+        }
+
         // Termplex: free the loaded Termplex config.
         priv.termplex_cfg.deinit();
 
@@ -946,6 +960,132 @@ pub const Application = extern struct {
 
     pub fn currentWorkspaceIdString(self: *Self, alloc: std.mem.Allocator) ![]u8 {
         return self.workspaceIdString(alloc, self.private().active_workspace_idx);
+    }
+
+    fn initTerminalHistoryDatabase(self: *Self) void {
+        const alloc = std.heap.c_allocator;
+        const priv = self.private();
+        if (!priv.termplex_cfg.terminal_history.enabled) return;
+        if (priv.terminal_history_db != null) return;
+
+        const options = self.terminalHistoryOptions();
+        terminal_history.cleanupRetention(alloc, options) catch |err| {
+            log.warn("terminal history retention cleanup failed: {}", .{err});
+        };
+
+        const db_path = terminal_history.databasePath(alloc) catch |err| {
+            log.warn("failed to resolve terminal history database path: {}", .{err});
+            return;
+        };
+        defer alloc.free(db_path);
+
+        priv.terminal_history_db = terminal_history_db.Database.open(alloc, db_path) catch |err| {
+            log.warn("failed to open terminal history database: {}", .{err});
+            return;
+        };
+
+        if (priv.terminal_history_db) |*db| {
+            db.migrate() catch |err| {
+                log.warn("failed to migrate terminal history database: {}", .{err});
+                db.deinit();
+                priv.terminal_history_db = null;
+                return;
+            };
+
+            if (options.retention_days > 0) {
+                if (terminal_history.retentionCutoffIso(alloc, options.retention_days)) |cutoff| {
+                    defer alloc.free(cutoff);
+                    db.pruneCommandsOlderThan(cutoff) catch |err| {
+                        log.warn("failed to prune terminal command history: {}", .{err});
+                    };
+                } else |err| {
+                    log.warn("failed to compute terminal history retention cutoff: {}", .{err});
+                }
+            }
+
+            if (priv.memory_manager) |*mgr| {
+                mgr.setCommandHistoryDatabase(db);
+            }
+        }
+    }
+
+    fn terminalHistoryTimestamp(self: *Self, alloc: std.mem.Allocator) ?[]const u8 {
+        _ = self;
+        return terminal_history.retentionCutoffIso(alloc, 0) catch |err| {
+            log.warn("failed to compute terminal history timestamp: {}", .{err});
+            return null;
+        };
+    }
+
+    fn upsertTerminalHistoryProject(self: *Self, index: u32) void {
+        const alloc = self.allocator();
+        const priv = self.private();
+        var db = if (priv.terminal_history_db) |*database| database else return;
+        if (index >= priv.workspace_names.items.len or
+            index >= priv.workspace_dirs.items.len or
+            index >= priv.workspace_ids.items.len) return;
+
+        const workspace_id = self.workspaceIdString(alloc, index) catch |err| {
+            log.warn("failed to format workspace id for terminal history: {}", .{err});
+            return;
+        };
+        defer alloc.free(workspace_id);
+
+        const timestamp = self.terminalHistoryTimestamp(alloc) orelse return;
+        defer alloc.free(timestamp);
+
+        const git_branch: ?[]const u8 = if (index < priv.workspace_git_branches.items.len)
+            priv.workspace_git_branches.items[index]
+        else
+            null;
+        const git_dirty = if (index < priv.workspace_git_dirty.items.len)
+            priv.workspace_git_dirty.items[index]
+        else
+            false;
+
+        db.upsertProject(.{
+            .workspace_id = workspace_id,
+            .workspace_name = priv.workspace_names.items[index],
+            .workspace_dir = priv.workspace_dirs.items[index],
+            .git_remote_url = null,
+            .git_branch = git_branch,
+            .git_dirty = git_dirty,
+            .timestamp = timestamp,
+        }) catch |err| {
+            log.warn("failed to upsert terminal history project: {}", .{err});
+        };
+    }
+
+    fn upsertAllTerminalHistoryProjects(self: *Self) void {
+        const priv = self.private();
+        if (priv.terminal_history_db == null) return;
+        for (priv.workspace_names.items, 0..) |_, index| {
+            self.upsertTerminalHistoryProject(@intCast(index));
+        }
+    }
+
+    fn deleteTerminalHistoryProject(self: *Self, index: u32) void {
+        const alloc = self.allocator();
+        const priv = self.private();
+        if (index >= priv.workspace_ids.items.len) return;
+
+        const workspace_id = self.workspaceIdString(alloc, index) catch |err| {
+            log.warn("failed to format workspace id for terminal history deletion: {}", .{err});
+            return;
+        };
+        defer alloc.free(workspace_id);
+
+        terminal_history.clearWorkspaceHistory(alloc, workspace_id) catch |err| {
+            log.warn("failed to clear terminal transcript history for workspace: {}", .{err});
+        };
+
+        if (priv.terminal_history_db) |*db| {
+            const timestamp = self.terminalHistoryTimestamp(alloc) orelse return;
+            defer alloc.free(timestamp);
+            db.deleteProject(workspace_id, timestamp) catch |err| {
+                log.warn("failed to delete terminal history project: {}", .{err});
+            };
+        }
     }
 
     pub fn terminalHistoryOptions(self: *Self) terminal_history.Options {
@@ -1136,7 +1276,9 @@ pub const Application = extern struct {
         };
 
         priv.next_workspace_number += 1;
-        return @intCast(priv.workspace_names.items.len - 1);
+        const index: u32 = @intCast(priv.workspace_names.items.len - 1);
+        self.upsertTerminalHistoryProject(index);
+        return index;
     }
 
     /// Return the name of the workspace at the given index, or null if
@@ -1285,6 +1427,8 @@ pub const Application = extern struct {
             if (index == orch_idx) return;
         }
 
+        self.deleteTerminalHistoryProject(index);
+
         // Get the TabView before removing from the array.
         const tab_view = priv.workspace_tab_views.items[index];
 
@@ -1343,6 +1487,7 @@ pub const Application = extern struct {
         if (index >= priv.workspace_names.items.len) return;
         alloc.free(priv.workspace_names.items[index]);
         priv.workspace_names.items[index] = alloc.dupeZ(u8, new_name) catch return;
+        self.upsertTerminalHistoryProject(index);
     }
 
     /// Change the working directory for a workspace.
@@ -1383,6 +1528,9 @@ pub const Application = extern struct {
         else
             null;
         priv.workspace_git_dirty.items[index] = result.dirty;
+
+        self.deleteTerminalHistoryProject(index);
+        self.upsertTerminalHistoryProject(index);
 
         // Refresh sidebar to show new dir and git state.
         self.refreshAllWorkspaceSidebars();
@@ -3119,6 +3267,7 @@ pub const Application = extern struct {
             if (priv.workspace_git_branches.items[ws_idx]) |old_branch| alloc.free(old_branch);
             priv.workspace_git_branches.items[ws_idx] = if (result.branch) |branch| alloc.dupeZ(u8, branch) catch null else null;
             priv.workspace_git_dirty.items[ws_idx] = result.dirty;
+            self.upsertTerminalHistoryProject(ws_idx);
         }
 
         self.updateSidebarGitState();
@@ -4921,6 +5070,38 @@ pub const Application = extern struct {
     // Termplex: OSC 7337 orchestrator command handling
     // -----------------------------------------------------------------
 
+    const OrchestratorSurfaceMatch = struct {
+        surface: *Surface,
+        workspace_idx: u32,
+    };
+
+    fn findGtkSurfaceByCore(self: *Self, core_surface: *CoreSurface) ?OrchestratorSurfaceMatch {
+        const priv = self.private();
+        const alloc = self.allocator();
+
+        for (priv.workspace_tab_views.items, 0..) |tab_view, workspace_idx| {
+            var tab_idx: c_int = 0;
+            while (tab_idx < tab_view.getNPages()) : (tab_idx += 1) {
+                const page = tab_view.getNthPage(tab_idx);
+                const tab = gobject.ext.cast(Tab, page.getChild()) orelse continue;
+                const entries = collectTabSurfaceEntries(tab, alloc) orelse continue;
+                defer alloc.free(entries);
+
+                for (entries) |entry| {
+                    const candidate_core_surface = entry.surface.core() orelse continue;
+                    if (candidate_core_surface == core_surface) {
+                        return .{
+                            .surface = entry.surface,
+                            .workspace_idx = @intCast(workspace_idx),
+                        };
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
     /// Handle an orchestrator command event from a surface (triggered by OSC 7337).
     /// The payload format is "cmd_start;<pid>;<command>" or "cmd_end;<pid>;<exit_code>".
     pub fn handleOrchestratorCmd(self: *Self, core_surface: *CoreSurface, payload: []const u8) void {
@@ -4947,21 +5128,41 @@ pub const Application = extern struct {
         const data = rest[semi + 1 ..];
 
         const resolved_context = self.resolveOrchestratorSurfaceContext(core_surface);
+        const surface_match = self.findGtkSurfaceByCore(core_surface);
+        const workspace_idx = if (surface_match) |match| match.workspace_idx else priv.active_workspace_idx;
+        const workspace_id = self.workspaceIdString(self.allocator(), workspace_idx) catch null;
+        defer if (workspace_id) |id| self.allocator().free(id);
 
-        // Use shell PID as a unique surface identifier. Each terminal surface
-        // has a unique shell PID, so this avoids state collisions in
-        // multi-terminal workspaces. A proper UUID mapping is deferred to v2.
         var surf_id_buf: [32]u8 = undefined;
-        const surface_id = std.fmt.bufPrint(&surf_id_buf, "shell-{d}", .{pid}) catch "unknown";
+        const fallback_surface_id = std.fmt.bufPrint(&surf_id_buf, "shell-{d}", .{pid}) catch "unknown";
+        const surface_id: []const u8 = if (surface_match) |match|
+            match.surface.getHistoryId() orelse fallback_surface_id
+        else
+            fallback_surface_id;
+
+        const working_directory: ?[]const u8 = if (surface_match) |match|
+            match.surface.getPwd()
+        else
+            null;
+
+        const transcript_path = if (workspace_id) |id|
+            terminal_history.transcriptPath(self.allocator(), id, surface_id) catch null
+        else
+            null;
+        defer if (transcript_path) |path| self.allocator().free(path);
 
         const event = memory_state_mgr.CommandEvent{
             .kind = kind,
             .surface_uuid = surface_id,
+            .workspace_id = workspace_id orelse "default",
             .workspace_name = resolved_context.workspace_name,
             .workspace_dir = resolved_context.workspace_dir,
+            .working_directory = working_directory,
+            .transcript_path = transcript_path,
             .command = if (kind == .start) data else null,
             .shell_pid = pid,
             .exit_code = if (kind == .end) std.fmt.parseInt(i32, data, 10) catch null else null,
+            .source = "osc_7337",
         };
 
         mgr.handleCommandEvent(event);
@@ -5103,6 +5304,7 @@ pub const Application = extern struct {
             else
                 null;
             priv.workspace_git_dirty.items[active_idx] = result.dirty;
+            self.upsertTerminalHistoryProject(active_idx);
         }
 
         log.debug(
@@ -5187,6 +5389,7 @@ pub const Application = extern struct {
                 else
                     null;
                 priv.workspace_git_dirty.items[i] = new_dirty;
+                self.upsertTerminalHistoryProject(@intCast(i));
             }
         }
 
@@ -5230,6 +5433,7 @@ pub const Application = extern struct {
             else
                 null;
             priv.workspace_git_dirty.items[i] = result.dirty;
+            self_ptr.upsertTerminalHistoryProject(@intCast(i));
         }
 
         self_ptr.refreshAllWorkspaceSidebars();

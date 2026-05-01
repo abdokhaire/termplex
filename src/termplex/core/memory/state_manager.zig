@@ -11,6 +11,7 @@
 const std = @import("std");
 const state_mod = @import("state.zig");
 const paths_mod = @import("paths.zig");
+const terminal_history_db = @import("../terminal_history_db.zig");
 
 const log = std.log.scoped(.memory_state);
 
@@ -54,11 +55,15 @@ pub const CommandEvent = struct {
 
     kind: Kind,
     surface_uuid: []const u8,
+    workspace_id: []const u8 = "default",
     workspace_name: []const u8,
     workspace_dir: []const u8,
+    working_directory: ?[]const u8 = null,
+    transcript_path: ?[]const u8 = null,
     command: ?[]const u8, // Set for start events
     shell_pid: ?u32,
     exit_code: ?i32, // Set for end events
+    source: []const u8 = "osc_7337",
 };
 
 /// The state manager tracks live process state and persists it to disk.
@@ -70,18 +75,27 @@ pub const StateManager = struct {
     /// Loaded or built state. null until first event or load.
     state: ?MemoryState,
 
+    /// Optional SQLite command-history sink. Owned by the application.
+    command_history_db: ?*terminal_history_db.Database,
+
     pub fn init(allocator: std.mem.Allocator, orchestration_dir: []const u8) StateManager {
         return .{
             .allocator = allocator,
             .orchestration_dir = orchestration_dir,
             .dirty = false,
             .state = null,
+            .command_history_db = null,
         };
     }
 
     pub fn deinit(self: *StateManager) void {
         if (self.state) |*s| s.deinit(self.allocator);
         self.state = null;
+        self.command_history_db = null;
+    }
+
+    pub fn setCommandHistoryDatabase(self: *StateManager, db: ?*terminal_history_db.Database) void {
+        self.command_history_db = db;
     }
 
     /// Load state from disk. Returns true if state was loaded.
@@ -234,14 +248,82 @@ pub const StateManager = struct {
                 surface.process_pid = event.shell_pid;
                 surface.process_alive = true;
                 surface.detection_method = .shell_hook;
+
+                if (now_str) |started_at| {
+                    self.forwardCommandEventToDatabase(event, started_at);
+                }
             },
             .end => {
                 surface.process_alive = false;
+
+                const ended_at = iso8601Now(self.allocator) catch null;
+                if (ended_at) |ts| {
+                    defer self.allocator.free(ts);
+                    self.forwardCommandEventToDatabase(event, ts);
+                }
             },
         }
 
         refreshLastUpdated(self, s);
         self.dirty = true;
+    }
+
+    fn forwardCommandEventToDatabase(self: *StateManager, event: CommandEvent, timestamp: []const u8) void {
+        var db = self.command_history_db orelse return;
+
+        switch (event.kind) {
+            .start => {
+                const command = event.command orelse return;
+                const working_directory = event.working_directory orelse event.workspace_dir;
+                const transcript_path = event.transcript_path orelse "";
+
+                db.ensureProject(.{
+                    .workspace_id = event.workspace_id,
+                    .workspace_name = event.workspace_name,
+                    .workspace_dir = event.workspace_dir,
+                    .timestamp = timestamp,
+                }) catch |err| {
+                    log.warn("failed to upsert terminal history project: {}", .{err});
+                    return;
+                };
+
+                db.upsertSurface(.{
+                    .history_id = event.surface_uuid,
+                    .workspace_id = event.workspace_id,
+                    .workspace_name = event.workspace_name,
+                    .workspace_dir = event.workspace_dir,
+                    .working_directory = working_directory,
+                    .transcript_path = transcript_path,
+                    .timestamp = timestamp,
+                }) catch |err| {
+                    log.warn("failed to upsert terminal history surface: {}", .{err});
+                    return;
+                };
+
+                _ = db.startCommand(.{
+                    .history_id = event.surface_uuid,
+                    .workspace_id = event.workspace_id,
+                    .workspace_name = event.workspace_name,
+                    .workspace_dir = event.workspace_dir,
+                    .command = command,
+                    .started_at = timestamp,
+                    .source = event.source,
+                }) catch |err| {
+                    log.warn("failed to start terminal history command: {}", .{err});
+                    return;
+                };
+            },
+            .end => {
+                db.finishLatestCommand(.{
+                    .history_id = event.surface_uuid,
+                    .ended_at = timestamp,
+                    .exit_code = event.exit_code,
+                }) catch |err| {
+                    log.warn("failed to finish terminal history command: {}", .{err});
+                    return;
+                };
+            },
+        }
     }
 
     /// Grow workspace_names and workspaces arrays by one entry.
@@ -472,6 +554,67 @@ test "state manager handle command end marks process dead" {
 
     const s = mgr.getState().?;
     try std.testing.expectEqual(false, s.workspaces[0].surfaces[0].process_alive);
+}
+
+test "state manager forwards command lifecycle to terminal history database" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try terminal_history_db.Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    var mgr = StateManager.init(allocator, "/tmp/test-orch");
+    defer mgr.deinit();
+    mgr.setCommandHistoryDatabase(&db);
+
+    mgr.handleCommandEvent(.{
+        .kind = .start,
+        .surface_uuid = "hist-1234",
+        .workspace_id = "workspace-1234",
+        .workspace_name = "backend",
+        .workspace_dir = "/home/user/backend",
+        .working_directory = "/home/user/backend/api",
+        .transcript_path = "/tmp/hist-1234.ansi",
+        .command = "zig build test",
+        .shell_pid = 1234,
+        .exit_code = null,
+        .source = "osc_7337",
+    });
+
+    mgr.handleCommandEvent(.{
+        .kind = .end,
+        .surface_uuid = "hist-1234",
+        .workspace_id = "workspace-1234",
+        .workspace_name = "backend",
+        .workspace_dir = "/home/user/backend",
+        .working_directory = "/home/user/backend/api",
+        .transcript_path = "/tmp/hist-1234.ansi",
+        .command = null,
+        .shell_pid = 1234,
+        .exit_code = 0,
+        .source = "osc_7337",
+    });
+
+    const recent = try db.listRecentCommands(.{ .limit = 10 });
+    defer recent.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), recent.items.len);
+    try std.testing.expectEqualStrings("hist-1234", recent.items[0].history_id);
+    try std.testing.expectEqualStrings("workspace-1234", recent.items[0].workspace_id);
+    try std.testing.expectEqualStrings("zig build test", recent.items[0].command);
+    try std.testing.expectEqual(@as(?i32, 0), recent.items[0].exit_code);
+
+    var project = try db.getProject("workspace-1234");
+    defer project.deinit(allocator);
+    try std.testing.expectEqualStrings("backend", project.workspace_name);
 }
 
 test "state manager refreshes last_updated on subsequent command events" {

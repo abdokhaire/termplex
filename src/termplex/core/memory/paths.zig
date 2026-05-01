@@ -66,6 +66,11 @@ pub fn ensureDir(dir_path: []const u8) !void {
     };
 }
 
+pub fn resolveTerminalHistoryDatabasePath(allocator: std.mem.Allocator) ![]const u8 {
+    const terminal_history = @import("../terminal_history.zig");
+    return terminal_history.databasePath(allocator);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
