@@ -586,6 +586,7 @@ pub const Surface = struct {
             app.core_app,
             app,
             self,
+            null,
         );
         errdefer self.core_surface.deinit();
 

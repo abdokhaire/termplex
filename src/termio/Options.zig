@@ -5,6 +5,16 @@ const apprt = @import("../apprt.zig");
 const renderer = @import("../renderer.zig");
 const Config = @import("../config.zig").Config;
 const termio = @import("../termio.zig");
+const terminal_history = @import("../termplex/core/terminal_history.zig");
+
+pub const History = struct {
+    workspace_id: []const u8,
+    history_id: []const u8,
+    working_directory: []const u8 = "",
+    env_fingerprint: ?[]const u8 = null,
+    initial_replay: []const u8 = "",
+    options: terminal_history.Options = .{},
+};
 
 /// All size metrics for the terminal.
 size: renderer.Size,
@@ -39,3 +49,6 @@ renderer_mailbox: *renderer.Thread.Mailbox,
 
 /// The mailbox for sending the surface messages.
 surface_mailbox: apprt.surface.Mailbox,
+
+/// Optional terminal transcript persistence context.
+history: ?History = null,

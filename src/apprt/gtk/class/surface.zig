@@ -3462,6 +3462,20 @@ pub const Surface = extern struct {
             config.@"working-directory" = wd_val;
         }
 
+        const workspace_id_owned = app.currentWorkspaceIdString(alloc) catch null;
+        defer if (workspace_id_owned) |workspace_id| alloc.free(workspace_id);
+        const working_directory_for_history = if (config.@"working-directory") |wd|
+            wd.value() orelse ""
+        else
+            "";
+        const history_context: ?@import("../../../termio/Options.zig").History = if (priv.history_id) |history_id| .{
+            .workspace_id = workspace_id_owned orelse "default",
+            .history_id = history_id,
+            .working_directory = working_directory_for_history,
+            .initial_replay = priv.initial_replay orelse "",
+            .options = app.terminalHistoryOptions(),
+        } else null;
+
         // Initialize the surface
         surface.init(
             alloc,
@@ -3469,6 +3483,7 @@ pub const Surface = extern struct {
             app.core(),
             app.rt(),
             &priv.rt_surface,
+            history_context,
         ) catch |err| {
             log.warn("failed to initialize surface err={}", .{err});
             return error.SurfaceError;

@@ -46,6 +46,7 @@ const git_probe = @import("../../../termplex/core/git_probe.zig");
 const notification_mod = @import("../../../termplex/core/notification.zig");
 const port_scanner = @import("../../../termplex/core/port_scanner.zig");
 const session_mod = @import("../../../termplex/core/session.zig");
+const terminal_history = @import("../../../termplex/core/terminal_history.zig");
 const workspace_mod = @import("../../../termplex/core/workspace.zig");
 const termplex_config = @import("../../../termplex/core/config.zig");
 const agents = @import("../../../termplex/ipc/agents.zig");
@@ -945,6 +946,24 @@ pub const Application = extern struct {
 
     pub fn currentWorkspaceIdString(self: *Self, alloc: std.mem.Allocator) ![]u8 {
         return self.workspaceIdString(alloc, self.private().active_workspace_idx);
+    }
+
+    pub fn terminalHistoryOptions(self: *Self) terminal_history.Options {
+        const cfg = self.private().termplex_cfg.terminal_history;
+        return .{
+            .enabled = cfg.enabled,
+            .restore_mode = if (std.mem.eql(u8, cfg.restore_mode, "off"))
+                .off
+            else if (std.mem.eql(u8, cfg.restore_mode, "layout_only"))
+                .layout_only
+            else
+                .transcript,
+            .max_lines_per_surface = cfg.max_lines_per_surface,
+            .max_bytes_per_surface = @intCast(cfg.max_bytes_per_surface),
+            .persist_alternate_screen = cfg.persist_alternate_screen,
+            .replay_notice = cfg.replay_notice,
+            .retention_days = cfg.retention_days,
+        };
     }
 
     fn workspaceIndexForUuid(self: *Self, id: Uuid) ?u32 {
@@ -7366,7 +7385,7 @@ const Action = struct {
                         win.createTabInView(tv, ws_dir);
                     } else {
                         for (snapshots) |*snapshot| {
-                            win.createRestoredTabInView(tv, snapshot, ws_dir);
+                            win.createRestoredTabInView(tv, ws_index, snapshot, ws_dir);
                         }
                     }
 

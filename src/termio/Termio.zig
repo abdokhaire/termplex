@@ -19,6 +19,7 @@ const apprt = @import("../apprt.zig");
 const internal_os = @import("../os/main.zig");
 const windows = internal_os.windows;
 const configpkg = @import("../config.zig");
+const terminal_history = @import("../termplex/core/terminal_history.zig");
 
 const log = std.log.scoped(.io_exec);
 
@@ -61,6 +62,12 @@ mailbox: termio.Mailbox,
 /// The stream parser. This parses the stream of escape codes and so on
 /// from the child process and calls callbacks in the stream handler.
 terminal_stream: StreamHandler.Stream,
+
+/// Transcript persistence state.
+history_path: ?[]const u8 = null,
+history_options: terminal_history.Options = .{},
+history_sanitizer: terminal_history.SanitizerState = .{},
+history_writer: ?terminal_history.TranscriptWriter = null,
 
 /// Last time the cursor was reset. This is used to prevent message
 /// flooding with cursor resets.
@@ -303,6 +310,20 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         opts.full_config,
     );
 
+    const history_options = if (opts.history) |history| history.options else terminal_history.Options{};
+    const history_path = if (opts.history) |history| blk: {
+        if (!history.options.enabled) break :blk null;
+        break :blk terminal_history.transcriptPath(
+            alloc,
+            history.workspace_id,
+            history.history_id,
+        ) catch |err| err: {
+            log.warn("failed to resolve terminal history path: {}", .{err});
+            break :err null;
+        };
+    } else null;
+    errdefer if (history_path) |path| alloc.free(path);
+
     self.* = .{
         .alloc = alloc,
         .terminal = term,
@@ -316,10 +337,36 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         .mailbox = opts.mailbox,
         .terminal_stream = .initAlloc(alloc, handler),
         .thread_enter_state = thread_enter_state,
+        .history_path = history_path,
+        .history_options = history_options,
+        .history_writer = if (history_path) |path|
+            terminal_history.TranscriptWriter.init(alloc, path, history_options)
+        else
+            null,
     };
+
+    if (opts.history) |history| {
+        if (history.options.enabled and history.options.restore_mode == .transcript and history.initial_replay.len > 0) {
+            self.processOutputNoHistory(history.initial_replay);
+            if (history.options.replay_notice) {
+                self.processOutputNoHistory("\r\n[Termplex restored previous terminal output. New shell starts below.]\r\n");
+            }
+        }
+    }
 }
 
 pub fn deinit(self: *Termio) void {
+    if (self.history_writer) |*writer| {
+        writer.flush() catch |err| log.warn("terminal history final flush failed: {}", .{err});
+        writer.deinit();
+        self.history_writer = null;
+    }
+    if (self.history_path) |path| {
+        self.alloc.free(path);
+        self.history_path = null;
+    }
+    self.history_sanitizer.deinit(self.alloc);
+
     self.backend.deinit();
     self.terminal.deinit(self.alloc);
     self.config.deinit();
@@ -680,13 +727,46 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
     // the lock to grab our read data.
     self.renderer_state.mutex.lock();
     defer self.renderer_state.mutex.unlock();
-    self.processOutputLocked(buf);
+    self.processOutputLocked(buf, true);
+}
+
+fn processOutputNoHistory(self: *Termio, buf: []const u8) void {
+    self.renderer_state.mutex.lock();
+    defer self.renderer_state.mutex.unlock();
+    self.processOutputLocked(buf, false);
 }
 
 /// Process output from readdata but the lock is already held.
-fn processOutputLocked(self: *Termio, buf: []const u8) void {
+fn processOutputLocked(self: *Termio, buf: []const u8, capture_history: bool) void {
     // Schedule a render. We can call this first because we have the lock.
     self.terminal_stream.handler.queueRender() catch unreachable;
+
+    if (capture_history) {
+        if (self.history_writer) |*writer| {
+            var visible: std.ArrayListUnmanaged(u8) = .empty;
+            defer visible.deinit(self.alloc);
+
+            terminal_history.sanitizeChunk(
+                self.alloc,
+                &self.history_sanitizer,
+                buf,
+                &visible,
+            ) catch |err| {
+                log.warn("terminal history sanitize failed: {}", .{err});
+            };
+
+            if (visible.items.len > 0) {
+                writer.queue(visible.items) catch |err| {
+                    log.warn("terminal history queue failed: {}", .{err});
+                };
+                if (writer.shouldFlush(std.time.nanoTimestamp())) {
+                    writer.flush() catch |err| {
+                        log.warn("terminal history coalesced flush failed: {}", .{err});
+                    };
+                }
+            }
+        }
+    }
 
     // Whenever a character is typed, we ensure the cursor is in the
     // non-blink state so it is rendered if visible. If we're under
