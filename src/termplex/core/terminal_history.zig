@@ -40,6 +40,18 @@ pub fn safeId(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
+pub fn isValidUuidLike(value: []const u8) bool {
+    if (value.len != 36) return false;
+    for (value, 0..) |c, i| {
+        if (i == 8 or i == 13 or i == 18 or i == 23) {
+            if (c != '-') return false;
+            continue;
+        }
+        if (!std.ascii.isHex(c)) return false;
+    }
+    return true;
+}
+
 pub fn capLines(allocator: std.mem.Allocator, input: []const u8, max_lines: usize) ![]u8 {
     if (max_lines == 0 or input.len == 0) return allocator.dupe(u8, "");
 
@@ -149,7 +161,7 @@ pub fn sanitizeChunk(
             continue;
         }
 
-        try out.appendSlice(allocator, input.items[i .. @min(i + 2, input.items.len)]);
+        try out.appendSlice(allocator, input.items[i..@min(i + 2, input.items.len)]);
         i += 2;
     }
 }
@@ -166,6 +178,11 @@ test "terminal history capLines keeps newest complete lines" {
     const capped = try capLines(allocator, "one\ntwo\nthree\nfour\n", 3);
     defer allocator.free(capped);
     try std.testing.expectEqualStrings("two\nthree\nfour\n", capped);
+}
+
+test "terminal history validates uuid-like ids" {
+    try std.testing.expect(isValidUuidLike("1bd69a49-a78d-4a3c-a3a8-8898dbd260a1"));
+    try std.testing.expect(!isValidUuidLike("shell-1234"));
 }
 
 test "terminal history sanitizer mirrors T3Code terminal reply stripping" {

@@ -17,6 +17,7 @@ const input = @import("../../../input.zig");
 const internal_os = @import("../../../os/main.zig");
 const renderer = @import("../../../renderer.zig");
 const terminal = @import("../../../terminal/main.zig");
+const termplex_uuid = @import("../../../termplex/util/uuid.zig");
 const CoreSurface = @import("../../../Surface.zig");
 const gresource = @import("../build/gresource.zig");
 const ext = @import("../ext.zig");
@@ -584,6 +585,12 @@ pub const Surface = extern struct {
         /// The title of this surface, if any has been set.
         title: ?[:0]const u8 = null,
 
+        /// Stable logical terminal history ID used for transcript persistence.
+        history_id: ?[:0]const u8 = null,
+
+        /// Initial replay bytes to write into the frontend terminal only.
+        initial_replay: ?[]const u8 = null,
+
         /// The manually overridden title of this surface from `promptTitle`.
         title_override: ?[:0]const u8 = null,
 
@@ -708,6 +715,8 @@ pub const Surface = extern struct {
         overrides: struct {
             command: ?configpkg.Command = null,
             working_directory: ?[:0]const u8 = null,
+            history_id: ?[:0]const u8 = null,
+            initial_replay: ?[]const u8 = null,
 
             pub const none: @This() = .{};
         } = .none,
@@ -719,6 +728,8 @@ pub const Surface = extern struct {
         command: ?configpkg.Command = null,
         working_directory: ?[:0]const u8 = null,
         title: ?[:0]const u8 = null,
+        history_id: ?[:0]const u8 = null,
+        initial_replay: ?[]const u8 = null,
 
         pub const none: @This() = .{};
     }) *Self {
@@ -730,7 +741,19 @@ pub const Surface = extern struct {
         priv.overrides = .{
             .command = if (overrides.command) |c| c.clone(alloc) catch null else null,
             .working_directory = if (overrides.working_directory) |wd| alloc.dupeZ(u8, wd) catch null else null,
+            .history_id = if (overrides.history_id) |id| alloc.dupeZ(u8, id) catch null else null,
+            .initial_replay = if (overrides.initial_replay) |bytes| alloc.dupe(u8, bytes) catch null else null,
         };
+        if (priv.overrides.history_id) |id| {
+            priv.history_id = alloc.dupeZ(u8, id) catch null;
+        } else {
+            var id_buf: [36]u8 = undefined;
+            termplex_uuid.format(termplex_uuid.generate(), &id_buf);
+            priv.history_id = alloc.dupeZ(u8, id_buf[0..]) catch null;
+        }
+        if (priv.overrides.initial_replay) |bytes| {
+            priv.initial_replay = alloc.dupe(u8, bytes) catch null;
+        }
         return self;
     }
 
@@ -1927,6 +1950,14 @@ pub const Surface = extern struct {
             glib.free(@ptrCast(@constCast(v)));
             priv.title = null;
         }
+        if (priv.history_id) |v| {
+            alloc.free(v);
+            priv.history_id = null;
+        }
+        if (priv.initial_replay) |v| {
+            alloc.free(v);
+            priv.initial_replay = null;
+        }
         if (priv.title_override) |v| {
             glib.free(@ptrCast(@constCast(v)));
             priv.title_override = null;
@@ -1938,6 +1969,14 @@ pub const Surface = extern struct {
         if (priv.overrides.working_directory) |wd| {
             alloc.free(wd);
             priv.overrides.working_directory = null;
+        }
+        if (priv.overrides.history_id) |id| {
+            alloc.free(id);
+            priv.overrides.history_id = null;
+        }
+        if (priv.overrides.initial_replay) |bytes| {
+            alloc.free(bytes);
+            priv.overrides.initial_replay = null;
         }
 
         // Clean up key sequence and key table state
@@ -1970,6 +2009,17 @@ pub const Surface = extern struct {
     /// Returns the manually overridden title, if any.
     pub fn getTitleOverride(self: *Self) ?[:0]const u8 {
         return self.private().title_override;
+    }
+
+    pub fn getHistoryId(self: *Self) ?[:0]const u8 {
+        return self.private().history_id;
+    }
+
+    pub fn takeInitialReplay(self: *Self) ?[]const u8 {
+        const priv = self.private();
+        const replay = priv.initial_replay;
+        priv.initial_replay = null;
+        return replay;
     }
 
     /// Copies the effective title to the clipboard.

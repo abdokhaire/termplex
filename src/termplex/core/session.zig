@@ -5,8 +5,9 @@
 // File location: $XDG_STATE_HOME/termplex/session.json
 //   (falls back to $HOME/.local/state/termplex/session.json)
 //
-// Session format version: 1
-// Version mismatches are rejected with error.UnsupportedVersion.
+// Session format version: 6
+// Versions newer than the current schema are rejected with
+// error.UnsupportedVersion.
 
 const std = @import("std");
 const workspace_mod = @import("./workspace.zig");
@@ -19,7 +20,7 @@ const SplitDirection = workspace_mod.SplitDirection;
 // Public constants
 // ---------------------------------------------------------------------------
 
-pub const CURRENT_VERSION: u32 = 1;
+pub const CURRENT_VERSION: u32 = 6;
 
 // ---------------------------------------------------------------------------
 // SessionData — the in-memory representation
@@ -35,12 +36,15 @@ pub const WindowGeometry = struct {
 pub const SurfaceData = struct {
     /// UUID string (36 chars).
     id: []const u8,
+    /// Stable logical terminal history identifier.
+    history_id: []const u8,
     working_directory: []const u8,
     /// null when no custom title is set.
     custom_title: ?[]const u8,
 
     pub fn deinit(self: *SurfaceData, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
+        allocator.free(self.history_id);
         allocator.free(self.working_directory);
         if (self.custom_title) |t| allocator.free(t);
     }
@@ -65,12 +69,15 @@ pub const TabData = struct {
 };
 
 pub const WorkspaceData = struct {
+    /// Stable workspace UUID string.
+    workspace_id: []const u8,
     name: []const u8,
     working_directory: []const u8,
     active_tab_index: usize,
     tabs: []TabData,
 
     pub fn deinit(self: *WorkspaceData, allocator: std.mem.Allocator) void {
+        allocator.free(self.workspace_id);
         allocator.free(self.name);
         allocator.free(self.working_directory);
         for (self.tabs) |*t| t.deinit(allocator);
@@ -237,6 +244,8 @@ fn toJson(allocator: std.mem.Allocator, data: SessionData) ![]u8 {
 
 fn writeWorkspace(jw: *std.json.Stringify, ws: WorkspaceData) !void {
     try jw.beginObject();
+    try jw.objectField("workspace_id");
+    try jw.write(ws.workspace_id);
     try jw.objectField("name");
     try jw.write(ws.name);
     try jw.objectField("working_directory");
@@ -286,6 +295,8 @@ fn writeSurface(jw: *std.json.Stringify, s: SurfaceData) !void {
     try jw.beginObject();
     try jw.objectField("id");
     try jw.write(s.id);
+    try jw.objectField("history_id");
+    try jw.write(s.history_id);
     try jw.objectField("working_directory");
     try jw.write(s.working_directory);
     try jw.objectField("custom_title");
@@ -315,7 +326,7 @@ fn fromJson(allocator: std.mem.Allocator, json_str: []const u8) !SessionData {
         .integer => |n| if (n < 0) return error.CorruptSession else @intCast(n),
         else => return error.CorruptSession,
     };
-    if (version != CURRENT_VERSION) return error.UnsupportedVersion;
+    if (version == 0 or version > CURRENT_VERSION) return error.UnsupportedVersion;
 
     // Window geometry.
     const win_val = root.object.get("window") orelse return error.CorruptSession;
@@ -392,6 +403,16 @@ fn parseWorkspace(allocator: std.mem.Allocator, val: std.json.Value) !WorkspaceD
     if (val != .object) return error.CorruptSession;
     const obj = val.object;
 
+    const workspace_id = if (obj.get("workspace_id")) |workspace_id_val| blk: {
+        if (workspace_id_val != .string) return error.CorruptSession;
+        break :blk try allocator.dupe(u8, workspace_id_val.string);
+    } else blk: {
+        var id_buf: [36]u8 = undefined;
+        uuid_mod.format(uuid_mod.generate(), &id_buf);
+        break :blk try allocator.dupe(u8, id_buf[0..]);
+    };
+    errdefer allocator.free(workspace_id);
+
     const name_val = obj.get("name") orelse return error.CorruptSession;
     if (name_val != .string) return error.CorruptSession;
     const name = try allocator.dupe(u8, name_val.string);
@@ -423,6 +444,7 @@ fn parseWorkspace(allocator: std.mem.Allocator, val: std.json.Value) !WorkspaceD
     }
 
     return WorkspaceData{
+        .workspace_id = workspace_id,
         .name = name,
         .working_directory = working_directory,
         .active_tab_index = active_tab_index,
@@ -489,6 +511,12 @@ fn parseSurface(allocator: std.mem.Allocator, val: std.json.Value) !SurfaceData 
     const id = try allocator.dupe(u8, id_val.string);
     errdefer allocator.free(id);
 
+    const history_id = if (obj.get("history_id")) |history_id_val| blk: {
+        if (history_id_val != .string) return error.CorruptSession;
+        break :blk try allocator.dupe(u8, history_id_val.string);
+    } else try allocator.dupe(u8, id);
+    errdefer allocator.free(history_id);
+
     const wd_val = obj.get("working_directory") orelse return error.CorruptSession;
     if (wd_val != .string) return error.CorruptSession;
     const working_directory = try allocator.dupe(u8, wd_val.string);
@@ -500,9 +528,11 @@ fn parseSurface(allocator: std.mem.Allocator, val: std.json.Value) !SurfaceData 
         .null => null,
         else => return error.CorruptSession,
     };
+    errdefer if (custom_title) |ct| allocator.free(ct);
 
     return SurfaceData{
         .id = id,
+        .history_id = history_id,
         .working_directory = working_directory,
         .custom_title = custom_title,
     };
@@ -537,6 +567,7 @@ test "getSessionPath returns path containing session.json" {
 
 /// Build a minimal SessionData for round-trip testing.
 fn makeSampleSessionData(allocator: std.mem.Allocator) !SessionData {
+    const workspace_id_str = "4c6d7e45-e9b8-42d8-9a65-0ee8cd2d84ab";
     const surf_id_str = "550e8400-e29b-41d4-a716-446655440000";
     const surf_uuid = try uuid_mod.parse(surf_id_str);
 
@@ -547,6 +578,7 @@ fn makeSampleSessionData(allocator: std.mem.Allocator) !SessionData {
     const surfaces = try allocator.alloc(SurfaceData, 1);
     surfaces[0] = SurfaceData{
         .id = try allocator.dupe(u8, surf_id_str),
+        .history_id = try allocator.dupe(u8, surf_id_str),
         .working_directory = try allocator.dupe(u8, "/home/user/project"),
         .custom_title = null,
     };
@@ -563,6 +595,7 @@ fn makeSampleSessionData(allocator: std.mem.Allocator) !SessionData {
     // WorkspaceData.
     const workspaces = try allocator.alloc(WorkspaceData, 1);
     workspaces[0] = WorkspaceData{
+        .workspace_id = try allocator.dupe(u8, workspace_id_str),
         .name = try allocator.dupe(u8, "Project A"),
         .working_directory = try allocator.dupe(u8, "/home/user/project"),
         .active_tab_index = 0,
@@ -594,7 +627,7 @@ test "toJson produces valid JSON with expected fields" {
     const root = parsed.value.object;
 
     // version
-    try std.testing.expectEqual(@as(i64, 1), root.get("version").?.integer);
+    try std.testing.expectEqual(@as(i64, CURRENT_VERSION), root.get("version").?.integer);
 
     // window
     const win = root.get("window").?.object;
@@ -614,6 +647,7 @@ test "toJson produces valid JSON with expected fields" {
     try std.testing.expectEqual(@as(usize, 1), ws_arr.items.len);
 
     const ws = ws_arr.items[0].object;
+    try std.testing.expectEqualStrings("4c6d7e45-e9b8-42d8-9a65-0ee8cd2d84ab", ws.get("workspace_id").?.string);
     try std.testing.expectEqualStrings("Project A", ws.get("name").?.string);
 
     // tabs array inside workspace
@@ -664,6 +698,7 @@ test "fromJson round-trips SessionData" {
 
     const s = tab.surfaces[0];
     try std.testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", s.id);
+    try std.testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", s.history_id);
     try std.testing.expectEqualStrings("/home/user/project", s.working_directory);
     try std.testing.expect(s.custom_title == null);
 }
@@ -684,6 +719,46 @@ test "fromJson rejects missing version field" {
         \\{"window":{"x":0,"y":0,"width":800,"height":600},"sidebar_width":200,"active_workspace_index":0,"workspaces":[]}
     ;
     try std.testing.expectError(error.CorruptSession, fromJson(allocator, bad_json));
+}
+
+test "session data preserves workspace id and surface history id" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "version": 6,
+        \\  "window": {"x":0,"y":0,"width":800,"height":600},
+        \\  "sidebar_width": 200,
+        \\  "active_workspace_index": 0,
+        \\  "workspaces": [{
+        \\    "workspace_id": "4c6d7e45-e9b8-42d8-9a65-0ee8cd2d84ab",
+        \\    "name": "Project A",
+        \\    "working_directory": "/home/user/project",
+        \\    "active_tab_index": 0,
+        \\    "tabs": [{
+        \\      "title": null,
+        \\      "focused_surface_id": "1bd69a49-a78d-4a3c-a3a8-8898dbd260a1",
+        \\      "split_layout": {"type":"leaf","surface_id":"1bd69a49-a78d-4a3c-a3a8-8898dbd260a1"},
+        \\      "surfaces": [{
+        \\        "id": "1bd69a49-a78d-4a3c-a3a8-8898dbd260a1",
+        \\        "history_id": "1bd69a49-a78d-4a3c-a3a8-8898dbd260a1",
+        \\        "working_directory": "/home/user/project",
+        \\        "custom_title": null
+        \\      }]
+        \\    }]
+        \\  }]
+        \\}
+    ;
+
+    var restored = try fromJson(allocator, json);
+    defer restored.deinit(allocator);
+    try std.testing.expectEqualStrings(
+        "4c6d7e45-e9b8-42d8-9a65-0ee8cd2d84ab",
+        restored.workspaces[0].workspace_id,
+    );
+    try std.testing.expectEqualStrings(
+        "1bd69a49-a78d-4a3c-a3a8-8898dbd260a1",
+        restored.workspaces[0].tabs[0].surfaces[0].history_id,
+    );
 }
 
 test "fromJson rejects malformed JSON" {
@@ -798,11 +873,13 @@ test "round-trip with split layout" {
     const surfaces = try allocator.alloc(SurfaceData, 2);
     surfaces[0] = SurfaceData{
         .id = try allocator.dupe(u8, left_id_str),
+        .history_id = try allocator.dupe(u8, left_id_str),
         .working_directory = try allocator.dupe(u8, "/projects/left"),
         .custom_title = try allocator.dupe(u8, "editor"),
     };
     surfaces[1] = SurfaceData{
         .id = try allocator.dupe(u8, right_id_str),
+        .history_id = try allocator.dupe(u8, right_id_str),
         .working_directory = try allocator.dupe(u8, "/projects/right"),
         .custom_title = null,
     };
@@ -817,6 +894,7 @@ test "round-trip with split layout" {
 
     const workspaces = try allocator.alloc(WorkspaceData, 1);
     workspaces[0] = WorkspaceData{
+        .workspace_id = try allocator.dupe(u8, "4c6d7e45-e9b8-42d8-9a65-0ee8cd2d84ab"),
         .name = try allocator.dupe(u8, "Dev"),
         .working_directory = try allocator.dupe(u8, "/projects"),
         .active_tab_index = 0,

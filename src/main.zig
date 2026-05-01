@@ -24,5 +24,6 @@ else
 test {
     _ = entrypoint;
     _ = @import("termplex/core/config.zig");
+    _ = @import("termplex/core/session.zig");
     _ = @import("termplex/core/terminal_history.zig");
 }

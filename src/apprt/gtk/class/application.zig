@@ -936,6 +936,17 @@ pub const Application = extern struct {
         return priv.workspace_ids.items[index];
     }
 
+    pub fn workspaceIdString(self: *Self, alloc: std.mem.Allocator, index: u32) ![]u8 {
+        const workspace_id = self.workspaceUuid(index) orelse return error.NotFound;
+        var buf: [36]u8 = undefined;
+        uuid.format(workspace_id, &buf);
+        return alloc.dupe(u8, buf[0..]);
+    }
+
+    pub fn currentWorkspaceIdString(self: *Self, alloc: std.mem.Allocator) ![]u8 {
+        return self.workspaceIdString(alloc, self.private().active_workspace_idx);
+    }
+
     fn workspaceIndexForUuid(self: *Self, id: Uuid) ?u32 {
         const priv = self.private();
         for (priv.workspace_ids.items, 0..) |workspace_id, idx| {
@@ -2420,7 +2431,10 @@ pub const Application = extern struct {
     ) !Uuid {
         if (surfaceUuidFor(entries.items, surface)) |existing| return existing;
 
-        const id = uuid.generate();
+        const id = if (surface.getHistoryId()) |history_id|
+            uuid.parse(history_id) catch uuid.generate()
+        else
+            uuid.generate();
         try entries.append(alloc, .{
             .surface = surface,
             .id = id,
@@ -2519,6 +2533,12 @@ pub const Application = extern struct {
             var id_buf: [36]u8 = undefined;
             uuid.format(entry.id, &id_buf);
             try appendJsonString(buf, alloc, id_buf[0..]);
+            try buf.appendSlice(alloc, ",\"history_id\":");
+            try appendJsonString(
+                buf,
+                alloc,
+                if (entry.surface.getHistoryId()) |history_id| history_id else id_buf[0..],
+            );
             try buf.appendSlice(alloc, ",\"working_directory\":");
             try appendJsonString(
                 buf,
@@ -4045,8 +4065,8 @@ pub const Application = extern struct {
             }
         }
 
-        // Build JSON workspaces array (v5: full tab snapshots including
-        // split layouts, focused surfaces, and per-surface metadata).
+        // Build JSON workspaces array (v6: full tab snapshots plus stable
+        // workspace and terminal history IDs).
         var ws_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer ws_buf.deinit(alloc);
         ws_buf.appendSlice(alloc, "[") catch return;
@@ -4059,7 +4079,11 @@ pub const Application = extern struct {
             if (need_comma) ws_buf.appendSlice(alloc, ",") catch return;
             need_comma = true;
             const dir = if (i < priv.workspace_dirs.items.len) priv.workspace_dirs.items[i] else "";
-            ws_buf.appendSlice(alloc, "{\"name\":") catch return;
+            ws_buf.appendSlice(alloc, "{\"workspace_id\":") catch return;
+            var workspace_id_buf: [36]u8 = undefined;
+            uuid.format(priv.workspace_ids.items[i], &workspace_id_buf);
+            appendJsonString(&ws_buf, alloc, workspace_id_buf[0..]) catch return;
+            ws_buf.appendSlice(alloc, ",\"name\":") catch return;
             appendJsonString(&ws_buf, alloc, name) catch return;
             ws_buf.appendSlice(alloc, ",\"dir\":") catch return;
             appendJsonString(&ws_buf, alloc, dir) catch return;
@@ -4080,7 +4104,7 @@ pub const Application = extern struct {
                     if (gobject.ext.cast(Tab, tab_widget)) |tab| {
                         appendSessionTabJson(&ws_buf, alloc, tab, page, dir) catch return;
                     } else {
-                        ws_buf.appendSlice(alloc, "{\"title\":null,\"focused_surface_id\":null,\"split_layout\":{\"type\":\"leaf\",\"surface_id\":\"00000000-0000-0000-0000-000000000000\"},\"surfaces\":[{\"id\":\"00000000-0000-0000-0000-000000000000\",\"working_directory\":") catch return;
+                        ws_buf.appendSlice(alloc, "{\"title\":null,\"focused_surface_id\":null,\"split_layout\":{\"type\":\"leaf\",\"surface_id\":\"00000000-0000-0000-0000-000000000000\"},\"surfaces\":[{\"id\":\"00000000-0000-0000-0000-000000000000\",\"history_id\":\"00000000-0000-0000-0000-000000000000\",\"working_directory\":") catch return;
                         appendJsonString(&ws_buf, alloc, dir) catch return;
                         ws_buf.appendSlice(alloc, ",\"custom_title\":null}]}") catch return;
                     }
@@ -4107,7 +4131,7 @@ pub const Application = extern struct {
 
         const json = std.fmt.allocPrint(alloc,
             \\{{
-            \\  "version": 5,
+            \\  "version": 6,
             \\  "window_width": {d},
             \\  "window_height": {d},
             \\  "sidebar_width": {d},
@@ -4171,6 +4195,12 @@ pub const Application = extern struct {
         const id = try alloc.dupe(u8, id_val.string);
         errdefer alloc.free(id);
 
+        const history_id = if (obj.get("history_id")) |history_id_val| blk: {
+            if (history_id_val != .string) return error.InvalidArgument;
+            break :blk try alloc.dupe(u8, history_id_val.string);
+        } else try alloc.dupe(u8, id);
+        errdefer alloc.free(history_id);
+
         const wd_val = obj.get("working_directory") orelse return error.InvalidArgument;
         if (wd_val != .string) return error.InvalidArgument;
         const working_directory = try alloc.dupe(u8, wd_val.string);
@@ -4184,6 +4214,7 @@ pub const Application = extern struct {
 
         return .{
             .id = id,
+            .history_id = history_id,
             .working_directory = working_directory,
             .custom_title = custom_title,
         };
@@ -4278,7 +4309,8 @@ pub const Application = extern struct {
         // Explicit 3 → v3 (v2 + tabs[] array with per-tab title).
         // Explicit 4 → v4 (v3 + workspace active_tab_index + per-tab dir).
         // Explicit 5 → v5 (full split/session snapshots per tab).
-        const max_supported_version: i64 = 5;
+        // Explicit 6 → v6 (v5 + stable workspace/history IDs).
+        const max_supported_version: i64 = 6;
         const format_version: u32 = if (root.object.get("version")) |vv|
             switch (vv) {
                 .integer => |n| if (n < 1 or n > max_supported_version) {
@@ -4605,7 +4637,20 @@ pub const Application = extern struct {
                 log.info("session restore: skipping duplicate workspace dir '{s}'", .{dir_str_raw});
                 continue;
             }
-            const workspace_id = uuid.generate();
+            const workspace_id: Uuid = blk: {
+                if (format_version >= 6) {
+                    switch (item) {
+                        .object => |obj| {
+                            if (obj.get("workspace_id")) |wv| switch (wv) {
+                                .string => |s| break :blk uuid.parse(s) catch uuid.generate(),
+                                else => {},
+                            };
+                        },
+                        else => {},
+                    }
+                }
+                break :blk uuid.generate();
+            };
             const tab_view = adw.TabView.new();
             _ = tab_view.as(gobject.Object).ref();
             priv.workspace_names.append(alloc, name) catch {

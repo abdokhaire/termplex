@@ -728,9 +728,13 @@ pub const Window = extern struct {
                 null;
             defer if (title_z) |title| Application.default().allocator().free(title);
 
+            const history_id_z = self.allocZString(surface_data.history_id) orelse return error.OutOfMemory;
+            defer Application.default().allocator().free(history_id_z);
+
             const surface = Surface.new(.{
                 .working_directory = wd_z,
                 .title = title_z,
+                .history_id = history_id_z,
             });
             _ = surface.refSink();
             try surfaces.put(surface_id, surface);
