@@ -129,8 +129,8 @@ pub const StateManager = struct {
         var global_paths = try paths_mod.resolveGlobalPaths(self.allocator, self.orchestration_dir);
         defer global_paths.deinit(self.allocator);
 
-        // Ensure orchestration directory exists
-        try paths_mod.ensureDir(self.orchestration_dir);
+        // Ensure orchestration directory exists after resolving defaults such as "~/...".
+        try paths_mod.ensureDir(global_paths.dir);
 
         const json = try state_mod.toJson(self.allocator, s);
         defer self.allocator.free(json);

@@ -820,13 +820,17 @@ pub const Application = extern struct {
             // orchestrator can save durable knowledge before exiting.
             if (priv.termplex_cfg.memory.flush_on_shutdown) {
                 const flush_prompt = "Session ending. Review what happened this session and write any durable knowledge to memory files. If nothing new was learned, do nothing.";
-                const flush_path = std.fmt.allocPrint(alloc, "{s}/flush_prompt.txt", .{priv.termplex_cfg.orchestration.dir}) catch null;
-                defer if (flush_path) |p| alloc.free(p);
-                if (flush_path) |path| {
-                    const f = std.fs.createFileAbsolute(path, .{}) catch null;
-                    if (f) |file| {
-                        defer file.close();
-                        file.writeAll(flush_prompt) catch {};
+                var global_paths = memory_paths.resolveGlobalPaths(alloc, priv.termplex_cfg.orchestration.dir) catch null;
+                defer if (global_paths) |*gp| gp.deinit(alloc);
+                if (global_paths) |gp| {
+                    memory_paths.ensureDir(gp.dir) catch {};
+                    const flush_path = std.fmt.allocPrint(alloc, "{s}/flush_prompt.txt", .{gp.dir}) catch null;
+                    defer if (flush_path) |p| alloc.free(p);
+                    if (flush_path) |path| {
+                        if (std.fs.createFileAbsolute(path, .{}) catch null) |file| {
+                            defer file.close();
+                            file.writeAll(flush_prompt) catch {};
+                        }
                     }
                 }
             }
@@ -4213,6 +4217,25 @@ pub const Application = extern struct {
     // primary detection mechanism. Proc inspection requires iterating
     // all surfaces to get shell PIDs, which is complex.
 
+    fn activeWorkspaceIndexForSession(active_idx: u32, orchestration_idx: ?u32) u32 {
+        const orch_idx = orchestration_idx orelse return active_idx;
+        if (active_idx == orch_idx) return 0;
+        if (active_idx > orch_idx) return active_idx - 1;
+        return active_idx;
+    }
+
+    fn activeWorkspaceIndexFromSession(saved_idx: u32, orchestration_idx: ?u32, workspace_count: usize) u32 {
+        if (workspace_count == 0) return 0;
+
+        var idx = saved_idx;
+        if (orchestration_idx) |orch_idx| {
+            if (idx >= orch_idx) idx += 1;
+        }
+
+        const last_idx: u32 = @intCast(workspace_count - 1);
+        return @min(idx, last_idx);
+    }
+
     /// Collect current state and atomically write it to the session JSON file.
     fn autosaveSession(self: *Self) void {
         const alloc = self.allocator();
@@ -4297,6 +4320,11 @@ pub const Application = extern struct {
             pwd_buf.appendSlice(alloc, "null") catch return;
         }
 
+        const active_workspace_index = activeWorkspaceIndexForSession(
+            priv.active_workspace_idx,
+            priv.orchestration_workspace_idx,
+        );
+
         const json = std.fmt.allocPrint(alloc,
             \\{{
             \\  "version": 6,
@@ -4312,7 +4340,7 @@ pub const Application = extern struct {
             window_width,
             window_height,
             sidebar_width,
-            priv.active_workspace_idx,
+            active_workspace_index,
             ws_buf.items,
             pwd_buf.items,
         }) catch return;
@@ -5014,14 +5042,18 @@ pub const Application = extern struct {
 
         // Restore active workspace index.
         if (root.object.get("active_workspace_index")) |av| {
-            const idx: u32 = switch (av) {
-                .integer => |n| if (n >= 0 and n < @as(i64, @intCast(priv.workspace_names.items.len)))
-                    @as(u32, @intCast(n))
+            const saved_idx: u32 = switch (av) {
+                .integer => |n| if (n >= 0 and n <= std.math.maxInt(u32))
+                    @intCast(n)
                 else
                     0,
                 else => 0,
             };
-            priv.active_workspace_idx = idx;
+            priv.active_workspace_idx = activeWorkspaceIndexFromSession(
+                saved_idx,
+                priv.orchestration_workspace_idx,
+                priv.workspace_names.items.len,
+            );
         }
 
         if (root.object.get("window_width")) |wv| {

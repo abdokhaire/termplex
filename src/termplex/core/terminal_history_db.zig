@@ -166,10 +166,7 @@ pub const Database = struct {
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !Database {
         const parent = std.fs.path.dirname(path) orelse return error.InvalidPath;
-        std.fs.makeDirAbsolute(parent) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
+        try std.fs.cwd().makePath(parent);
 
         const path_z = try allocator.dupeZ(u8, path);
         defer allocator.free(path_z);
@@ -653,4 +650,24 @@ test "terminal history db migrates and records command lifecycle" {
     defer project.deinit(allocator);
     try std.testing.expectEqualStrings("backend", project.workspace_name);
     try std.testing.expectEqual(true, project.git_dirty);
+}
+
+test "terminal history db creates nested parent directories" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "state", "termplex", "terminal-history", "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    try std.testing.expect(std.fs.path.isAbsolute(db_path));
+    const parent = std.fs.path.dirname(db_path) orelse return error.InvalidPath;
+    var dir = try std.fs.openDirAbsolute(parent, .{});
+    dir.close();
 }

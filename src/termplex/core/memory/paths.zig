@@ -13,10 +13,12 @@ const std = @import("std");
 
 /// Paths for the global memory files (under orchestration directory).
 pub const GlobalPaths = struct {
+    dir: []const u8,
     state_json: []const u8,
     memory_md: []const u8,
 
     pub fn deinit(self: *GlobalPaths, allocator: std.mem.Allocator) void {
+        allocator.free(self.dir);
         allocator.free(self.state_json);
         allocator.free(self.memory_md);
     }
@@ -35,13 +37,37 @@ pub const WorkspacePaths = struct {
     }
 };
 
+fn expandHome(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, path, "~")) {
+        const home = try std.process.getEnvVarOwned(allocator, "HOME");
+        return home;
+    }
+
+    if (std.mem.startsWith(u8, path, "~/")) {
+        const home = try std.process.getEnvVarOwned(allocator, "HOME");
+        defer allocator.free(home);
+        return std.fs.path.join(allocator, &.{ home, path[2..] });
+    }
+
+    if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
+
+    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(cwd);
+    return std.fs.path.join(allocator, &.{ cwd, path });
+}
+
 /// Resolve global memory paths from the orchestration directory.
-/// The orchestration_dir should already be expanded (no ~/ prefix).
+/// Resolves `~` and relative paths so defaults can be passed directly to APIs
+/// that require absolute file paths.
 /// Caller owns the returned paths; call deinit() to free.
 pub fn resolveGlobalPaths(allocator: std.mem.Allocator, orchestration_dir: []const u8) !GlobalPaths {
+    const dir = try expandHome(allocator, orchestration_dir);
+    errdefer allocator.free(dir);
+
     return .{
-        .state_json = try std.fs.path.join(allocator, &.{ orchestration_dir, "state.json" }),
-        .memory_md = try std.fs.path.join(allocator, &.{ orchestration_dir, "MEMORY.md" }),
+        .dir = dir,
+        .state_json = try std.fs.path.join(allocator, &.{ dir, "state.json" }),
+        .memory_md = try std.fs.path.join(allocator, &.{ dir, "MEMORY.md" }),
     };
 }
 
@@ -80,8 +106,39 @@ test "resolve global paths" {
     var paths = try resolveGlobalPaths(allocator, "/home/user/.termplex/orchestration");
     defer paths.deinit(allocator);
 
+    try std.testing.expectEqualStrings("/home/user/.termplex/orchestration", paths.dir);
     try std.testing.expectEqualStrings("/home/user/.termplex/orchestration/state.json", paths.state_json);
     try std.testing.expectEqualStrings("/home/user/.termplex/orchestration/MEMORY.md", paths.memory_md);
+}
+
+test "resolve global paths expands home directory" {
+    const allocator = std.testing.allocator;
+    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+        defer allocator.free(home);
+        var paths = try resolveGlobalPaths(allocator, "~/.termplex/orchestration");
+        defer paths.deinit(allocator);
+
+        const expected_dir = try std.fs.path.join(allocator, &.{ home, ".termplex", "orchestration" });
+        defer allocator.free(expected_dir);
+        const expected_state = try std.fs.path.join(allocator, &.{ expected_dir, "state.json" });
+        defer allocator.free(expected_state);
+
+        try std.testing.expectEqualStrings(expected_dir, paths.dir);
+        try std.testing.expectEqualStrings(expected_state, paths.state_json);
+        try std.testing.expect(std.fs.path.isAbsolute(paths.state_json));
+    } else |_| {
+        return error.SkipZigTest;
+    }
+}
+
+test "resolve global paths makes relative directories absolute" {
+    const allocator = std.testing.allocator;
+    var paths = try resolveGlobalPaths(allocator, ".termplex/orchestration");
+    defer paths.deinit(allocator);
+
+    try std.testing.expect(std.fs.path.isAbsolute(paths.dir));
+    try std.testing.expect(std.fs.path.isAbsolute(paths.state_json));
+    try std.testing.expect(std.mem.endsWith(u8, paths.state_json, ".termplex/orchestration/state.json"));
 }
 
 test "resolve workspace paths" {
