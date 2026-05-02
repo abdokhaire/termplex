@@ -577,7 +577,19 @@ pub const Application = extern struct {
 
         // Termplex: create orchestration workspace first (index 0) if enabled.
         if (priv.termplex_cfg.orchestration.enabled orelse false) {
-            const orch_dir_z = std.heap.c_allocator.dupeZ(u8, priv.termplex_cfg.orchestration.dir) catch null;
+            const orch_dir_z: ?[:0]u8 = blk: {
+                var global_paths = memory_paths.resolveGlobalPaths(std.heap.c_allocator, priv.termplex_cfg.orchestration.dir) catch |err| {
+                    log.warn("failed to resolve orchestration directory: {}", .{err});
+                    break :blk std.heap.c_allocator.dupeZ(u8, priv.termplex_cfg.orchestration.dir) catch null;
+                };
+                defer global_paths.deinit(std.heap.c_allocator);
+
+                memory_paths.ensureDir(global_paths.dir) catch |err| {
+                    log.warn("failed to create orchestration directory {s}: {}", .{ global_paths.dir, err });
+                };
+
+                break :blk std.heap.c_allocator.dupeZ(u8, global_paths.dir) catch null;
+            };
             defer if (orch_dir_z) |d| std.heap.c_allocator.free(d);
             const orch_idx = self.addWorkspaceWithDir(orch_dir_z);
             if (orch_idx) |idx| {
@@ -3676,23 +3688,39 @@ pub const Application = extern struct {
 
         // Write text to the terminal's PTY.
         const child = page.getChild();
-        if (gobject.ext.cast(Tab, child)) |tab| {
-            if (tab.getActiveSurface()) |gtk_surface| {
-                if (gtk_surface.core()) |core_surface| {
-                    const msg = termio.Message.writeReq(
-                        core_surface.alloc,
-                        text,
-                    ) catch {
-                        return std.fmt.allocPrint(
-                            alloc,
-                            "{{\"ok\":false,\"error\":{{\"code\":\"write_error\",\"message\":\"failed to create write request\"}},\"id\":{d}}}",
-                            .{id},
-                        ) catch null;
-                    };
-                    core_surface.io.queueMessage(msg, .unlocked);
-                }
-            }
-        }
+        const tab = gobject.ext.cast(Tab, child) orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"tab not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const gtk_surface = tab.getActiveSurface() orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"surface not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const core_surface = gtk_surface.core() orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"core surface not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        const msg = termio.Message.writeReq(
+            core_surface.alloc,
+            text,
+        ) catch {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"write_error\",\"message\":\"failed to create write request\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        core_surface.io.queueMessage(msg, .unlocked);
 
         return std.fmt.allocPrint(
             alloc,
@@ -3751,11 +3779,7 @@ pub const Application = extern struct {
             ) catch null;
         };
         const core_surface = gtk_surface.core() orelse {
-            return std.fmt.allocPrint(
-                alloc,
-                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"core surface not found\"}},\"id\":{d}}}",
-                .{id},
-            ) catch null;
+            return self.ipcSurfaceReadTranscriptFallback(alloc, id, params, gtk_surface, lines);
         };
 
         // Lock the renderer mutex — required for thread safety.
@@ -3778,6 +3802,66 @@ pub const Application = extern struct {
         // Extract the last N lines from the text.
         const text = extractLastLines(full_text, lines);
 
+        return allocSurfaceReadResponse(alloc, id, text);
+    }
+
+    fn ipcSurfaceReadTranscriptFallback(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        id: i64,
+        params: std.json.ObjectMap,
+        gtk_surface: *Surface,
+        lines: usize,
+    ) ?[]u8 {
+        const history_id = gtk_surface.getHistoryId() orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"core surface not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const workspace_idx = self.resolveWorkspaceIdx(params) orelse self.private().active_workspace_idx;
+        const workspace_id = self.workspaceIdString(alloc, workspace_idx) catch {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"read_error\",\"message\":\"failed to resolve workspace history id\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        defer alloc.free(workspace_id);
+
+        const transcript_path = terminal_history.transcriptPath(alloc, workspace_id, history_id) catch {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"read_error\",\"message\":\"failed to resolve transcript path\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        defer alloc.free(transcript_path);
+
+        const full_text = terminal_history.readTranscript(alloc, transcript_path, self.terminalHistoryOptions()) catch {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"read_error\",\"message\":\"failed to read transcript\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        defer alloc.free(full_text);
+
+        const plain_text = stripControlSequencesForIpc(alloc, full_text) catch {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"read_error\",\"message\":\"failed to sanitize transcript\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        defer alloc.free(plain_text);
+
+        const text = extractLastLines(plain_text, lines);
+        return allocSurfaceReadResponse(alloc, id, text);
+    }
+
+    fn allocSurfaceReadResponse(alloc: std.mem.Allocator, id: i64, text: []const u8) ?[]u8 {
         // Build JSON response with escaped text.
         var buf = std.ArrayListUnmanaged(u8){};
         defer buf.deinit(alloc);
@@ -3847,6 +3931,62 @@ pub const Application = extern struct {
 
         // Fewer than N lines — return everything.
         return text;
+    }
+
+    fn isCsiFinalByte(c: u8) bool {
+        return c >= 0x40 and c <= 0x7e;
+    }
+
+    fn stripControlSequencesForIpc(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer out.deinit(alloc);
+
+        var i: usize = 0;
+        while (i < bytes.len) {
+            const c = bytes[i];
+            if (c == 0x1b) {
+                if (i + 1 >= bytes.len) break;
+                const next = bytes[i + 1];
+                if (next == '[') {
+                    var j = i + 2;
+                    while (j < bytes.len and !isCsiFinalByte(bytes[j])) : (j += 1) {}
+                    i = if (j < bytes.len) j + 1 else bytes.len;
+                    continue;
+                }
+                if (next == ']') {
+                    var j = i + 2;
+                    while (j < bytes.len) : (j += 1) {
+                        if (bytes[j] == 0x07) {
+                            j += 1;
+                            break;
+                        }
+                        if (bytes[j] == 0x1b and j + 1 < bytes.len and bytes[j + 1] == '\\') {
+                            j += 2;
+                            break;
+                        }
+                    }
+                    i = j;
+                    continue;
+                }
+                i += 2;
+                continue;
+            }
+
+            if (c == '\r') {
+                if (i + 1 >= bytes.len or bytes[i + 1] != '\n') {
+                    try out.append(alloc, '\n');
+                }
+                i += 1;
+                continue;
+            }
+
+            if (c == '\n' or c == '\t' or c >= 0x20) {
+                try out.append(alloc, c);
+            }
+            i += 1;
+        }
+
+        return out.toOwnedSlice(alloc);
     }
 
     /// Handle surface.split — creates a new split in the active surface.
@@ -4034,54 +4174,72 @@ pub const Application = extern struct {
         // Use the workspace dir as fallback
         const working_dir = dir orelse self.workspaceDir(ws_idx);
 
-        // Create the tab via the active window
+        const title_z: ?[:0]u8 = blk: {
+            const tv = params.get("title") orelse break :blk null;
+            switch (tv) {
+                .string => |s| {
+                    if (s.len > 0) break :blk alloc.dupeZ(u8, s) catch null;
+                    break :blk null;
+                },
+                else => break :blk null,
+            }
+        };
+        defer if (title_z) |title| alloc.free(title);
+
+        const command_text: ?[]const u8 = blk: {
+            const cv = params.get("command") orelse break :blk null;
+            switch (cv) {
+                .string => |cmd| {
+                    if (cmd.len > 0) break :blk cmd;
+                    break :blk null;
+                },
+                else => break :blk null,
+            }
+        };
+
+        // Create the tab via the active window. If a non-active workspace was
+        // requested, switch to it first so the new surface is mapped and usable
+        // by follow-up IPC calls such as surface.send/read.
         if (self.as(gtk.Application).getActiveWindow()) |active_win| {
             if (gobject.ext.cast(Window, active_win)) |win| {
-                win.createTabInView(tab_view, working_dir);
+                if (ws_idx != priv.active_workspace_idx) {
+                    self.setActiveWorkspaceIndex(ws_idx);
+                    self.markWorkspaceNotificationsRead(ws_idx);
+                    self.refreshAllWorkspaceSidebars();
+                    self.syncActiveWorkspaceHeaders();
+                    win.switchToTabView(tab_view);
+                }
 
-                // Get the newly created tab page (last page)
+                win.newTabForWindow(null, .{
+                    .working_directory = working_dir,
+                    .title = title_z,
+                });
+
+                // Get the newly created tab page.
                 const n_pages = tab_view.getNPages();
                 if (n_pages > 0) {
-                    const page = tab_view.getNthPage(n_pages - 1);
+                    const page = tab_view.getSelectedPage() orelse tab_view.getNthPage(n_pages - 1);
 
-                    // Set custom title if provided
-                    if (params.get("title")) |tv| {
-                        switch (tv) {
-                            .string => |s| {
-                                if (s.len > 0) {
-                                    const title_z = alloc.dupeZ(u8, s) catch null;
-                                    if (title_z) |tz| {
-                                        page.setTitle(tz);
-                                        alloc.free(tz);
-                                    }
-                                }
-                            },
-                            else => {},
-                        }
+                    // Set custom title if provided.
+                    if (title_z) |title| {
+                        page.setTitle(title);
                     }
 
                     // If command provided, schedule PTY write after shell init
-                    if (params.get("command")) |cv| {
-                        switch (cv) {
-                            .string => |cmd| {
-                                if (cmd.len > 0) {
-                                    // Use c_allocator for data that outlives the IPC call
-                                    const c_alloc = std.heap.c_allocator;
-                                    const cmd_with_newline = c_alloc.alloc(u8, cmd.len + 1) catch null;
-                                    if (cmd_with_newline) |cwn| {
-                                        @memcpy(cwn[0..cmd.len], cmd);
-                                        cwn[cmd.len] = '\n';
-                                        // Schedule deferred write via GLib timer; pass the
-                                        // stable page pointer to avoid index-reorder races.
-                                        self.scheduleTabCommand(tab_view, page, cwn);
-                                    }
-                                }
-                            },
-                            else => {},
+                    if (command_text) |cmd| {
+                        // Use c_allocator for data that outlives the IPC call.
+                        const c_alloc = std.heap.c_allocator;
+                        const cmd_with_newline = c_alloc.alloc(u8, cmd.len + 1) catch null;
+                        if (cmd_with_newline) |cwn| {
+                            @memcpy(cwn[0..cmd.len], cmd);
+                            cwn[cmd.len] = '\n';
+                            // Schedule deferred write via GLib timer; pass the
+                            // stable page pointer to avoid index-reorder races.
+                            self.scheduleTabCommand(tab_view, page, cwn);
                         }
                     }
 
-                    const new_idx = n_pages - 1;
+                    const new_idx = tab_view.getPagePosition(page);
                     log.info("IPC tab.create: workspace={d} new_tab_idx={d}", .{ ws_idx, new_idx });
                     return std.fmt.allocPrint(
                         alloc,
@@ -5353,35 +5511,63 @@ pub const Application = extern struct {
     /// Schedule a burst of 6 port scans at 500/1500/3000/5000/7500/10000 ms.
     ///
     /// Cancels any previously scheduled burst timers first.
-    /// Note: After burst timers fire (returning SOURCE_REMOVE), the slot IDs
-    /// become stale but remain set.  glib.Source.remove on a stale ID is safe
-    /// because GLib source IDs are monotonically increasing and reuse is
-    /// practically impossible within a single burst cycle.
     fn triggerBurstPortScan(self: *Self) void {
         const priv = self.private();
         const delays = [6]c_uint{ 500, 1500, 3000, 5000, 7500, 10000 };
+        const callbacks = [_]glib.SourceFunc{
+            burstPortScanCallback0,
+            burstPortScanCallback1,
+            burstPortScanCallback2,
+            burstPortScanCallback3,
+            burstPortScanCallback4,
+            burstPortScanCallback5,
+        };
 
-        for (&priv.port_scan_burst_timers, delays) |*slot, delay| {
+        for (&priv.port_scan_burst_timers, delays, callbacks) |*slot, delay, callback| {
             if (slot.*) |source| {
                 _ = glib.Source.remove(source);
                 slot.* = null;
             }
-            slot.* = glib.timeoutAdd(delay, burstPortScanCallback, self);
+            slot.* = glib.timeoutAdd(delay, callback, self);
         }
     }
 
     /// GLib timer callback: runs a single port scan (burst variant, fires once).
-    fn burstPortScanCallback(ud: ?*anyopaque) callconv(.c) c_int {
+    fn burstPortScanCallbackIndex(ud: ?*anyopaque, index: usize) callconv(.c) c_int {
         const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
 
-        // This timer auto-removes (SOURCE_REMOVE). We can't identify which
-        // slot it corresponds to without extra context, but
-        // triggerBurstPortScan and deinit both handle stale IDs gracefully.
+        if (index < self.private().port_scan_burst_timers.len) {
+            self.private().port_scan_burst_timers[index] = null;
+        }
         runPortScan(self);
         // Burst scans target the active workspace's pwd change — update
         // the sidebar immediately for the active workspace only.
         self.updateSidebarPortState();
         return @intFromBool(glib.SOURCE_REMOVE);
+    }
+
+    fn burstPortScanCallback0(ud: ?*anyopaque) callconv(.c) c_int {
+        return burstPortScanCallbackIndex(ud, 0);
+    }
+
+    fn burstPortScanCallback1(ud: ?*anyopaque) callconv(.c) c_int {
+        return burstPortScanCallbackIndex(ud, 1);
+    }
+
+    fn burstPortScanCallback2(ud: ?*anyopaque) callconv(.c) c_int {
+        return burstPortScanCallbackIndex(ud, 2);
+    }
+
+    fn burstPortScanCallback3(ud: ?*anyopaque) callconv(.c) c_int {
+        return burstPortScanCallbackIndex(ud, 3);
+    }
+
+    fn burstPortScanCallback4(ud: ?*anyopaque) callconv(.c) c_int {
+        return burstPortScanCallbackIndex(ud, 4);
+    }
+
+    fn burstPortScanCallback5(ud: ?*anyopaque) callconv(.c) c_int {
+        return burstPortScanCallbackIndex(ud, 5);
     }
 
     /// GLib timer callback: runs git probing for all workspaces and port
@@ -8562,4 +8748,12 @@ fn findActiveWindow(data: ?*const anyopaque, _: ?*const anyopaque) callconv(.c) 
     // but we want to return 0 to indicate equality.
     // Abusing integers to be enums and booleans is a terrible idea, C.
     return if (window.isActive() != 0) 0 else -1;
+}
+
+test "ipc transcript fallback strips terminal control sequences" {
+    const bytes = "one\r\n\x1b]133;A;aid=1\x07two\x1b[31m red\x1b[0m\rthree\x01four";
+    const out = try Application.stripControlSequencesForIpc(std.testing.allocator, bytes);
+    defer std.testing.allocator.free(out);
+
+    try std.testing.expectEqualStrings("one\ntwo red\nthreefour", out);
 }

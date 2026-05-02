@@ -86,10 +86,7 @@ pub fn resolveWorkspacePaths(allocator: std.mem.Allocator, workspace_dir: []cons
 /// Ensure a directory exists, creating it if necessary.
 /// Handles PathAlreadyExists gracefully.
 pub fn ensureDir(dir_path: []const u8) !void {
-    std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
+    try std.fs.cwd().makePath(dir_path);
 }
 
 pub fn resolveTerminalHistoryDatabasePath(allocator: std.mem.Allocator) ![]const u8 {
@@ -149,4 +146,21 @@ test "resolve workspace paths" {
     try std.testing.expectEqualStrings("/home/user/projects/backend/.termplex/state.json", paths.state_json);
     try std.testing.expectEqualStrings("/home/user/projects/backend/.termplex/memory.md", paths.memory_md);
     try std.testing.expectEqualStrings("/home/user/projects/backend/.termplex", paths.dot_termplex_dir);
+}
+
+test "ensure dir creates nested absolute directories" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+
+    const nested = try std.fs.path.join(allocator, &.{ base, "a", "b", "c" });
+    defer allocator.free(nested);
+
+    try ensureDir(nested);
+
+    var dir = try std.fs.openDirAbsolute(nested, .{});
+    dir.close();
 }
