@@ -37,6 +37,17 @@ pub const WorkspacePaths = struct {
     }
 };
 
+/// Paths for persisted updater state and downloaded update assets.
+pub const UpdatePaths = struct {
+    dir: []const u8,
+    state_json: []const u8,
+
+    pub fn deinit(self: *UpdatePaths, allocator: std.mem.Allocator) void {
+        allocator.free(self.dir);
+        allocator.free(self.state_json);
+    }
+};
+
 fn expandHome(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     if (std.mem.eql(u8, path, "~")) {
         const home = try std.process.getEnvVarOwned(allocator, "HOME");
@@ -92,6 +103,26 @@ pub fn ensureDir(dir_path: []const u8) !void {
 pub fn resolveTerminalHistoryDatabasePath(allocator: std.mem.Allocator) ![]const u8 {
     const terminal_history = @import("../terminal_history.zig");
     return terminal_history.databasePath(allocator);
+}
+
+/// Resolve updater paths under the XDG state directory.
+pub fn resolveUpdatePaths(allocator: std.mem.Allocator) !UpdatePaths {
+    var fallback_base: ?[]u8 = null;
+    defer if (fallback_base) |base| allocator.free(base);
+
+    const base = std.posix.getenv("XDG_STATE_HOME") orelse blk: {
+        const home = std.posix.getenv("HOME") orelse return error.MissingHome;
+        fallback_base = try std.fs.path.join(allocator, &.{ home, ".local", "state" });
+        break :blk fallback_base.?;
+    };
+
+    const dir = try std.fs.path.join(allocator, &.{ base, "termplex", "updates" });
+    errdefer allocator.free(dir);
+
+    return .{
+        .dir = dir,
+        .state_json = try std.fs.path.join(allocator, &.{ dir, "update-state.json" }),
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -163,4 +194,15 @@ test "ensure dir creates nested absolute directories" {
 
     var dir = try std.fs.openDirAbsolute(nested, .{});
     dir.close();
+}
+
+test "resolve update paths uses XDG state layout" {
+    const allocator = std.testing.allocator;
+    var paths = try resolveUpdatePaths(allocator);
+    defer paths.deinit(allocator);
+
+    try std.testing.expect(std.fs.path.isAbsolute(paths.dir));
+    try std.testing.expect(std.fs.path.isAbsolute(paths.state_json));
+    try std.testing.expect(std.mem.endsWith(u8, paths.dir, "termplex/updates"));
+    try std.testing.expect(std.mem.endsWith(u8, paths.state_json, "termplex/updates/update-state.json"));
 }
