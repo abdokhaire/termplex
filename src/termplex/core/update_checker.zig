@@ -132,6 +132,95 @@ pub fn finalizeDownloadedPart(
     try std.fs.renameAbsolute(part_path, final_path);
 }
 
+pub const FetchOptions = struct {
+    max_bytes: usize = 2 * 1024 * 1024,
+};
+
+pub fn fetchHttps(allocator: std.mem.Allocator, url: []const u8, options: FetchOptions) ![]u8 {
+    if (!std.mem.startsWith(u8, url, "https://")) return error.NonHttpsUrl;
+
+    const uri = try std.Uri.parse(url);
+    var client: std.http.Client = .{ .allocator = allocator };
+    defer client.deinit();
+
+    var req = try client.request(.GET, uri, .{
+        .headers = .{
+            .user_agent = .{ .override = "Termplex-Updater" },
+            .accept_encoding = .{ .override = "identity" },
+        },
+    });
+    defer req.deinit();
+
+    try req.sendBodiless();
+
+    var redirect_buffer: [8 * 1024]u8 = undefined;
+    var response = try req.receiveHead(&redirect_buffer);
+    if (response.head.status != .ok) return error.HttpStatusNotOk;
+
+    var transfer_buffer: [64 * 1024]u8 = undefined;
+    const reader = response.reader(&transfer_buffer);
+    return readAllAllocLimited(allocator, reader, options.max_bytes) catch |err| switch (err) {
+        error.ReadFailed => return response.bodyErr() orelse err,
+        else => |e| return e,
+    };
+}
+
+fn readAllAllocLimited(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_bytes: usize) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var buf: [64 * 1024]u8 = undefined;
+    while (true) {
+        if (out.items.len > max_bytes) return error.StreamTooLong;
+
+        const remaining_plus_probe = (max_bytes + 1) - out.items.len;
+        const read_len = @min(buf.len, remaining_plus_probe);
+        if (read_len == 0) return error.StreamTooLong;
+
+        const n = try reader.readSliceShort(buf[0..read_len]);
+        if (n == 0) break;
+        try out.appendSlice(allocator, buf[0..n]);
+    }
+
+    if (out.items.len > max_bytes) return error.StreamTooLong;
+    return out.toOwnedSlice(allocator);
+}
+
+fn validateAppImageFilename(filename: []const u8) !void {
+    if (std.mem.indexOfScalar(u8, filename, '/') != null) return error.InvalidFilename;
+    if (std.mem.indexOfScalar(u8, filename, '\\') != null) return error.InvalidFilename;
+    if (!std.mem.endsWith(u8, filename, ".AppImage")) return error.InvalidFilename;
+}
+
+pub fn downloadAppImage(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    update_dir: []const u8,
+    filename: []const u8,
+    expected_sha256: [32]u8,
+) ![]u8 {
+    try validateAppImageFilename(filename);
+    try std.fs.cwd().makePath(update_dir);
+
+    const final_path = try std.fs.path.join(allocator, &.{ update_dir, filename });
+    errdefer allocator.free(final_path);
+
+    const part_path = try std.fmt.allocPrint(allocator, "{s}.part", .{final_path});
+    defer allocator.free(part_path);
+
+    const bytes = try fetchHttps(allocator, url, .{ .max_bytes = 512 * 1024 * 1024 });
+    defer allocator.free(bytes);
+
+    {
+        const file = try std.fs.createFileAbsolute(part_path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(bytes);
+    }
+
+    try finalizeDownloadedPart(allocator, part_path, final_path, expected_sha256);
+    return final_path;
+}
+
 test "update_checker detects AppImage from env" {
     var env = std.process.EnvMap.init(std.testing.allocator);
     defer env.deinit();
@@ -212,4 +301,23 @@ test "update_checker removes mismatched part file" {
     const wrong: [32]u8 = [_]u8{0} ** 32;
     try std.testing.expectError(error.ChecksumMismatch, finalizeDownloadedPart(alloc, part_path, final_path, wrong));
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile("bad.part"));
+}
+
+test "update_checker fetch rejects non-https URLs" {
+    try std.testing.expectError(
+        error.NonHttpsUrl,
+        fetchHttps(std.testing.allocator, "http://example.com/update.json", .{}),
+    );
+}
+
+test "update_checker download rejects unsafe AppImage filenames before network" {
+    const sha: [32]u8 = [_]u8{0} ** 32;
+    try std.testing.expectError(
+        error.InvalidFilename,
+        downloadAppImage(std.testing.allocator, "https://example.com/Termplex.AppImage", "/tmp", "../Termplex.AppImage", sha),
+    );
+    try std.testing.expectError(
+        error.InvalidFilename,
+        downloadAppImage(std.testing.allocator, "https://example.com/termplex.tar.gz", "/tmp", "termplex.tar.gz", sha),
+    );
 }
