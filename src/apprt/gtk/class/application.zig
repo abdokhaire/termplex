@@ -4793,10 +4793,11 @@ pub const Application = extern struct {
                 if (manifest) |m| {
                     log.info("resume manifest built ({d} bytes)", .{m.len});
                     // Write manifest to orchestration directory as resume_manifest.txt
-                    memory_paths.ensureDir(priv.termplex_cfg.orchestration.dir) catch {};
-                    const manifest_path = std.fmt.allocPrint(alloc, "{s}/resume_manifest.txt", .{priv.termplex_cfg.orchestration.dir}) catch null;
-                    defer if (manifest_path) |p| alloc.free(p);
-                    if (manifest_path) |path| {
+                    if (global_paths) |gp| {
+                        memory_paths.ensureDir(gp.dir) catch {};
+                        const manifest_path = std.fmt.allocPrint(alloc, "{s}/resume_manifest.txt", .{gp.dir}) catch null;
+                        defer if (manifest_path) |p| alloc.free(p);
+                        const path = manifest_path orelse return;
                         const mf = std.fs.createFileAbsolute(path, .{}) catch null;
                         if (mf) |f| {
                             defer f.close();
