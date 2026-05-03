@@ -275,6 +275,7 @@ def send_manual_command_marker(args, env, workspace, tab, marker, command_name, 
     shell_cmd = (
         "printf '\\033]7337;cmd_start;%s;" + command_name + "\\007' $$; "
         "printf '" + marker + "\\n'; "
+        "sleep 0.1; "
         "printf '\\033]7337;cmd_end;%s;0\\007' $$\\n"
     )
     send_text(args, env, workspace, tab, shell_cmd, timeout)
