@@ -197,6 +197,14 @@ def wait_for_output(args, env, workspace, tab, marker, timeout):
     return wait_until("terminal output {!r}".format(marker), timeout, probe)
 
 
+def wait_for_surface_ready(args, env, workspace, tab, timeout):
+    def probe():
+        ctl(args, env, "surface", "read", "--workspace", workspace, "--tab", str(tab), "--lines", "5")
+        return True
+
+    return wait_until("surface {}:{} ready".format(workspace, tab), timeout, probe)
+
+
 def db_path(profile):
     return profile / "state" / "termplex" / "terminal-history" / "history.sqlite3"
 
@@ -331,6 +339,7 @@ def run_scenario(args, profile, env):
             workspace_dir,
         )
         main_tab = int(main_tab_result.get("tab", 0))
+        wait_for_surface_ready(args, env, workspace_name, main_tab, args.timeout)
 
         ctl(args, env, "surface", "send", "--workspace", workspace_name, "--tab", str(main_tab), "pwd\\n")
         wait_for_output(args, env, workspace_name, main_tab, workspace_dir, args.timeout)
@@ -351,6 +360,7 @@ def run_scenario(args, profile, env):
             workspace_dir,
         )
         second_tab = int(tab_result.get("tab", 1))
+        wait_for_surface_ready(args, env, workspace_name, second_tab, args.timeout)
         ctl(
             args,
             env,
@@ -387,6 +397,7 @@ def run_scenario(args, profile, env):
             delete_workspace_dir,
         )
         delete_tab = int(delete_tab_result.get("tab", 0))
+        wait_for_surface_ready(args, env, delete_workspace_name, delete_tab, args.timeout)
         send_manual_command_marker(args, env, delete_workspace_name, delete_tab, delete_marker, delete_command_name)
         wait_for_output(args, env, delete_workspace_name, delete_tab, delete_marker, args.timeout)
         assert_sqlite_rows(profile, delete_workspace_name, delete_command_name, args.timeout)
