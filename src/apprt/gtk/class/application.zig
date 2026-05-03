@@ -1731,6 +1731,12 @@ pub const Application = extern struct {
         return @intFromBool(glib.SOURCE_CONTINUE);
     }
 
+    fn quitApplicationCallback(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        self.quit();
+        return @intFromBool(glib.SOURCE_REMOVE);
+    }
+
     /// Read a single newline-terminated JSON request from the client, dispatch
     /// it, and write the response.  The client fd is blocking, so reads will
     /// wait for data (appropriate for the one-request-per-connection pattern).
@@ -1819,6 +1825,15 @@ pub const Application = extern struct {
             return std.fmt.allocPrint(
                 alloc,
                 "{{\"ok\":true,\"result\":\"pong\",\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        if (std.mem.eql(u8, method, "system.quit")) {
+            _ = glib.timeoutAdd(50, quitApplicationCallback, self);
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":true,\"result\":{{\"quitting\":true}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         }

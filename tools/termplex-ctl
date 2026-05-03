@@ -84,6 +84,9 @@ def main():
     # --- ping ---
     subparsers.add_parser("ping", help="Ping the server")
 
+    # --- quit ---
+    subparsers.add_parser("quit", help="Ask the running Termplex app to quit")
+
     # --- status ---
     subparsers.add_parser("status", help="Get server status")
 
@@ -190,6 +193,9 @@ def build_request(args):
 
     if resource == "ping":
         return "system.ping", {}
+
+    if resource == "quit":
+        return "system.quit", {}
 
     if resource == "status":
         return "system.tree", {}
