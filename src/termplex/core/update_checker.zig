@@ -192,6 +192,23 @@ fn validateAppImageFilename(filename: []const u8) !void {
     if (!std.mem.endsWith(u8, filename, ".AppImage")) return error.InvalidFilename;
 }
 
+fn e2eDownloadOverride() ?[]const u8 {
+    const e2e = std.posix.getenv("TERMPLEX_E2E") orelse return null;
+    if (!std.mem.eql(u8, e2e, "1")) return null;
+
+    const path = std.posix.getenv("TERMPLEX_UPDATE_DOWNLOAD_OVERRIDE") orelse return null;
+    if (path.len == 0) return null;
+    return path;
+}
+
+fn fetchDownloadBytes(allocator: std.mem.Allocator, url: []const u8, max_bytes: usize) ![]u8 {
+    if (e2eDownloadOverride()) |path| {
+        return std.fs.cwd().readFileAlloc(allocator, path, max_bytes);
+    }
+
+    return fetchHttps(allocator, url, .{ .max_bytes = max_bytes });
+}
+
 pub fn downloadAppImage(
     allocator: std.mem.Allocator,
     url: []const u8,
@@ -200,6 +217,7 @@ pub fn downloadAppImage(
     expected_sha256: [32]u8,
 ) ![]u8 {
     try validateAppImageFilename(filename);
+    if (!std.mem.startsWith(u8, url, "https://")) return error.NonHttpsUrl;
     try std.fs.cwd().makePath(update_dir);
 
     const final_path = try std.fs.path.join(allocator, &.{ update_dir, filename });
@@ -208,7 +226,7 @@ pub fn downloadAppImage(
     const part_path = try std.fmt.allocPrint(allocator, "{s}.part", .{final_path});
     defer allocator.free(part_path);
 
-    const bytes = try fetchHttps(allocator, url, .{ .max_bytes = 512 * 1024 * 1024 });
+    const bytes = try fetchDownloadBytes(allocator, url, 512 * 1024 * 1024);
     defer allocator.free(bytes);
 
     {
@@ -320,4 +338,61 @@ test "update_checker download rejects unsafe AppImage filenames before network" 
         error.InvalidFilename,
         downloadAppImage(std.testing.allocator, "https://example.com/termplex.tar.gz", "/tmp", "termplex.tar.gz", sha),
     );
+}
+
+test "update_checker download uses E2E local override" {
+    const alloc = std.testing.allocator;
+    const env_os = @import("../../os/env.zig");
+
+    const old_e2e = if (std.posix.getenv("TERMPLEX_E2E")) |value| try alloc.dupeZ(u8, value) else null;
+    defer {
+        if (old_e2e) |value| {
+            _ = env_os.setenv("TERMPLEX_E2E", value);
+            alloc.free(value);
+        } else {
+            _ = env_os.unsetenv("TERMPLEX_E2E");
+        }
+    }
+
+    const old_override = if (std.posix.getenv("TERMPLEX_UPDATE_DOWNLOAD_OVERRIDE")) |value| try alloc.dupeZ(u8, value) else null;
+    defer {
+        if (old_override) |value| {
+            _ = env_os.setenv("TERMPLEX_UPDATE_DOWNLOAD_OVERRIDE", value);
+            alloc.free(value);
+        } else {
+            _ = env_os.unsetenv("TERMPLEX_UPDATE_DOWNLOAD_OVERRIDE");
+        }
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "fixture.AppImage", .data = "termplex test appimage\n" });
+
+    const tmp_path = try tmp.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_path);
+    const fixture_path = try std.fs.path.join(alloc, &.{ tmp_path, "fixture.AppImage" });
+    defer alloc.free(fixture_path);
+    const update_dir = try std.fs.path.join(alloc, &.{ tmp_path, "updates" });
+    defer alloc.free(update_dir);
+
+    var expected: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash("termplex test appimage\n", &expected, .{});
+
+    const fixture_path_z = try alloc.dupeZ(u8, fixture_path);
+    defer alloc.free(fixture_path_z);
+    _ = env_os.setenv("TERMPLEX_E2E", "1");
+    _ = env_os.setenv("TERMPLEX_UPDATE_DOWNLOAD_OVERRIDE", fixture_path_z);
+
+    const downloaded = try downloadAppImage(
+        alloc,
+        "https://127.0.0.1:9/Termplex-9.9.9-x86_64.AppImage",
+        update_dir,
+        "Termplex-9.9.9-x86_64.AppImage",
+        expected,
+    );
+    defer alloc.free(downloaded);
+
+    try std.testing.expect(std.mem.endsWith(u8, downloaded, "Termplex-9.9.9-x86_64.AppImage"));
+    try std.testing.expect((try std.fs.cwd().statFile(downloaded)).kind == .file);
 }

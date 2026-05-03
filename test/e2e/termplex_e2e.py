@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -129,8 +130,34 @@ def make_profile(args):
     return profile
 
 
+def write_update_fixture(profile):
+    appimage = profile / "artifacts" / "Termplex-9.9.9-x86_64.AppImage"
+    appimage.write_bytes(b"termplex test appimage\n")
+    sha = hashlib.sha256(appimage.read_bytes()).hexdigest()
+
+    manifest = profile / "artifacts" / "termplex-update.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": "9.9.9",
+                "channel": "tip",
+                "released_at": "2026-05-03T00:00:00Z",
+                "notes_url": "https://github.com/termplex-org/termplex/releases/tag/v9.9.9",
+                "downloads": {
+                    "linux-x86_64-appimage": {
+                        "url": "https://github.com/termplex-org/termplex/releases/download/v9.9.9/Termplex-9.9.9-x86_64.AppImage",
+                        "sha256": sha,
+                    }
+                },
+            }
+        )
+    )
+    return manifest, appimage
+
+
 def profile_env(args, profile):
     env = os.environ.copy()
+    manifest, appimage = write_update_fixture(profile)
     env["HOME"] = str(profile / "home")
     env["XDG_CONFIG_HOME"] = str(profile / "config")
     env["XDG_STATE_HOME"] = str(profile / "state")
@@ -138,6 +165,10 @@ def profile_env(args, profile):
     env["XDG_RUNTIME_DIR"] = str(profile / "runtime")
     env["TERMPLEX_SOCKET"] = str(profile / "runtime" / "termplex.sock")
     env["GSETTINGS_BACKEND"] = "memory"
+    env["TERMPLEX_E2E"] = "1"
+    env["APPIMAGE"] = str(appimage)
+    env["TERMPLEX_UPDATE_MANIFEST_URL"] = "file://" + str(manifest)
+    env["TERMPLEX_UPDATE_DOWNLOAD_OVERRIDE"] = str(appimage)
     if args.resources_dir:
         resources_dir = pathlib.Path(args.resources_dir).resolve()
         env["TERMPLEX_RESOURCES_DIR"] = str(resources_dir)
@@ -249,6 +280,40 @@ def send_manual_command_marker(args, env, workspace, tab, marker, command_name, 
     send_text(args, env, workspace, tab, shell_cmd, timeout)
 
 
+def assert_update_flow(args, env, profile, timeout):
+    def update_available():
+        status = ctl(args, env, "update", "status")
+        return status if status.get("available_version") == "9.9.9" else None
+
+    def update_downloaded():
+        status = ctl(args, env, "update", "status")
+        return status if status.get("download_path") else None
+
+    ctl(args, env, "update", "check")
+    status = wait_until(
+        "update available",
+        timeout,
+        update_available,
+    )
+    if status.get("install_kind") != "appimage":
+        raise E2EError("update status did not detect AppImage install: {}".format(status))
+
+    ctl(args, env, "update", "download")
+    status = wait_until(
+        "update downloaded",
+        timeout,
+        update_downloaded,
+    )
+    download_path = pathlib.Path(status["download_path"])
+    expected_dir = profile / "state" / "termplex" / "updates"
+    if not download_path.exists():
+        raise E2EError("downloaded AppImage missing: {}".format(download_path))
+    if expected_dir not in download_path.parents:
+        raise E2EError("downloaded AppImage is outside update dir: {}".format(download_path))
+    if not os.access(download_path, os.X_OK):
+        raise E2EError("downloaded AppImage is not executable: {}".format(download_path))
+
+
 def assert_sqlite_rows(profile, workspace_name, marker_command, timeout):
     wait_until(
         "terminal_projects row",
@@ -336,6 +401,7 @@ def run_scenario(args, profile, env):
             raise E2EError("status missing workspaces: {}".format(status))
         send_text(args, env, "0", 0, "printf '" + boot_marker + "\\n'\\n", args.timeout)
         wait_for_output(args, env, "0", 0, boot_marker, args.timeout)
+        assert_update_flow(args, env, profile, args.timeout)
 
         ctl(args, env, "workspace", "create", "--name", workspace_name, "--dir", workspace_dir)
         wait_until(
