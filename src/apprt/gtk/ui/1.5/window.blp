@@ -146,6 +146,42 @@ template $TermplexWindow: Adw.ApplicationWindow {
           visible: bind template.debug;
         }
 
+        Revealer update_revealer {
+          reveal-child: false;
+          transition-type: slide_down;
+
+          Box update_bar {
+            styles [
+              "termplex-update-bar",
+            ]
+
+            orientation: horizontal;
+            spacing: 8;
+
+            Image {
+              icon-name: "software-update-available-symbolic";
+            }
+
+            Label update_label {
+              label: _("Update available");
+              ellipsize: end;
+              hexpand: true;
+              xalign: 0;
+            }
+
+            Button update_primary_button {
+              label: _("Download");
+              clicked => $update_primary_clicked();
+            }
+
+            Button update_dismiss_button {
+              icon-name: "window-close-symbolic";
+              tooltip-text: _("Dismiss");
+              clicked => $update_dismiss_clicked();
+            }
+          }
+        }
+
         Adw.ToastOverlay toast_overlay {
           Adw.TabView tab_view {
             menu-model: tab_context_menu;

@@ -296,6 +296,10 @@ pub const Window = extern struct {
         toolbar: *adw.ToolbarView,
         toast_overlay: *adw.ToastOverlay,
         window_title: *adw.WindowTitle,
+        update_revealer: *gtk.Revealer,
+        update_label: *gtk.Label,
+        update_primary_button: *gtk.Button,
+        update_dismiss_button: *gtk.Button,
 
         pub var offset: c_int = 0;
     };
@@ -1170,6 +1174,40 @@ pub const Window = extern struct {
 
     pub fn addTermplexToast(self: *Self, title: [*:0]const u8) void {
         self.addToast(title);
+    }
+
+    pub fn showUpdateAvailable(self: *Self, version: [:0]const u8, can_download: bool) void {
+        const priv = self.private();
+        var buf: [128]u8 = undefined;
+        const label = std.fmt.bufPrintZ(&buf, "Termplex {s} is available", .{version}) catch "Update available";
+        priv.update_label.setLabel(label);
+        priv.update_primary_button.setLabel(if (can_download) "Download" else "Open Release");
+        priv.update_primary_button.as(gtk.Widget).setSensitive(1);
+        priv.update_revealer.setRevealChild(1);
+    }
+
+    pub fn showUpdateDownloaded(self: *Self, version: [:0]const u8) void {
+        const priv = self.private();
+        var buf: [128]u8 = undefined;
+        const label = std.fmt.bufPrintZ(&buf, "Termplex {s} downloaded", .{version}) catch "Update downloaded";
+        priv.update_label.setLabel(label);
+        priv.update_primary_button.setLabel("Open Download");
+        priv.update_primary_button.as(gtk.Widget).setSensitive(1);
+        priv.update_revealer.setRevealChild(1);
+    }
+
+    pub fn showUpdateDownloading(self: *Self, version: [:0]const u8) void {
+        const priv = self.private();
+        var buf: [128]u8 = undefined;
+        const label = std.fmt.bufPrintZ(&buf, "Downloading Termplex {s}", .{version}) catch "Downloading update";
+        priv.update_label.setLabel(label);
+        priv.update_primary_button.setLabel("Downloading");
+        priv.update_primary_button.as(gtk.Widget).setSensitive(0);
+        priv.update_revealer.setRevealChild(1);
+    }
+
+    pub fn hideUpdateBar(self: *Self) void {
+        self.private().update_revealer.setRevealChild(0);
     }
 
     fn connectSurfaceHandlers(
@@ -2048,6 +2086,16 @@ pub const Window = extern struct {
         // When we are realized we always setup our appearance since this
         // calls some winproto functions.
         self.syncAppearance();
+    }
+
+    fn updatePrimaryClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
+        _ = self;
+        Application.default().handleUpdatePrimaryAction();
+    }
+
+    fn updateDismissClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
+        self.hideUpdateBar();
+        Application.default().dismissCurrentUpdate();
     }
 
     fn btnNewTab(_: *adw.SplitButton, self: *Self) callconv(.c) void {
@@ -3107,6 +3155,10 @@ pub const Window = extern struct {
             class.bindTemplateChildPrivate("toolbar", .{});
             class.bindTemplateChildPrivate("toast_overlay", .{});
             class.bindTemplateChildPrivate("window_title", .{});
+            class.bindTemplateChildPrivate("update_revealer", .{});
+            class.bindTemplateChildPrivate("update_label", .{});
+            class.bindTemplateChildPrivate("update_primary_button", .{});
+            class.bindTemplateChildPrivate("update_dismiss_button", .{});
 
             // Template Callbacks
             class.bindTemplateCallback("realize", &windowRealize);
@@ -3122,6 +3174,8 @@ pub const Window = extern struct {
             class.bindTemplateCallback("notify_quick_terminal", &propQuickTerminal);
             class.bindTemplateCallback("notify_scale_factor", &propScaleFactor);
             class.bindTemplateCallback("titlebar_style_is_tabs", &closureTitlebarStyleIsTab);
+            class.bindTemplateCallback("update_primary_clicked", &updatePrimaryClicked);
+            class.bindTemplateCallback("update_dismiss_clicked", &updateDismissClicked);
 
             // Virtual methods
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);

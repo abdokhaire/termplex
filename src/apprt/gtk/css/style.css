@@ -315,6 +315,16 @@ label.resize-overlay {
   background-color: rgba(0, 212, 255, 0.06);
 }
 
+.termplex-update-bar {
+  padding: 6px 10px;
+  border-bottom: 1px solid alpha(@accent_color, 0.35);
+  background: alpha(@accent_color, 0.10);
+}
+
+.termplex-update-bar button {
+  min-height: 26px;
+}
+
 /* Orchestrator workspace row — visual separation below orchestrator */
 .termplex-orchestrator-row {
   border-bottom: 1px solid #131d2b;

@@ -596,6 +596,8 @@ pub const Application = extern struct {
                 log.warn("failed to load update state: {}", .{err});
                 break :state .{};
             };
+            replaceCString(&priv.update_available_version, priv.update_state.last_available_version) catch {};
+            replaceCString(&priv.update_download_path, priv.update_state.download_path) catch {};
         }
 
         // Termplex: create orchestration workspace first (index 0) if enabled.
@@ -1862,6 +1864,7 @@ pub const Application = extern struct {
         replaceStateString(&priv.update_state.progress, "error") catch {};
         replaceCString(&priv.update_last_error, message) catch {};
         self.saveUpdateState();
+        self.refreshUpdateBars();
     }
 
     fn setUpdateAvailable(self: *Self, available: update_checker_mod.Available) void {
@@ -1873,6 +1876,7 @@ pub const Application = extern struct {
         replaceCString(&priv.update_last_error, null) catch {};
         priv.update_state.install_kind = available.install_kind;
         self.saveUpdateState();
+        self.refreshUpdateBars();
     }
 
     fn setUpdateUnavailable(self: *Self, available: update_checker_mod.Available) void {
@@ -1884,6 +1888,7 @@ pub const Application = extern struct {
         replaceCString(&priv.update_last_error, null) catch {};
         priv.update_state.install_kind = available.install_kind;
         self.saveUpdateState();
+        self.refreshUpdateBars();
     }
 
     fn showUpdateToast(self: *Self, title: []const u8) void {
@@ -1900,6 +1905,59 @@ pub const Application = extern struct {
                 win.addTermplexToast(title_ptr);
             }
         }.cb, @ptrCast(title_z.ptr));
+    }
+
+    fn refreshUpdateBars(self: *Self) void {
+        const list = self.as(gtk.Application).getWindows();
+        list.foreach(struct {
+            fn cb(data: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
+                const app: *Application = @ptrCast(@alignCast(userdata orelse return));
+                const p = app.private();
+                const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
+                const win = gobject.ext.cast(Window, ptr) orelse return;
+
+                if (p.update_available_version) |version| {
+                    if (p.update_state.isDismissed(version)) {
+                        win.hideUpdateBar();
+                        return;
+                    }
+
+                    if (p.update_state.progress) |progress| {
+                        if (std.mem.eql(u8, progress, "downloading")) {
+                            win.showUpdateDownloading(version);
+                            return;
+                        }
+                    }
+
+                    if (p.update_download_path != null) {
+                        win.showUpdateDownloaded(version);
+                    } else {
+                        win.showUpdateAvailable(version, p.update_state.install_kind == .appimage);
+                    }
+                } else {
+                    win.hideUpdateBar();
+                }
+            }
+        }.cb, self);
+    }
+
+    pub fn handleUpdatePrimaryAction(self: *Self) void {
+        const priv = self.private();
+        if (priv.update_download_path) |path| {
+            Action.openUrl(self, .{ .kind = .unknown, .url = path });
+            return;
+        }
+
+        self.showUpdateToast("Update download is not ready yet");
+    }
+
+    pub fn dismissCurrentUpdate(self: *Self) void {
+        const priv = self.private();
+        if (priv.update_available_version) |version| {
+            replaceStateString(&priv.update_state.dismissed_version, version) catch {};
+        }
+        self.saveUpdateState();
+        self.refreshUpdateBars();
     }
 
     fn runUpdateCheckFromBytes(self: *Self, manifest_bytes: []const u8) void {
@@ -1928,8 +1986,11 @@ pub const Application = extern struct {
             .up_to_date => {
                 replaceStateString(&self.private().update_state.progress, "up_to_date") catch {};
                 replaceStateString(&self.private().update_state.last_error, null) catch {};
+                replaceCString(&self.private().update_available_version, null) catch {};
+                replaceCString(&self.private().update_download_path, null) catch {};
                 replaceCString(&self.private().update_last_error, null) catch {};
                 self.saveUpdateState();
+                self.refreshUpdateBars();
                 self.showUpdateToast("Termplex is up to date");
             },
             .available => |available| {
@@ -8183,6 +8244,7 @@ const Action = struct {
 
         // Show the window
         gtk.Window.present(win.as(gtk.Window));
+        self.refreshUpdateBars();
 
         // Termplex: show first-run orchestration dialog if not yet configured.
         showOrchestrationDialog(self);

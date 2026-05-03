@@ -63,6 +63,16 @@
   background-color: #1a2736;
 }
 
+.termplex-update-bar {
+  padding: 6px 10px;
+  border-bottom: 1px solid alpha(@accent_color, 0.35);
+  background: alpha(@accent_color, 0.10);
+}
+
+.termplex-update-bar button {
+  min-height: 26px;
+}
+
 /*
  * Termplex Attention Ring (dark mode)
  */
