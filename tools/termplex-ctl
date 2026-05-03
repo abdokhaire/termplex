@@ -158,6 +158,12 @@ def main():
     agent_term.add_argument("--pid", required=True, type=int, help="Agent PID")
     agent_term.add_argument("--policy", choices=["keep", "terminate"], help="Override tab policy")
 
+    # --- update ---
+    update = subparsers.add_parser("update", help="Update operations")
+    update_sub = update.add_subparsers(dest="action")
+    update_sub.add_parser("status", help="Show update state")
+    update_sub.add_parser("check", help="Check for updates")
+
     args = parser.parse_args()
 
     if not args.resource:
@@ -199,6 +205,13 @@ def build_request(args):
 
     if resource == "status":
         return "system.tree", {}
+
+    if resource == "update":
+        if action == "status":
+            return "update.status", {}
+        if action == "check":
+            return "update.check", {}
+        return None, None
 
     if resource == "workspace":
         if action == "list":

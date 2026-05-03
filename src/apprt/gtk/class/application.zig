@@ -48,6 +48,9 @@ const port_scanner = @import("../../../termplex/core/port_scanner.zig");
 const session_mod = @import("../../../termplex/core/session.zig");
 const terminal_history = @import("../../../termplex/core/terminal_history.zig");
 const terminal_history_db = @import("../../../termplex/core/terminal_history_db.zig");
+const update_checker_mod = @import("../../../termplex/core/update_checker.zig");
+const update_manifest_mod = @import("../../../termplex/core/update_manifest.zig");
+const update_state_mod = @import("../../../termplex/core/update_state.zig");
 const workspace_mod = @import("../../../termplex/core/workspace.zig");
 const termplex_config = @import("../../../termplex/core/config.zig");
 const agents = @import("../../../termplex/ipc/agents.zig");
@@ -384,6 +387,14 @@ pub const Application = extern struct {
         /// Ephemeral notifications stored per workspace.
         notifications: notification_mod.NotificationStore,
 
+        // ----- Termplex update state -----
+
+        update_state: update_state_mod.State = .{},
+        update_paths: ?memory_paths.UpdatePaths = null,
+        update_available_version: ?[:0]u8 = null,
+        update_download_path: ?[:0]u8 = null,
+        update_last_error: ?[:0]u8 = null,
+
         pub var offset: c_int = 0;
     };
 
@@ -574,6 +585,18 @@ pub const Application = extern struct {
         // Termplex: load Termplex config (falls back to defaults on any error).
         priv.termplex_cfg = termplex_config.load(std.heap.c_allocator) catch
             termplex_config.TermplexConfig.default(std.heap.c_allocator);
+
+        // Termplex: load persisted updater state.
+        priv.update_paths = memory_paths.resolveUpdatePaths(std.heap.c_allocator) catch |err| paths: {
+            log.warn("failed to resolve update paths: {}", .{err});
+            break :paths null;
+        };
+        if (priv.update_paths) |paths| {
+            priv.update_state = update_state_mod.load(std.heap.c_allocator, paths.state_json) catch |err| state: {
+                log.warn("failed to load update state: {}", .{err});
+                break :state .{};
+            };
+        }
 
         // Termplex: create orchestration workspace first (index 0) if enabled.
         if (priv.termplex_cfg.orchestration.enabled orelse false) {
@@ -772,6 +795,25 @@ pub const Application = extern struct {
             std.posix.unlink(path) catch {};
             alloc.free(path);
             priv.socket_path_buf = null;
+        }
+
+        // Termplex: free update state.
+        priv.update_state.deinit(std.heap.c_allocator);
+        if (priv.update_paths) |*paths| {
+            paths.deinit(std.heap.c_allocator);
+            priv.update_paths = null;
+        }
+        if (priv.update_available_version) |value| {
+            std.heap.c_allocator.free(value);
+            priv.update_available_version = null;
+        }
+        if (priv.update_download_path) |value| {
+            std.heap.c_allocator.free(value);
+            priv.update_download_path = null;
+        }
+        if (priv.update_last_error) |value| {
+            std.heap.c_allocator.free(value);
+            priv.update_last_error = null;
         }
 
         // Termplex: cancel git debounce timer.
@@ -1768,6 +1810,194 @@ pub const Application = extern struct {
         ipcWriteAll(client_fd, "\n") catch {};
     }
 
+    fn updateManifestUrl(self: *Self) []const u8 {
+        _ = self;
+        return std.posix.getenv("TERMPLEX_UPDATE_MANIFEST_URL") orelse
+            "https://github.com/termplex-org/termplex/releases/latest/download/termplex-update.json";
+    }
+
+    fn currentUpdateChannel(self: *Self) update_manifest_mod.Channel {
+        _ = self;
+        return switch (build_config.release_channel) {
+            .stable => .stable,
+            .tip => .tip,
+        };
+    }
+
+    fn currentPlatformArch() []const u8 {
+        return switch (@import("builtin").target.cpu.arch) {
+            .x86_64 => "x86_64",
+            .aarch64 => "aarch64",
+            else => "unsupported",
+        };
+    }
+
+    fn replaceStateString(slot: *?[]const u8, value: ?[]const u8) !void {
+        const alloc = std.heap.c_allocator;
+        if (slot.*) |old| alloc.free(old);
+        slot.* = null;
+        if (value) |v| slot.* = try alloc.dupe(u8, v);
+    }
+
+    fn replaceCString(slot: *?[:0]u8, value: ?[]const u8) !void {
+        const alloc = std.heap.c_allocator;
+        if (slot.*) |old| alloc.free(old);
+        slot.* = null;
+        if (value) |v| slot.* = try alloc.dupeZ(u8, v);
+    }
+
+    fn saveUpdateState(self: *Self) void {
+        const priv = self.private();
+        if (priv.update_paths) |paths| {
+            update_state_mod.save(std.heap.c_allocator, paths.state_json, priv.update_state) catch |err| {
+                log.warn("failed to save update state: {}", .{err});
+            };
+        }
+    }
+
+    fn setUpdateError(self: *Self, err: anyerror) void {
+        const message = @errorName(err);
+        const priv = self.private();
+        replaceStateString(&priv.update_state.last_error, message) catch {};
+        replaceStateString(&priv.update_state.progress, "error") catch {};
+        replaceCString(&priv.update_last_error, message) catch {};
+        self.saveUpdateState();
+    }
+
+    fn setUpdateAvailable(self: *Self, available: update_checker_mod.Available) void {
+        const priv = self.private();
+        replaceStateString(&priv.update_state.last_available_version, available.version_string) catch {};
+        replaceStateString(&priv.update_state.last_error, null) catch {};
+        replaceStateString(&priv.update_state.progress, "available") catch {};
+        replaceCString(&priv.update_available_version, available.version_string) catch {};
+        replaceCString(&priv.update_last_error, null) catch {};
+        priv.update_state.install_kind = available.install_kind;
+        self.saveUpdateState();
+    }
+
+    fn setUpdateUnavailable(self: *Self, available: update_checker_mod.Available) void {
+        const priv = self.private();
+        replaceStateString(&priv.update_state.last_available_version, available.version_string) catch {};
+        replaceStateString(&priv.update_state.last_error, null) catch {};
+        replaceStateString(&priv.update_state.progress, "unavailable_for_install") catch {};
+        replaceCString(&priv.update_available_version, available.version_string) catch {};
+        replaceCString(&priv.update_last_error, null) catch {};
+        priv.update_state.install_kind = available.install_kind;
+        self.saveUpdateState();
+    }
+
+    fn showUpdateToast(self: *Self, title: []const u8) void {
+        log.info("update: {s}", .{title});
+        const title_z = std.heap.c_allocator.dupeZ(u8, title) catch return;
+        defer std.heap.c_allocator.free(title_z);
+
+        const list = self.as(gtk.Application).getWindows();
+        list.foreach(struct {
+            fn cb(data: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
+                const title_ptr: [*:0]const u8 = @ptrCast(userdata orelse return);
+                const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
+                const win = gobject.ext.cast(Window, ptr) orelse return;
+                win.addTermplexToast(title_ptr);
+            }
+        }.cb, @ptrCast(title_z.ptr));
+    }
+
+    fn runUpdateCheckFromBytes(self: *Self, manifest_bytes: []const u8) void {
+        const alloc = std.heap.c_allocator;
+        const install_kind = blk: {
+            var env = std.process.getEnvMap(alloc) catch break :blk update_state_mod.InstallKind.unknown;
+            defer env.deinit();
+            break :blk update_checker_mod.detectInstallKind(env);
+        };
+
+        var result = update_checker_mod.evaluateManifest(
+            alloc,
+            manifest_bytes,
+            build_config.version,
+            self.currentUpdateChannel(),
+            install_kind,
+            currentPlatformArch(),
+        ) catch |err| {
+            self.setUpdateError(err);
+            self.showUpdateToast("Update check failed");
+            return;
+        };
+        defer result.deinit(alloc);
+
+        switch (result) {
+            .up_to_date => {
+                replaceStateString(&self.private().update_state.progress, "up_to_date") catch {};
+                replaceStateString(&self.private().update_state.last_error, null) catch {};
+                replaceCString(&self.private().update_last_error, null) catch {};
+                self.saveUpdateState();
+                self.showUpdateToast("Termplex is up to date");
+            },
+            .available => |available| {
+                self.setUpdateAvailable(available);
+                self.showUpdateToast("A Termplex update is available");
+            },
+            .unavailable_for_install => |available| {
+                self.setUpdateUnavailable(available);
+                self.showUpdateToast("A Termplex update is available");
+            },
+        }
+    }
+
+    fn checkForUpdates(self: *Self) void {
+        const alloc = std.heap.c_allocator;
+        const url = self.updateManifestUrl();
+
+        if (std.mem.startsWith(u8, url, "file://")) {
+            const path = url["file://".len..];
+            const bytes = std.fs.cwd().readFileAlloc(alloc, path, 2 * 1024 * 1024) catch |err| {
+                self.setUpdateError(err);
+                self.showUpdateToast("Update check failed");
+                return;
+            };
+            defer alloc.free(bytes);
+            self.runUpdateCheckFromBytes(bytes);
+            return;
+        }
+
+        const bytes = update_checker_mod.fetchHttps(alloc, url, .{}) catch |err| {
+            self.setUpdateError(err);
+            self.showUpdateToast("Update check failed");
+            return;
+        };
+        defer alloc.free(bytes);
+        self.runUpdateCheckFromBytes(bytes);
+    }
+
+    fn writeJsonOptionalString(jw: *std.json.Stringify, field: []const u8, value: ?[]const u8) !void {
+        try jw.objectField(field);
+        if (value) |v| try jw.write(v) else try jw.write(null);
+    }
+
+    fn ipcUpdateStatus(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        const priv = self.private();
+        var aw: std.Io.Writer.Allocating = .init(alloc);
+        defer aw.deinit();
+
+        var jw: std.json.Stringify = .{ .writer = &aw.writer, .options = .{} };
+        jw.beginObject() catch return null;
+        jw.objectField("ok") catch return null;
+        jw.write(true) catch return null;
+        jw.objectField("result") catch return null;
+        jw.beginObject() catch return null;
+        writeJsonOptionalString(&jw, "available_version", priv.update_state.last_available_version) catch return null;
+        writeJsonOptionalString(&jw, "download_path", priv.update_state.download_path) catch return null;
+        writeJsonOptionalString(&jw, "last_error", priv.update_state.last_error) catch return null;
+        writeJsonOptionalString(&jw, "progress", priv.update_state.progress) catch return null;
+        jw.objectField("install_kind") catch return null;
+        jw.write(@tagName(priv.update_state.install_kind)) catch return null;
+        jw.endObject() catch return null;
+        jw.objectField("id") catch return null;
+        jw.write(id) catch return null;
+        jw.endObject() catch return null;
+
+        return aw.toOwnedSlice() catch null;
+    }
+
     /// Parse a minimal JSON-RPC request and dispatch to the right handler.
     /// Returns an allocated response string (caller frees), or null on error.
     fn ipcDispatch(self: *Self, alloc: std.mem.Allocator, request: []const u8) ?[]u8 {
@@ -1836,6 +2066,19 @@ pub const Application = extern struct {
             return std.fmt.allocPrint(
                 alloc,
                 "{{\"ok\":true,\"result\":{{\"quitting\":true}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        if (std.mem.eql(u8, method, "update.status")) {
+            return self.ipcUpdateStatus(alloc, id);
+        }
+
+        if (std.mem.eql(u8, method, "update.check")) {
+            self.checkForUpdates();
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":true,\"result\":{{\"checking\":true}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         }
@@ -6147,6 +6390,11 @@ pub const Application = extern struct {
 
             .open_url => Action.openUrl(self, value),
 
+            .check_for_updates => {
+                self.checkForUpdates();
+                return true;
+            },
+
             .pwd => {
                 Action.pwd(target, value);
                 // Termplex: trigger git probe and port scan on pwd change.
@@ -6209,7 +6457,6 @@ pub const Application = extern struct {
             .renderer_health,
             .color_change,
             .reset_window_size,
-            .check_for_updates,
             .undo,
             .redo,
             => {

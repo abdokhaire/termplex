@@ -1168,6 +1168,10 @@ pub const Window = extern struct {
         self.private().toast_overlay.addToast(toast);
     }
 
+    pub fn addTermplexToast(self: *Self, title: [*:0]const u8) void {
+        self.addToast(title);
+    }
+
     fn connectSurfaceHandlers(
         self: *Self,
         tree: *const Surface.Tree,
