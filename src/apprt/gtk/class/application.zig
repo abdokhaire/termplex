@@ -1236,6 +1236,8 @@ pub const Application = extern struct {
 
         // Create TabView for this workspace
         const tab_view = adw.TabView.new();
+        tab_view.as(gtk.Widget).setHexpand(1);
+        tab_view.as(gtk.Widget).setVexpand(1);
         // Take Application-owned ref so it survives being unparented
         _ = tab_view.as(gobject.Object).ref();
 
@@ -5022,6 +5024,8 @@ pub const Application = extern struct {
                 break :blk uuid.generate();
             };
             const tab_view = adw.TabView.new();
+            tab_view.as(gtk.Widget).setHexpand(1);
+            tab_view.as(gtk.Widget).setVexpand(1);
             _ = tab_view.as(gobject.Object).ref();
             priv.workspace_names.append(alloc, name) catch {
                 alloc.free(name);

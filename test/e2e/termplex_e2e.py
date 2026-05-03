@@ -197,12 +197,26 @@ def wait_for_output(args, env, workspace, tab, marker, timeout):
     return wait_until("terminal output {!r}".format(marker), timeout, probe)
 
 
-def wait_for_surface_ready(args, env, workspace, tab, timeout):
+def select_workspace(args, env, workspace, timeout):
+    ctl(args, env, "workspace", "select", "--name", workspace)
+
     def probe():
-        ctl(args, env, "surface", "read", "--workspace", workspace, "--tab", str(tab), "--lines", "5")
+        items = ctl(args, env, "workspace", "list")["items"]
+        return any(item["name"] == workspace and item["active"] for item in items)
+
+    wait_until("active workspace {!r}".format(workspace), timeout, probe)
+
+
+def send_text(args, env, workspace, tab, text, timeout):
+    def probe():
+        ctl(args, env, "surface", "send", "--workspace", workspace, "--tab", str(tab), text)
         return True
 
-    return wait_until("surface {}:{} ready".format(workspace, tab), timeout, probe)
+    return wait_until("send to surface {}:{}".format(workspace, tab), timeout, probe)
+
+
+def tab_index(result, fallback):
+    return int(result.get("tab", result.get("index", fallback)))
 
 
 def db_path(profile):
@@ -226,13 +240,13 @@ def query_all(profile, sql, params=()):
         return conn.execute(sql, params).fetchall()
 
 
-def send_manual_command_marker(args, env, workspace, tab, marker, command_name):
+def send_manual_command_marker(args, env, workspace, tab, marker, command_name, timeout):
     shell_cmd = (
         "printf '\\033]7337;cmd_start;%s;" + command_name + "\\007' $$; "
         "printf '" + marker + "\\n'; "
         "printf '\\033]7337;cmd_end;%s;0\\007' $$\\n"
     )
-    ctl(args, env, "surface", "send", "--workspace", workspace, "--tab", str(tab), shell_cmd)
+    send_text(args, env, workspace, tab, shell_cmd, timeout)
 
 
 def assert_sqlite_rows(profile, workspace_name, marker_command, timeout):
@@ -310,6 +324,7 @@ def run_scenario(args, profile, env):
     marker = "TPX_E2E_MARKER_001"
     second_marker = "TPX_E2E_SECOND_TAB_001"
     delete_marker = "TPX_E2E_DELETE_001"
+    boot_marker = "TPX_E2E_BOOT_READY_001"
     command_name = "termplex-e2e-manual"
     delete_command_name = "termplex-e2e-delete"
 
@@ -319,6 +334,8 @@ def run_scenario(args, profile, env):
         status = ctl(args, env, "status")
         if "workspaces" not in status:
             raise E2EError("status missing workspaces: {}".format(status))
+        send_text(args, env, "0", 0, "printf '" + boot_marker + "\\n'\\n", args.timeout)
+        wait_for_output(args, env, "0", 0, boot_marker, args.timeout)
 
         ctl(args, env, "workspace", "create", "--name", workspace_name, "--dir", workspace_dir)
         wait_until(
@@ -326,6 +343,7 @@ def run_scenario(args, profile, env):
             args.timeout,
             lambda: workspace_name in [item["name"] for item in ctl(args, env, "workspace", "list")["items"]],
         )
+        select_workspace(args, env, workspace_name, args.timeout)
         main_tab_result = ctl(
             args,
             env,
@@ -338,13 +356,12 @@ def run_scenario(args, profile, env):
             "--dir",
             workspace_dir,
         )
-        main_tab = int(main_tab_result.get("tab", 0))
-        wait_for_surface_ready(args, env, workspace_name, main_tab, args.timeout)
+        main_tab = tab_index(main_tab_result, 0)
 
-        ctl(args, env, "surface", "send", "--workspace", workspace_name, "--tab", str(main_tab), "pwd\\n")
+        send_text(args, env, workspace_name, main_tab, "pwd\\n", args.timeout)
         wait_for_output(args, env, workspace_name, main_tab, workspace_dir, args.timeout)
 
-        send_manual_command_marker(args, env, workspace_name, main_tab, marker, command_name)
+        send_manual_command_marker(args, env, workspace_name, main_tab, marker, command_name, args.timeout)
         wait_for_output(args, env, workspace_name, main_tab, marker, args.timeout)
 
         tab_result = ctl(
@@ -359,18 +376,14 @@ def run_scenario(args, profile, env):
             "--dir",
             workspace_dir,
         )
-        second_tab = int(tab_result.get("tab", 1))
-        wait_for_surface_ready(args, env, workspace_name, second_tab, args.timeout)
-        ctl(
+        second_tab = tab_index(tab_result, 1)
+        send_text(
             args,
             env,
-            "surface",
-            "send",
-            "--workspace",
             workspace_name,
-            "--tab",
-            str(second_tab),
+            second_tab,
             "printf '" + second_marker + "\\n'\\n",
+            args.timeout,
         )
         wait_for_output(args, env, workspace_name, second_tab, second_marker, args.timeout)
 
@@ -384,6 +397,7 @@ def run_scenario(args, profile, env):
         transcript_path = assert_transcript_contains(profile, workspace_name, marker, args.timeout)
 
         ctl(args, env, "workspace", "create", "--name", delete_workspace_name, "--dir", delete_workspace_dir)
+        select_workspace(args, env, delete_workspace_name, args.timeout)
         delete_tab_result = ctl(
             args,
             env,
@@ -396,9 +410,8 @@ def run_scenario(args, profile, env):
             "--dir",
             delete_workspace_dir,
         )
-        delete_tab = int(delete_tab_result.get("tab", 0))
-        wait_for_surface_ready(args, env, delete_workspace_name, delete_tab, args.timeout)
-        send_manual_command_marker(args, env, delete_workspace_name, delete_tab, delete_marker, delete_command_name)
+        delete_tab = tab_index(delete_tab_result, 0)
+        send_manual_command_marker(args, env, delete_workspace_name, delete_tab, delete_marker, delete_command_name, args.timeout)
         wait_for_output(args, env, delete_workspace_name, delete_tab, delete_marker, args.timeout)
         assert_sqlite_rows(profile, delete_workspace_name, delete_command_name, args.timeout)
         delete_transcript_path = assert_transcript_contains(profile, delete_workspace_name, delete_marker, args.timeout)
