@@ -3725,20 +3725,26 @@ term: []const u8 = "xterm-termplex",
 /// Checking or downloading an update does not send any information to
 /// the project beyond standard network information mandated by the
 /// underlying protocols. To put it another way: Termplex doesn't explicitly
-/// add any tracking to the update process. The update process works by
-/// downloading information about the latest version and comparing it
-/// client-side to the current version.
+/// Control the auto-update notification behavior.
+///
+/// On Linux, Termplex checks a public release manifest client-side and
+/// compares it with the current build version. Termplex does not upload
+/// workspace names, project paths, command history, transcript data,
+/// environment variables, or install paths as part of update checks.
+/// Standard network metadata such as IP address and User-Agent is still
+/// visible to the update host.
 ///
 /// Valid values are:
 ///
-///  * `off` - Disable auto-updates.
-///  * `check` - Check for updates and notify the user if an update is
-///    available, but do not automatically download or install the update.
-///  * `download` - Check for updates, automatically download the update,
-///    notify the user, but do not automatically install the update.
+///  * `off` - Disable update checks.
+///  * `check` - Check for updates and notify the user when an update is
+///    available. Downloads only start after the user clicks Download.
+///  * `download` - Same as `check` for Linux phase 1. This value is accepted
+///    for compatibility, but Termplex still requires an explicit user click
+///    before downloading an AppImage.
 ///
-/// If unset, we defer to Sparkle's default behavior, which respects the
-/// preference stored in the standard user defaults (`defaults(1)`).
+/// If unset, Linux defaults to checking only when the user explicitly invokes
+/// Check for Updates. Future releases may add a startup check interval.
 ///
 /// Changing this value at runtime works after a small delay.
 @"auto-update": ?AutoUpdate = null,
@@ -3762,7 +3768,8 @@ term: []const u8 = "xterm-termplex",
 /// Changing this configuration requires a full restart of
 /// Termplex to take effect.
 ///
-/// This only works on macOS since only macOS has an auto-update feature.
+/// On Linux, this selects the release manifest channel. Stable builds default
+/// to `stable`; development builds may use `tip`.
 @"auto-update-channel": ?build_config.ReleaseChannel = null,
 
 /// This is set by the CLI parser for deinit.

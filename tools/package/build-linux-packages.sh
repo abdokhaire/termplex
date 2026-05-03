@@ -59,7 +59,12 @@ for target in "${targets[@]}"; do
       run_target deb tools/package/build-deb.sh || true
       ;;
     appimage)
+      before_success=${#success[@]}
       run_target appimage env APPIMAGE_SKIP_DEB_BUILD=1 tools/package/build-appimage.sh || true
+      if [[ ${#success[@]} -gt $before_success ]]; then
+        echo "==> Update manifest"
+        echo "Generate with tools/package/write-update-manifest.py after release URLs are known."
+      fi
       ;;
     flatpak)
       run_target flatpak tools/package/build-flatpak.sh || true
