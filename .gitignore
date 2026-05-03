@@ -2,6 +2,8 @@
 .*.swp
 .swp
 *.log
+*.pyc
+__pycache__/
 .DS_Store
 .vscode/
 .direnv/
