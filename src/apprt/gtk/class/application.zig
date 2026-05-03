@@ -394,6 +394,10 @@ pub const Application = extern struct {
         update_available_version: ?[:0]u8 = null,
         update_download_path: ?[:0]u8 = null,
         update_last_error: ?[:0]u8 = null,
+        update_download_url: ?[]u8 = null,
+        update_download_filename: ?[]u8 = null,
+        update_download_sha256: ?[32]u8 = null,
+        update_notes_url: ?[]u8 = null,
 
         pub var offset: c_int = 0;
     };
@@ -596,8 +600,13 @@ pub const Application = extern struct {
                 log.warn("failed to load update state: {}", .{err});
                 break :state .{};
             };
-            replaceCString(&priv.update_available_version, priv.update_state.last_available_version) catch {};
-            replaceCString(&priv.update_download_path, priv.update_state.download_path) catch {};
+            if (priv.update_state.download_path) |path| {
+                replaceCString(&priv.update_download_path, path) catch {};
+                replaceCString(
+                    &priv.update_available_version,
+                    priv.update_state.downloaded_version orelse priv.update_state.last_available_version,
+                ) catch {};
+            }
         }
 
         // Termplex: create orchestration workspace first (index 0) if enabled.
@@ -817,6 +826,19 @@ pub const Application = extern struct {
             std.heap.c_allocator.free(value);
             priv.update_last_error = null;
         }
+        if (priv.update_download_url) |value| {
+            std.heap.c_allocator.free(value);
+            priv.update_download_url = null;
+        }
+        if (priv.update_download_filename) |value| {
+            std.heap.c_allocator.free(value);
+            priv.update_download_filename = null;
+        }
+        if (priv.update_notes_url) |value| {
+            std.heap.c_allocator.free(value);
+            priv.update_notes_url = null;
+        }
+        priv.update_download_sha256 = null;
 
         // Termplex: cancel git debounce timer.
         if (priv.git_debounce_timer) |source| {
@@ -1812,6 +1834,27 @@ pub const Application = extern struct {
         ipcWriteAll(client_fd, "\n") catch {};
     }
 
+    const UpdateDownloadResult = struct {
+        app: *Self,
+        path: ?[]const u8 = null,
+        err: ?anyerror = null,
+    };
+
+    const UpdateDownloadJob = struct {
+        app: *Self,
+        result: *UpdateDownloadResult,
+        url: []const u8,
+        dest_dir: []const u8,
+        filename: []const u8,
+        sha256: [32]u8,
+
+        fn deinit(self: *UpdateDownloadJob, alloc: std.mem.Allocator) void {
+            alloc.free(self.url);
+            alloc.free(self.dest_dir);
+            alloc.free(self.filename);
+        }
+    };
+
     fn updateManifestUrl(self: *Self) []const u8 {
         _ = self;
         return std.posix.getenv("TERMPLEX_UPDATE_MANIFEST_URL") orelse
@@ -1841,11 +1884,26 @@ pub const Application = extern struct {
         if (value) |v| slot.* = try alloc.dupe(u8, v);
     }
 
+    fn replaceOwnedString(slot: *?[]u8, value: ?[]const u8) !void {
+        const alloc = std.heap.c_allocator;
+        if (slot.*) |old| alloc.free(old);
+        slot.* = null;
+        if (value) |v| slot.* = try alloc.dupe(u8, v);
+    }
+
     fn replaceCString(slot: *?[:0]u8, value: ?[]const u8) !void {
         const alloc = std.heap.c_allocator;
         if (slot.*) |old| alloc.free(old);
         slot.* = null;
         if (value) |v| slot.* = try alloc.dupeZ(u8, v);
+    }
+
+    fn clearUpdateDownloadMetadata(self: *Self) void {
+        const priv = self.private();
+        replaceOwnedString(&priv.update_download_url, null) catch {};
+        replaceOwnedString(&priv.update_download_filename, null) catch {};
+        replaceOwnedString(&priv.update_notes_url, null) catch {};
+        priv.update_download_sha256 = null;
     }
 
     fn saveUpdateState(self: *Self) void {
@@ -1857,11 +1915,44 @@ pub const Application = extern struct {
         }
     }
 
+    fn setUpdateDownloadStarted(self: *Self) void {
+        const priv = self.private();
+        replaceStateString(&priv.update_state.downloaded_version, null) catch {};
+        replaceStateString(&priv.update_state.download_path, null) catch {};
+        replaceStateString(&priv.update_state.last_error, null) catch {};
+        replaceStateString(&priv.update_state.progress, "downloading") catch {};
+        replaceCString(&priv.update_download_path, null) catch {};
+        replaceCString(&priv.update_last_error, null) catch {};
+        priv.update_state.checksum_status = .none;
+        self.saveUpdateState();
+        self.refreshUpdateBars();
+    }
+
+    fn setUpdateDownloaded(self: *Self, path: []const u8) !void {
+        const priv = self.private();
+        try replaceStateString(&priv.update_state.download_path, path);
+        if (priv.update_available_version) |version| {
+            try replaceStateString(&priv.update_state.downloaded_version, version);
+        } else {
+            try replaceStateString(&priv.update_state.downloaded_version, priv.update_state.last_available_version);
+        }
+        try replaceStateString(&priv.update_state.last_error, null);
+        try replaceStateString(&priv.update_state.progress, "downloaded");
+        try replaceCString(&priv.update_download_path, path);
+        try replaceCString(&priv.update_last_error, null);
+        priv.update_state.checksum_status = .verified;
+        self.saveUpdateState();
+        self.refreshUpdateBars();
+    }
+
     fn setUpdateError(self: *Self, err: anyerror) void {
         const message = @errorName(err);
         const priv = self.private();
         replaceStateString(&priv.update_state.last_error, message) catch {};
         replaceStateString(&priv.update_state.progress, "error") catch {};
+        if (err == error.ChecksumMismatch) {
+            priv.update_state.checksum_status = .mismatch;
+        }
         replaceCString(&priv.update_last_error, message) catch {};
         self.saveUpdateState();
         self.refreshUpdateBars();
@@ -1870,11 +1961,25 @@ pub const Application = extern struct {
     fn setUpdateAvailable(self: *Self, available: update_checker_mod.Available) void {
         const priv = self.private();
         replaceStateString(&priv.update_state.last_available_version, available.version_string) catch {};
+        replaceStateString(&priv.update_state.downloaded_version, null) catch {};
+        replaceStateString(&priv.update_state.download_path, null) catch {};
         replaceStateString(&priv.update_state.last_error, null) catch {};
         replaceStateString(&priv.update_state.progress, "available") catch {};
         replaceCString(&priv.update_available_version, available.version_string) catch {};
+        replaceCString(&priv.update_download_path, null) catch {};
         replaceCString(&priv.update_last_error, null) catch {};
+        replaceOwnedString(&priv.update_notes_url, available.notes_url) catch {};
+        if (available.download) |download| {
+            replaceOwnedString(&priv.update_download_url, download.url) catch {};
+            replaceOwnedString(&priv.update_download_filename, download.filename) catch {};
+            priv.update_download_sha256 = download.sha256;
+        } else {
+            replaceOwnedString(&priv.update_download_url, null) catch {};
+            replaceOwnedString(&priv.update_download_filename, null) catch {};
+            priv.update_download_sha256 = null;
+        }
         priv.update_state.install_kind = available.install_kind;
+        priv.update_state.checksum_status = .none;
         self.saveUpdateState();
         self.refreshUpdateBars();
     }
@@ -1882,11 +1987,19 @@ pub const Application = extern struct {
     fn setUpdateUnavailable(self: *Self, available: update_checker_mod.Available) void {
         const priv = self.private();
         replaceStateString(&priv.update_state.last_available_version, available.version_string) catch {};
+        replaceStateString(&priv.update_state.downloaded_version, null) catch {};
+        replaceStateString(&priv.update_state.download_path, null) catch {};
         replaceStateString(&priv.update_state.last_error, null) catch {};
         replaceStateString(&priv.update_state.progress, "unavailable_for_install") catch {};
         replaceCString(&priv.update_available_version, available.version_string) catch {};
+        replaceCString(&priv.update_download_path, null) catch {};
         replaceCString(&priv.update_last_error, null) catch {};
+        replaceOwnedString(&priv.update_notes_url, available.notes_url) catch {};
+        replaceOwnedString(&priv.update_download_url, null) catch {};
+        replaceOwnedString(&priv.update_download_filename, null) catch {};
+        priv.update_download_sha256 = null;
         priv.update_state.install_kind = available.install_kind;
+        priv.update_state.checksum_status = .none;
         self.saveUpdateState();
         self.refreshUpdateBars();
     }
@@ -1948,7 +2061,16 @@ pub const Application = extern struct {
             return;
         }
 
-        self.showUpdateToast("Update download is not ready yet");
+        if (priv.update_state.install_kind != .appimage) {
+            if (priv.update_notes_url) |url| {
+                Action.openUrl(self, .{ .kind = .html, .url = url });
+            } else {
+                self.showUpdateToast("Release page is not available");
+            }
+            return;
+        }
+
+        self.downloadAvailableUpdate();
     }
 
     pub fn dismissCurrentUpdate(self: *Self) void {
@@ -1958,6 +2080,147 @@ pub const Application = extern struct {
         }
         self.saveUpdateState();
         self.refreshUpdateBars();
+    }
+
+    fn makeUpdateDownloadJob(
+        self: *Self,
+        result: *UpdateDownloadResult,
+        url: []const u8,
+        dest_dir: []const u8,
+        filename: []const u8,
+        sha256: [32]u8,
+    ) !*UpdateDownloadJob {
+        const alloc = std.heap.c_allocator;
+        const job = try alloc.create(UpdateDownloadJob);
+        errdefer alloc.destroy(job);
+
+        job.* = .{
+            .app = self,
+            .result = result,
+            .url = "",
+            .dest_dir = "",
+            .filename = "",
+            .sha256 = sha256,
+        };
+
+        job.url = try alloc.dupe(u8, url);
+        errdefer alloc.free(job.url);
+        job.dest_dir = try alloc.dupe(u8, dest_dir);
+        errdefer alloc.free(job.dest_dir);
+        job.filename = try alloc.dupe(u8, filename);
+
+        return job;
+    }
+
+    fn downloadAvailableUpdate(self: *Self) void {
+        const alloc = std.heap.c_allocator;
+        const priv = self.private();
+
+        if (priv.update_state.progress) |progress| {
+            if (std.mem.eql(u8, progress, "downloading")) {
+                self.showUpdateToast("Update download already running");
+                return;
+            }
+        }
+
+        const paths = priv.update_paths orelse {
+            self.setUpdateError(error.MissingUpdatePaths);
+            self.showUpdateToast("Update download failed");
+            return;
+        };
+        const url = priv.update_download_url orelse {
+            self.showUpdateToast("Check for updates again before downloading");
+            return;
+        };
+        const filename = priv.update_download_filename orelse {
+            self.setUpdateError(error.MissingUpdateMetadata);
+            self.showUpdateToast("Update download failed");
+            return;
+        };
+        const sha256 = priv.update_download_sha256 orelse {
+            self.setUpdateError(error.MissingUpdateMetadata);
+            self.showUpdateToast("Update download failed");
+            return;
+        };
+
+        self.setUpdateDownloadStarted();
+
+        const result = alloc.create(UpdateDownloadResult) catch |err| {
+            self.setUpdateError(err);
+            self.showUpdateToast("Update download failed");
+            return;
+        };
+        result.* = .{ .app = self };
+
+        const job = self.makeUpdateDownloadJob(result, url, paths.dir, filename, sha256) catch |err| {
+            alloc.destroy(result);
+            self.setUpdateError(err);
+            self.showUpdateToast("Update download failed");
+            return;
+        };
+
+        _ = self.as(gobject.Object).ref();
+        const thread = std.Thread.spawn(.{}, updateDownloadThread, .{job}) catch |err| {
+            self.as(gobject.Object).unref();
+            job.deinit(alloc);
+            alloc.destroy(job);
+            alloc.destroy(result);
+            self.setUpdateError(err);
+            self.showUpdateToast("Update download failed");
+            return;
+        };
+        thread.detach();
+    }
+
+    fn updateDownloadThread(job: *UpdateDownloadJob) void {
+        const alloc = std.heap.c_allocator;
+        const result = job.result;
+
+        result.path = update_checker_mod.downloadAppImage(
+            alloc,
+            job.url,
+            job.dest_dir,
+            job.filename,
+            job.sha256,
+        ) catch |err| blk: {
+            result.err = err;
+            break :blk null;
+        };
+
+        job.deinit(alloc);
+        alloc.destroy(job);
+
+        _ = glib.idleAdd(updateDownloadComplete, result);
+    }
+
+    fn updateDownloadComplete(ud: ?*anyopaque) callconv(.c) c_int {
+        const result: *UpdateDownloadResult = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        const alloc = std.heap.c_allocator;
+        defer {
+            if (result.path) |path| alloc.free(path);
+            result.app.as(gobject.Object).unref();
+            alloc.destroy(result);
+        }
+
+        if (result.err) |err| {
+            result.app.setUpdateError(err);
+            result.app.showUpdateToast("Update download failed");
+            return @intFromBool(glib.SOURCE_REMOVE);
+        }
+
+        const path = result.path orelse {
+            result.app.setUpdateError(error.MissingDownloadPath);
+            result.app.showUpdateToast("Update download failed");
+            return @intFromBool(glib.SOURCE_REMOVE);
+        };
+
+        result.app.setUpdateDownloaded(path) catch |err| {
+            result.app.setUpdateError(err);
+            result.app.showUpdateToast("Update download failed");
+            return @intFromBool(glib.SOURCE_REMOVE);
+        };
+        result.app.showUpdateToast("Termplex update downloaded");
+        return @intFromBool(glib.SOURCE_REMOVE);
     }
 
     fn runUpdateCheckFromBytes(self: *Self, manifest_bytes: []const u8) void {
@@ -1989,6 +2252,7 @@ pub const Application = extern struct {
                 replaceCString(&self.private().update_available_version, null) catch {};
                 replaceCString(&self.private().update_download_path, null) catch {};
                 replaceCString(&self.private().update_last_error, null) catch {};
+                self.clearUpdateDownloadMetadata();
                 self.saveUpdateState();
                 self.refreshUpdateBars();
                 self.showUpdateToast("Termplex is up to date");
@@ -2140,6 +2404,15 @@ pub const Application = extern struct {
             return std.fmt.allocPrint(
                 alloc,
                 "{{\"ok\":true,\"result\":{{\"checking\":true}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        }
+
+        if (std.mem.eql(u8, method, "update.download")) {
+            self.downloadAvailableUpdate();
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":true,\"result\":{{\"downloading\":true}},\"id\":{d}}}",
                 .{id},
             ) catch null;
         }

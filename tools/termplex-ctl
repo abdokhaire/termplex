@@ -163,6 +163,7 @@ def main():
     update_sub = update.add_subparsers(dest="action")
     update_sub.add_parser("status", help="Show update state")
     update_sub.add_parser("check", help="Check for updates")
+    update_sub.add_parser("download", help="Download available AppImage update")
 
     args = parser.parse_args()
 
@@ -211,6 +212,8 @@ def build_request(args):
             return "update.status", {}
         if action == "check":
             return "update.check", {}
+        if action == "download":
+            return "update.download", {}
         return None, None
 
     if resource == "workspace":
