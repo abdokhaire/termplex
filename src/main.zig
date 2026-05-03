@@ -27,6 +27,7 @@ test {
     _ = @import("termplex/core/session.zig");
     _ = @import("termplex/core/terminal_history.zig");
     _ = @import("termplex/core/terminal_history_db.zig");
+    _ = @import("termplex/core/update_checker.zig");
     _ = @import("termplex/core/update_manifest.zig");
     _ = @import("termplex/core/update_state.zig");
     _ = @import("termplex/core/memory/state_manager.zig");

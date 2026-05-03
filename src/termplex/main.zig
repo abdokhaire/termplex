@@ -17,6 +17,7 @@ pub const core = struct {
     pub const session = @import("core/session.zig");
     pub const terminal_history = @import("core/terminal_history.zig");
     pub const terminal_history_db = @import("core/terminal_history_db.zig");
+    pub const update_checker = @import("core/update_checker.zig");
     pub const update_manifest = @import("core/update_manifest.zig");
     pub const update_state = @import("core/update_state.zig");
 };
