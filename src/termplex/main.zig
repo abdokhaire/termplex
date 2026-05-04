@@ -13,6 +13,7 @@ pub const core = struct {
     pub const notification = @import("core/notification.zig");
     pub const config = @import("core/config.zig");
     pub const git_probe = @import("core/git_probe.zig");
+    pub const git_status = @import("core/git_status.zig");
     pub const port_scanner = @import("core/port_scanner.zig");
     pub const session = @import("core/session.zig");
     pub const terminal_history = @import("core/terminal_history.zig");

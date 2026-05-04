@@ -179,6 +179,26 @@ def main():
     history_search.add_argument("--started-before", help="ISO timestamp upper bound")
     history_search.add_argument("--limit", type=int, default=50, help="Maximum rows to return")
 
+    # --- git ---
+    git = subparsers.add_parser("git", help="Source control operations")
+    git_sub = git.add_subparsers(dest="action")
+    git_status = git_sub.add_parser("status", help="Show source control status")
+    git_status.add_argument("--workspace", help="Workspace name or index")
+    git_diff = git_sub.add_parser("diff", help="Show a file diff")
+    git_diff.add_argument("--workspace", help="Workspace name or index")
+    git_diff.add_argument("--path", required=True, help="File path relative to the repository root")
+    git_diff.add_argument("--staged", action="store_true", help="Show the staged diff")
+    git_stage = git_sub.add_parser("stage", help="Stage a file")
+    git_stage.add_argument("--workspace", help="Workspace name or index")
+    git_stage.add_argument("--path", required=True, help="File path relative to the repository root")
+    git_unstage = git_sub.add_parser("unstage", help="Unstage a file")
+    git_unstage.add_argument("--workspace", help="Workspace name or index")
+    git_unstage.add_argument("--path", required=True, help="File path relative to the repository root")
+    git_commit = git_sub.add_parser("commit", help="Commit staged files")
+    git_commit.add_argument("--workspace", help="Workspace name or index")
+    git_commit.add_argument("--message", required=True, help="Commit message")
+    git_sub.add_parser("show", help="Show the source control dialog")
+
     args = parser.parse_args()
 
     if not args.resource:
@@ -248,6 +268,36 @@ def build_request(args):
             if args.started_before:
                 p["started_before"] = args.started_before
             return "history.search", p
+        return None, None
+
+    if resource == "git":
+        if action == "show":
+            return "git.show", {}
+        if action == "status":
+            p = {}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "git.status", p
+        if action == "diff":
+            p = {"path": args.path, "staged": bool(args.staged)}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "git.diff", p
+        if action == "stage":
+            p = {"path": args.path}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "git.stage", p
+        if action == "unstage":
+            p = {"path": args.path}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "git.unstage", p
+        if action == "commit":
+            p = {"message": args.message}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "git.commit", p
         return None, None
 
     if resource == "workspace":

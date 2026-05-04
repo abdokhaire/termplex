@@ -1,0 +1,254 @@
+using Gtk 4.0;
+using Gio 2.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 980;
+  closed => $closed();
+
+  Adw.ToolbarView {
+    top-bar-style: flat;
+
+    [top]
+    Adw.HeaderBar {
+      [title]
+      Adw.WindowTitle {
+        title: _("Source Control");
+        subtitle: _("Active workspace");
+      }
+
+      [end]
+      Gtk.Button refresh_button {
+        icon-name: "view-refresh-symbolic";
+        tooltip-text: _("Refresh");
+        clicked => $refresh_clicked();
+      }
+    }
+
+    Gtk.Box {
+      orientation: vertical;
+      spacing: 10;
+      margin-top: 12;
+      margin-bottom: 12;
+      margin-start: 12;
+      margin-end: 12;
+
+      Gtk.Label status_label {
+        halign: start;
+        xalign: 0;
+        ellipsize: end;
+        single-line-mode: true;
+
+        styles [
+          "caption",
+        ]
+      }
+
+      Gtk.Box {
+        orientation: horizontal;
+        spacing: 12;
+        vexpand: true;
+
+        Gtk.Box {
+          orientation: vertical;
+          spacing: 8;
+          width-request: 330;
+          vexpand: true;
+
+          Gtk.Label {
+            label: _("Staged");
+            halign: start;
+
+            styles [
+              "heading",
+            ]
+          }
+
+          Gtk.ScrolledWindow {
+            min-content-height: 150;
+            vexpand: true;
+
+            Gtk.ListView staged_view {
+              show-separators: true;
+              single-click-activate: true;
+              activate => $staged_row_activated();
+
+              model: Gtk.SingleSelection staged_model {
+                model: Gio.ListStore staged_source {
+                  item-type: typeof<$TermplexGitChange>;
+                };
+              };
+
+              styles [
+                "rich-list",
+              ]
+
+              factory: Gtk.BuilderListItemFactory {
+                template Gtk.ListItem {
+                  child: Gtk.Box {
+                    orientation: vertical;
+                    spacing: 2;
+                    tooltip-text: bind template.item as <$TermplexGitChange>.path;
+
+                    Gtk.Label {
+                      ellipsize: end;
+                      halign: start;
+                      single-line-mode: true;
+
+                      styles [
+                        "title",
+                        "monospace",
+                      ]
+
+                      label: bind template.item as <$TermplexGitChange>.path;
+                    }
+
+                    Gtk.Label {
+                      ellipsize: end;
+                      halign: start;
+                      single-line-mode: true;
+
+                      styles [
+                        "subtitle",
+                      ]
+
+                      label: bind template.item as <$TermplexGitChange>.status;
+                    }
+                  };
+                }
+              };
+            }
+          }
+
+          Gtk.Button unstage_button {
+            label: _("Unstage File");
+            clicked => $unstage_clicked();
+          }
+
+          Gtk.Separator {}
+
+          Gtk.Label {
+            label: _("Changes");
+            halign: start;
+
+            styles [
+              "heading",
+            ]
+          }
+
+          Gtk.ScrolledWindow {
+            min-content-height: 190;
+            vexpand: true;
+
+            Gtk.ListView unstaged_view {
+              show-separators: true;
+              single-click-activate: true;
+              activate => $unstaged_row_activated();
+
+              model: Gtk.SingleSelection unstaged_model {
+                model: Gio.ListStore unstaged_source {
+                  item-type: typeof<$TermplexGitChange>;
+                };
+              };
+
+              styles [
+                "rich-list",
+              ]
+
+              factory: Gtk.BuilderListItemFactory {
+                template Gtk.ListItem {
+                  child: Gtk.Box {
+                    orientation: vertical;
+                    spacing: 2;
+                    tooltip-text: bind template.item as <$TermplexGitChange>.path;
+
+                    Gtk.Label {
+                      ellipsize: end;
+                      halign: start;
+                      single-line-mode: true;
+
+                      styles [
+                        "title",
+                        "monospace",
+                      ]
+
+                      label: bind template.item as <$TermplexGitChange>.path;
+                    }
+
+                    Gtk.Label {
+                      ellipsize: end;
+                      halign: start;
+                      single-line-mode: true;
+
+                      styles [
+                        "subtitle",
+                      ]
+
+                      label: bind template.item as <$TermplexGitChange>.status;
+                    }
+                  };
+                }
+              };
+            }
+          }
+
+          Gtk.Button stage_button {
+            label: _("Stage File");
+            clicked => $stage_clicked();
+          }
+        }
+
+        Gtk.Box {
+          orientation: vertical;
+          spacing: 8;
+          hexpand: true;
+          vexpand: true;
+
+          Gtk.Label {
+            label: _("Diff");
+            halign: start;
+
+            styles [
+              "heading",
+            ]
+          }
+
+          Gtk.ScrolledWindow {
+            min-content-height: 420;
+            hexpand: true;
+            vexpand: true;
+
+            Gtk.Label diff_label {
+              selectable: true;
+              wrap: false;
+              xalign: 0;
+              yalign: 0;
+              halign: start;
+              valign: start;
+
+              styles [
+                "monospace",
+              ]
+            }
+          }
+
+          Gtk.Box {
+            orientation: horizontal;
+            spacing: 8;
+
+            Gtk.Entry commit_entry {
+              hexpand: true;
+              placeholder-text: _("Commit message");
+              activates-default: true;
+            }
+
+            Gtk.Button commit_button {
+              label: _("Commit");
+              clicked => $commit_clicked();
+            }
+          }
+        }
+      }
+    }
+  }
+}

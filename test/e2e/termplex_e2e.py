@@ -271,6 +271,37 @@ def query_all(profile, sql, params=()):
         return conn.execute(sql, params).fetchall()
 
 
+def run_cmd(cmd, cwd, timeout=10.0):
+    proc = subprocess.run(
+        cmd,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+    )
+    if proc.returncode != 0:
+        raise E2EError(
+            "command failed: {}\nstdout:\n{}\nstderr:\n{}".format(
+                " ".join(cmd), proc.stdout, proc.stderr
+            )
+        )
+    return proc
+
+
+def setup_git_fixture(workspace_path):
+    run_cmd(["git", "init"], workspace_path)
+    run_cmd(["git", "config", "user.email", "termplex-e2e@example.invalid"], workspace_path)
+    run_cmd(["git", "config", "user.name", "Termplex E2E"], workspace_path)
+    run_cmd(["git", "remote", "add", "origin", "https://example.invalid/termplex-e2e.git"], workspace_path)
+    (workspace_path / "tracked.txt").write_text("base\n")
+    run_cmd(["git", "add", "tracked.txt"], workspace_path)
+    run_cmd(["git", "commit", "-m", "initial"], workspace_path)
+    (workspace_path / "tracked.txt").write_text("base\nmodified\n")
+    (workspace_path / "staged.txt").write_text("staged\n")
+    run_cmd(["git", "add", "staged.txt"], workspace_path)
+
+
 def send_manual_command_marker(args, env, workspace, tab, marker, command_name, timeout):
     shell_cmd = (
         "printf '\\033]7337;cmd_start;%s;" + command_name + "\\007' $$; "
@@ -373,6 +404,62 @@ def assert_history_search(args, env, workspace_name, marker_command, timeout):
         raise E2EError("history search returned wrong source: {}".format(item))
 
 
+def change_paths(status, section):
+    return {item.get("path") for item in status.get(section, [])}
+
+
+def assert_source_control_flow(args, env, workspace_name, timeout):
+    def status_has_fixture_changes():
+        status = ctl(args, env, "git", "status", "--workspace", workspace_name)
+        if not status.get("is_repo"):
+            return None
+        staged = change_paths(status, "staged")
+        unstaged = change_paths(status, "unstaged")
+        if "staged.txt" in staged and "tracked.txt" in unstaged:
+            return status
+        return None
+
+    status = wait_until("source control status fixture changes", timeout, status_has_fixture_changes)
+    if status.get("remote_url") != "https://example.invalid/termplex-e2e.git":
+        raise E2EError("source control status missing remote URL: {}".format(status))
+    if not status.get("branch"):
+        raise E2EError("source control status missing branch: {}".format(status))
+    if not status.get("dirty"):
+        raise E2EError("source control status did not report dirty repo: {}".format(status))
+
+    diff = ctl(args, env, "git", "diff", "--workspace", workspace_name, "--path", "tracked.txt")
+    if "+modified" not in diff.get("diff", ""):
+        raise E2EError("source control diff missing modified line: {}".format(diff))
+
+    status = ctl(args, env, "git", "unstage", "--workspace", workspace_name, "--path", "staged.txt")
+    if "staged.txt" in change_paths(status, "staged"):
+        raise E2EError("source control unstage did not remove staged file: {}".format(status))
+    if "staged.txt" not in change_paths(status, "unstaged"):
+        raise E2EError("source control unstage did not show file as unstaged: {}".format(status))
+
+    status = ctl(args, env, "git", "stage", "--workspace", workspace_name, "--path", "staged.txt")
+    if "staged.txt" not in change_paths(status, "staged"):
+        raise E2EError("source control stage did not stage new file: {}".format(status))
+
+    status = ctl(args, env, "git", "stage", "--workspace", workspace_name, "--path", "tracked.txt")
+    if "tracked.txt" not in change_paths(status, "staged"):
+        raise E2EError("source control stage did not stage tracked change: {}".format(status))
+
+    commit = ctl(args, env, "git", "commit", "--workspace", workspace_name, "--message", "e2e source control commit")
+    if not commit.get("committed") or not commit.get("commit"):
+        raise E2EError("source control commit did not return commit id: {}".format(commit))
+    if commit.get("status", {}).get("dirty"):
+        raise E2EError("source control commit did not leave repo clean: {}".format(commit))
+
+    status = ctl(args, env, "git", "status", "--workspace", workspace_name)
+    if status.get("dirty"):
+        raise E2EError("source control final status is dirty: {}".format(status))
+
+    shown = ctl(args, env, "git", "show")
+    if not shown.get("shown"):
+        raise E2EError("source control dialog did not report shown: {}".format(shown))
+
+
 def assert_transcript_contains(profile, workspace_name, marker, timeout):
     def probe():
         rows = query_all(
@@ -419,6 +506,8 @@ def run_scenario(args, profile, env):
     command_name = "termplex-e2e-manual"
     delete_command_name = "termplex-e2e-delete"
 
+    setup_git_fixture(profile / "workspace")
+
     proc, log_file, log_path = start_app(args, profile, env)
     try:
         wait_for_ipc(args, env, proc, args.timeout)
@@ -452,6 +541,7 @@ def run_scenario(args, profile, env):
 
         send_text(args, env, workspace_name, main_tab, "pwd\\n", args.timeout)
         wait_for_output(args, env, workspace_name, main_tab, workspace_dir, args.timeout)
+        assert_source_control_flow(args, env, workspace_name, args.timeout)
 
         send_manual_command_marker(args, env, workspace_name, main_tab, marker, command_name, args.timeout)
         wait_for_output(args, env, workspace_name, main_tab, marker, args.timeout)
