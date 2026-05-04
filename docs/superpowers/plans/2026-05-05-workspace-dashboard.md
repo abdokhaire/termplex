@@ -1,6 +1,6 @@
 # Workspace Dashboard Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add a local-first workspace dashboard that summarizes the active workspace and links into recent commands, transcript viewing, source control, and storage/history management.
 
@@ -116,7 +116,7 @@ Phase 1 defers:
 
 - Modify: `test/e2e/termplex_e2e.py`
 
-- [ ] **Step 1: Add a failing dashboard status assertion**
+- [x] **Step 1: Add a failing dashboard status assertion**
 
 Add this helper near the existing history/source-control/storage assertion helpers:
 
@@ -158,7 +158,7 @@ def assert_dashboard_status(args, env, workspace_name, command_marker, timeout):
         raise E2EError("dashboard dialog did not report shown: {}".format(shown))
 ```
 
-- [ ] **Step 2: Call the assertion from `main()` after command and git fixtures exist**
+- [x] **Step 2: Call the assertion from `main()` after command and git fixtures exist**
 
 In the main test flow, call the helper after `assert_history_search(...)`, `assert_history_transcript_cli(...)`, `assert_storage_status_has_history(...)`, and `assert_source_control_flow(...)` have created enough state:
 
@@ -173,7 +173,7 @@ If source-control assertions currently commit all dirty changes before this poin
         assert_dashboard_status(args, env, workspace_name, command_name, args.timeout)
 ```
 
-- [ ] **Step 3: Run E2E and verify the expected failure**
+- [x] **Step 3: Run E2E and verify the expected failure**
 
 Run:
 
@@ -189,7 +189,7 @@ Expected: FAIL because `termplex-ctl` does not know the `dashboard` resource.
 
 - Modify: `tools/termplex-ctl`
 
-- [ ] **Step 1: Add the parser entries**
+- [x] **Step 1: Add the parser entries**
 
 Add after the storage parser block:
 
@@ -203,7 +203,7 @@ Add after the storage parser block:
     dashboard_sub.add_parser("show", help="Show the workspace dashboard dialog")
 ```
 
-- [ ] **Step 2: Add request mapping**
+- [x] **Step 2: Add request mapping**
 
 Add before the `workspace` resource mapping in `build_request(args)`:
 
@@ -219,7 +219,7 @@ Add before the `workspace` resource mapping in `build_request(args)`:
         return None, None
 ```
 
-- [ ] **Step 3: Compile-check the CLI**
+- [x] **Step 3: Compile-check the CLI**
 
 Run:
 
@@ -229,7 +229,7 @@ python3 -m py_compile tools/termplex-ctl test/e2e/termplex_e2e.py
 
 Expected: PASS.
 
-- [ ] **Step 4: Run E2E and verify the next expected failure**
+- [x] **Step 4: Run E2E and verify the next expected failure**
 
 Run:
 
@@ -245,7 +245,7 @@ Expected: FAIL with an IPC unknown-method error for `dashboard.status`.
 
 - Modify: `src/apprt/gtk/class/application.zig`
 
-- [ ] **Step 1: Add dashboard data structs near existing public app helper structs**
+- [x] **Step 1: Add dashboard data structs near existing public app helper structs**
 
 Add near `TerminalTranscript` or the storage/git public helper methods:
 
@@ -311,7 +311,7 @@ Add near `TerminalTranscript` or the storage/git public helper methods:
     };
 ```
 
-- [ ] **Step 2: Add workspace summary helper**
+- [x] **Step 2: Add workspace summary helper**
 
 Add below `storageRowCounts`:
 
@@ -364,7 +364,7 @@ Add below `storageRowCounts`:
     }
 ```
 
-- [ ] **Step 3: Add storage and git summary helpers**
+- [x] **Step 3: Add storage and git summary helpers**
 
 Add below `dashboardWorkspace`:
 
@@ -400,7 +400,7 @@ Add below `dashboardWorkspace`:
     }
 ```
 
-- [ ] **Step 4: Add public dashboard status method**
+- [x] **Step 4: Add public dashboard status method**
 
 Add below the helpers:
 
@@ -444,7 +444,7 @@ Add below the helpers:
     }
 ```
 
-- [ ] **Step 5: Add JSON append helpers**
+- [x] **Step 5: Add JSON append helpers**
 
 Add near the existing IPC JSON helpers:
 
@@ -545,7 +545,7 @@ Add near the existing IPC JSON helpers:
     }
 ```
 
-- [ ] **Step 6: Add IPC handlers**
+- [x] **Step 6: Add IPC handlers**
 
 Add near existing IPC handlers:
 
@@ -615,7 +615,7 @@ Add near existing IPC handlers:
     }
 ```
 
-- [ ] **Step 7: Add IPC dispatch**
+- [x] **Step 7: Add IPC dispatch**
 
 In the dispatch section, add before `history.search`:
 
@@ -629,12 +629,13 @@ In the dispatch section, add before `history.search`:
         }
 ```
 
-- [ ] **Step 8: Build and verify status IPC**
+- [x] **Step 8: Build and verify status IPC**
 
 Run:
 
 ```bash
-/opt/zig-x86_64-linux-0.15.2/zig fmt src/apprt/gtk/class/application.zig tools/termplex-ctl test/e2e/termplex_e2e.py
+/opt/zig-x86_64-linux-0.15.2/zig fmt src/apprt/gtk/class/application.zig
+python3 -m py_compile tools/termplex-ctl test/e2e/termplex_e2e.py
 /opt/zig-x86_64-linux-0.15.2/zig build -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell
 ```
 
@@ -656,7 +657,7 @@ Expected: FAIL at `dashboard.show` until the window/dialog wiring exists.
 - Create: `src/apprt/gtk/ui/1.5/workspace-dashboard-dialog.blp`
 - Modify: `src/apprt/gtk/build/gresource.zig`
 
-- [ ] **Step 1: Add Blueprint resource entry**
+- [x] **Step 1: Add Blueprint resource entry**
 
 In `src/apprt/gtk/build/gresource.zig`, add near the other Termplex dialogs:
 
@@ -664,7 +665,7 @@ In `src/apprt/gtk/build/gresource.zig`, add near the other Termplex dialogs:
     .{ .major = 1, .minor = 5, .name = "workspace-dashboard-dialog" },
 ```
 
-- [ ] **Step 2: Create the Blueprint**
+- [x] **Step 2: Create the Blueprint**
 
 Create `src/apprt/gtk/ui/1.5/workspace-dashboard-dialog.blp`:
 
@@ -835,7 +836,7 @@ template $TermplexWorkspaceDashboardDialog: Adw.Bin {
 }
 ```
 
-- [ ] **Step 3: Create dialog class skeleton**
+- [x] **Step 3: Create dialog class skeleton**
 
 Create `src/apprt/gtk/class/workspace_dashboard_dialog.zig` with:
 
@@ -965,7 +966,7 @@ pub const WorkspaceDashboardDialog = extern struct {
 
 The skeleton is completed by the following steps in this task: refresh/label helpers, recent-command row object, row binding, action callbacks, presentation, and `Class.init` template registration. Do not run a build with only the skeleton in place.
 
-- [ ] **Step 4: Implement refresh and labels**
+- [x] **Step 4: Implement refresh and labels**
 
 In `WorkspaceDashboardDialog`, add:
 
@@ -1058,7 +1059,7 @@ In `WorkspaceDashboardDialog`, add:
     }
 ```
 
-- [ ] **Step 5: Add row object and row binding**
+- [x] **Step 5: Add row object and row binding**
 
 Use the same arena-backed property pattern as `HistoryCommand`:
 
@@ -1214,7 +1215,7 @@ const DashboardCommand = extern struct {
 };
 ```
 
-- [ ] **Step 6: Add action callbacks and presentation**
+- [x] **Step 6: Add action callbacks and presentation**
 
 Implement callbacks:
 
@@ -1302,7 +1303,7 @@ Add `toggle(self: *Self, window: *Window)` like the other dialogs:
     }
 ```
 
-- [ ] **Step 7: Register template children and callbacks**
+- [x] **Step 7: Register template children and callbacks**
 
 In `Class.init`, ensure:
 
@@ -1346,7 +1347,7 @@ In `Class.init`, ensure:
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);
 ```
 
-- [ ] **Step 8: Build to catch Blueprint/class errors**
+- [x] **Step 8: Build to catch Blueprint/class errors**
 
 Run:
 
@@ -1364,7 +1365,7 @@ Expected: PASS after fixing any compile issues caused by GTK binding names.
 - Modify: `src/apprt/gtk/class/window.zig`
 - Modify: `src/apprt/gtk/ui/1.5/window.blp`
 
-- [ ] **Step 1: Import and store the dialog**
+- [x] **Step 1: Import and store the dialog**
 
 Add with the other Termplex dialogs:
 
@@ -1378,7 +1379,7 @@ In `Private`, add:
         workspace_dashboard_dialog: WeakRef(WorkspaceDashboardDialog) = .empty,
 ```
 
-- [ ] **Step 2: Add the window action**
+- [x] **Step 2: Add the window action**
 
 In the actions list, add near the other Termplex actions:
 
@@ -1398,7 +1399,7 @@ Add the action handler:
     }
 ```
 
-- [ ] **Step 3: Add dialog creation and signal wiring**
+- [x] **Step 3: Add dialog creation and signal wiring**
 
 Add near the other dialog helpers:
 
@@ -1496,7 +1497,7 @@ Add signal handlers:
     }
 ```
 
-- [ ] **Step 4: Add menu item**
+- [x] **Step 4: Add menu item**
 
 In `src/apprt/gtk/ui/1.5/window.blp`, add before Command History:
 
@@ -1507,7 +1508,7 @@ In `src/apprt/gtk/ui/1.5/window.blp`, add before Command History:
     }
 ```
 
-- [ ] **Step 5: Build and run E2E**
+- [x] **Step 5: Build and run E2E**
 
 Run:
 
@@ -1526,7 +1527,7 @@ Expected: PASS.
 - Modify: `docs/superpowers/plans/2026-05-03-termplex-roadmap-implementation-sequence.md`
 - Modify: `test/e2e/README.md` if it lists covered flows.
 
-- [ ] **Step 1: Update roadmap status**
+- [x] **Step 1: Update roadmap status**
 
 In the roadmap sequence:
 
@@ -1534,7 +1535,7 @@ In the roadmap sequence:
 - Mark `Workspace Dashboard` as the active next implementation phase.
 - Point the detailed plan to `docs/superpowers/plans/2026-05-05-workspace-dashboard.md`.
 
-- [ ] **Step 2: Update E2E README**
+- [x] **Step 2: Update E2E README**
 
 In `test/e2e/README.md`, update the first paragraph so the coverage list includes dashboard status/presentation. The sentence should include:
 
@@ -1542,7 +1543,7 @@ In `test/e2e/README.md`, update the first paragraph so the coverage list include
 - Workspace dashboard status and presentation through `termplex-ctl dashboard status/show`
 ```
 
-- [ ] **Step 3: Run docs diff check**
+- [x] **Step 3: Run docs diff check**
 
 Run:
 
@@ -1558,7 +1559,7 @@ Expected: PASS.
 
 - All changed files from Tasks 1-6.
 
-- [ ] **Step 1: Format**
+- [x] **Step 1: Format**
 
 Run:
 
@@ -1568,7 +1569,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 2: Python syntax check**
+- [x] **Step 2: Python syntax check**
 
 Run:
 
@@ -1578,7 +1579,7 @@ python3 -m py_compile test/e2e/termplex_e2e.py tools/termplex-ctl
 
 Expected: PASS.
 
-- [ ] **Step 3: Unit tests**
+- [x] **Step 3: Unit tests**
 
 Run:
 
@@ -1588,7 +1589,7 @@ Run:
 
 Expected: PASS. Existing terminal/parser warning output is acceptable only if the command exits 0.
 
-- [ ] **Step 4: GTK build**
+- [x] **Step 4: GTK build**
 
 Run:
 
@@ -1598,7 +1599,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: E2E**
+- [x] **Step 5: E2E**
 
 Run:
 
@@ -1608,7 +1609,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Whitespace check**
+- [x] **Step 6: Whitespace check**
 
 Run:
 
@@ -1618,7 +1619,7 @@ git diff --check
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Run:
 

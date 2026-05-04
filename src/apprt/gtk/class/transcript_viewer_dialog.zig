@@ -74,13 +74,13 @@ pub const TranscriptViewerDialog = extern struct {
         const priv = self.private();
         self.clearState();
         priv.marker_source.removeAll();
-        priv.text_view.setBuffer(null);
-        priv.text_buffer.unref();
+        const text_buffer = priv.text_buffer;
 
         gtk.Widget.disposeTemplate(
             self.as(gtk.Widget),
             getGObjectType(),
         );
+        text_buffer.unref();
 
         gobject.Object.virtual_methods.dispose.call(
             Class.parent,

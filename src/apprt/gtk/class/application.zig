@@ -1350,6 +1350,190 @@ pub const Application = extern struct {
         return .{ .project_count = 0, .surface_count = 0, .command_count = 0 };
     }
 
+    pub const DashboardWorkspace = struct {
+        index: u32,
+        id: []u8,
+        name: []u8,
+        dir: []u8,
+        current_pwd: []u8,
+        tab_count: u32,
+        active_tab: ?u32,
+        active_history_id: ?[]u8,
+
+        pub fn deinit(self: DashboardWorkspace, alloc: std.mem.Allocator) void {
+            alloc.free(self.id);
+            alloc.free(self.name);
+            alloc.free(self.dir);
+            alloc.free(self.current_pwd);
+            if (self.active_history_id) |value| alloc.free(value);
+        }
+    };
+
+    pub const DashboardStorage = struct {
+        history_enabled: bool,
+        restore_mode: []u8,
+        total_bytes: u64,
+        transcript_bytes: u64,
+        db_bytes: u64,
+        transcript_file_count: u64,
+        project_count: u64,
+        surface_count: u64,
+        command_count: u64,
+
+        pub fn deinit(self: DashboardStorage, alloc: std.mem.Allocator) void {
+            alloc.free(self.restore_mode);
+        }
+    };
+
+    pub const DashboardGit = struct {
+        status: git_status.Status,
+        staged_count: u64,
+        unstaged_count: u64,
+
+        pub fn deinit(self: DashboardGit, alloc: std.mem.Allocator) void {
+            var status = self.status;
+            status.deinit(alloc);
+        }
+    };
+
+    pub const DashboardStatus = struct {
+        workspace: DashboardWorkspace,
+        recent_commands: terminal_history_db.CommandList,
+        git: DashboardGit,
+        storage: DashboardStorage,
+
+        pub fn deinit(self: DashboardStatus, alloc: std.mem.Allocator) void {
+            self.workspace.deinit(alloc);
+            self.recent_commands.deinit(std.heap.c_allocator);
+            self.git.deinit(alloc);
+            self.storage.deinit(alloc);
+        }
+    };
+
+    fn dashboardWorkspace(self: *Self, alloc: std.mem.Allocator, workspace_idx: u32) !DashboardWorkspace {
+        const priv = self.private();
+        const id = try self.workspaceIdString(alloc, workspace_idx);
+        errdefer alloc.free(id);
+
+        const workspace_usize: usize = @intCast(workspace_idx);
+        if (workspace_usize >= priv.workspace_names.items.len or
+            workspace_usize >= priv.workspace_dirs.items.len)
+        {
+            return error.NotFound;
+        }
+
+        const name = try alloc.dupe(u8, priv.workspace_names.items[workspace_usize]);
+        errdefer alloc.free(name);
+
+        const dir_value = self.workspaceDir(workspace_idx) orelse return error.NotFound;
+        const dir = try alloc.dupe(u8, dir_value);
+        errdefer alloc.free(dir);
+
+        const current_pwd_value = if (workspace_idx == priv.active_workspace_idx)
+            (priv.current_pwd orelse dir_value)
+        else
+            dir_value;
+        const current_pwd = try alloc.dupe(u8, current_pwd_value);
+        errdefer alloc.free(current_pwd);
+
+        const tab_view = self.workspaceTabView(workspace_idx);
+        const tab_count: u32 = if (tab_view) |view| @intCast(@max(view.getNPages(), 0)) else 0;
+        const active_tab = self.activeTabIndexForWorkspace(workspace_idx);
+
+        var active_history_id: ?[]u8 = null;
+        errdefer if (active_history_id) |value| alloc.free(value);
+        if (workspace_idx == priv.active_workspace_idx) {
+            if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+                if (gobject.ext.cast(Window, active_win)) |win| {
+                    if (win.getActiveSurface()) |surface| {
+                        if (surface.getHistoryId()) |history_id| {
+                            active_history_id = try alloc.dupe(u8, history_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        return .{
+            .index = workspace_idx,
+            .id = id,
+            .name = name,
+            .dir = dir,
+            .current_pwd = current_pwd,
+            .tab_count = tab_count,
+            .active_tab = active_tab,
+            .active_history_id = active_history_id,
+        };
+    }
+
+    fn dashboardStorage(self: *Self, alloc: std.mem.Allocator) !DashboardStorage {
+        const cfg = self.private().termplex_cfg.terminal_history;
+        var usage = try self.storageDiskUsage(alloc);
+        defer usage.deinit(alloc);
+        const counts = self.storageRowCounts();
+        return .{
+            .history_enabled = cfg.enabled,
+            .restore_mode = try alloc.dupe(u8, cfg.restore_mode),
+            .total_bytes = usage.total_bytes,
+            .transcript_bytes = usage.transcript_bytes,
+            .db_bytes = usage.db_bytes,
+            .transcript_file_count = usage.transcript_file_count,
+            .project_count = counts.project_count,
+            .surface_count = counts.surface_count,
+            .command_count = counts.command_count,
+        };
+    }
+
+    fn dashboardGit(self: *Self, alloc: std.mem.Allocator, workspace_idx: u32) !DashboardGit {
+        const dir = self.workspaceDir(workspace_idx) orelse ".";
+        var status = try git_status.query(alloc, dir);
+        errdefer status.deinit(alloc);
+        self.syncGitStatusToWorkspace(workspace_idx, &status);
+        return .{
+            .status = status,
+            .staged_count = @intCast(status.staged.len),
+            .unstaged_count = @intCast(status.unstaged.len),
+        };
+    }
+
+    pub fn workspaceDashboardStatus(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        workspace_idx: u32,
+        limit: u32,
+    ) !DashboardStatus {
+        var workspace = try self.dashboardWorkspace(alloc, workspace_idx);
+        errdefer workspace.deinit(alloc);
+
+        const recent_limit = @min(@max(limit, 1), 25);
+        var recent_commands = try self.searchTerminalCommands(.{
+            .workspace_id = workspace.id,
+            .limit = recent_limit,
+        });
+        errdefer recent_commands.deinit(std.heap.c_allocator);
+
+        var git = try self.dashboardGit(alloc, workspace_idx);
+        errdefer git.deinit(alloc);
+
+        var storage = try self.dashboardStorage(alloc);
+        errdefer storage.deinit(alloc);
+
+        return .{
+            .workspace = workspace,
+            .recent_commands = recent_commands,
+            .git = git,
+            .storage = storage,
+        };
+    }
+
+    pub fn activeWorkspaceDashboardStatus(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        limit: u32,
+    ) !DashboardStatus {
+        return self.workspaceDashboardStatus(alloc, self.private().active_workspace_idx, limit);
+    }
+
     fn clearTerminalHistoryForParams(self: *Self, alloc: std.mem.Allocator, params: std.json.ObjectMap) !void {
         const workspace_idx = self.resolveWorkspaceIdx(params) orelse self.private().active_workspace_idx;
         const tab_view = self.workspaceTabView(workspace_idx) orelse return error.NotFound;
@@ -2789,6 +2973,14 @@ pub const Application = extern struct {
             ) catch null;
         }
 
+        if (std.mem.eql(u8, method, "dashboard.status")) {
+            return self.ipcDashboardStatus(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "dashboard.show")) {
+            return self.ipcDashboardShow(alloc, id);
+        }
+
         if (std.mem.eql(u8, method, "history.search")) {
             return self.ipcHistorySearch(alloc, id, root.object);
         }
@@ -3676,6 +3868,101 @@ pub const Application = extern struct {
         return @min(raw, max_value);
     }
 
+    fn appendDashboardWorkspaceJson(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        workspace: DashboardWorkspace,
+    ) !void {
+        try buf.appendSlice(alloc, "{\"index\":");
+        try appendJsonInt(buf, alloc, workspace.index);
+        try buf.appendSlice(alloc, ",\"id\":");
+        try appendJsonString(buf, alloc, workspace.id);
+        try buf.appendSlice(alloc, ",\"name\":");
+        try appendJsonString(buf, alloc, workspace.name);
+        try buf.appendSlice(alloc, ",\"dir\":");
+        try appendJsonString(buf, alloc, workspace.dir);
+        try buf.appendSlice(alloc, ",\"current_pwd\":");
+        try appendJsonString(buf, alloc, workspace.current_pwd);
+        try buf.appendSlice(alloc, ",\"tab_count\":");
+        try appendJsonInt(buf, alloc, workspace.tab_count);
+        try buf.appendSlice(alloc, ",\"active_tab\":");
+        if (workspace.active_tab) |idx| {
+            try appendJsonInt(buf, alloc, idx);
+        } else {
+            try buf.appendSlice(alloc, "null");
+        }
+        try buf.appendSlice(alloc, ",\"active_history_id\":");
+        try appendOptionalJsonString(buf, alloc, workspace.active_history_id);
+        try buf.append(alloc, '}');
+    }
+
+    fn appendDashboardGitJson(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        git: DashboardGit,
+    ) !void {
+        try buf.appendSlice(alloc, "{\"is_repo\":");
+        try buf.appendSlice(alloc, if (git.status.is_repo) "true" else "false");
+        try buf.appendSlice(alloc, ",\"root\":");
+        try appendOptionalJsonString(buf, alloc, git.status.root);
+        try buf.appendSlice(alloc, ",\"branch\":");
+        try appendOptionalJsonString(buf, alloc, git.status.branch);
+        try buf.appendSlice(alloc, ",\"remote_url\":");
+        try appendOptionalJsonString(buf, alloc, git.status.remote_url);
+        try buf.appendSlice(alloc, ",\"dirty\":");
+        try buf.appendSlice(alloc, if (git.status.dirty) "true" else "false");
+        try buf.appendSlice(alloc, ",\"staged_count\":");
+        try appendJsonInt(buf, alloc, git.staged_count);
+        try buf.appendSlice(alloc, ",\"unstaged_count\":");
+        try appendJsonInt(buf, alloc, git.unstaged_count);
+        try buf.append(alloc, '}');
+    }
+
+    fn appendDashboardStorageJson(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        storage: DashboardStorage,
+    ) !void {
+        try buf.appendSlice(alloc, "{\"history_enabled\":");
+        try buf.appendSlice(alloc, if (storage.history_enabled) "true" else "false");
+        try buf.appendSlice(alloc, ",\"restore_mode\":");
+        try appendJsonString(buf, alloc, storage.restore_mode);
+        try buf.appendSlice(alloc, ",\"total_bytes\":");
+        try appendJsonInt(buf, alloc, storage.total_bytes);
+        try buf.appendSlice(alloc, ",\"transcript_bytes\":");
+        try appendJsonInt(buf, alloc, storage.transcript_bytes);
+        try buf.appendSlice(alloc, ",\"db_bytes\":");
+        try appendJsonInt(buf, alloc, storage.db_bytes);
+        try buf.appendSlice(alloc, ",\"transcript_file_count\":");
+        try appendJsonInt(buf, alloc, storage.transcript_file_count);
+        try buf.appendSlice(alloc, ",\"project_count\":");
+        try appendJsonInt(buf, alloc, storage.project_count);
+        try buf.appendSlice(alloc, ",\"surface_count\":");
+        try appendJsonInt(buf, alloc, storage.surface_count);
+        try buf.appendSlice(alloc, ",\"command_count\":");
+        try appendJsonInt(buf, alloc, storage.command_count);
+        try buf.append(alloc, '}');
+    }
+
+    fn appendDashboardStatusJson(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        status: DashboardStatus,
+    ) !void {
+        try buf.appendSlice(alloc, "{\"workspace\":");
+        try appendDashboardWorkspaceJson(buf, alloc, status.workspace);
+        try buf.appendSlice(alloc, ",\"recent_commands\":[");
+        for (status.recent_commands.items, 0..) |item, index| {
+            if (index > 0) try buf.append(alloc, ',');
+            try appendCommandRecordJson(buf, alloc, item);
+        }
+        try buf.appendSlice(alloc, "],\"git\":");
+        try appendDashboardGitJson(buf, alloc, status.git);
+        try buf.appendSlice(alloc, ",\"storage\":");
+        try appendDashboardStorageJson(buf, alloc, status.storage);
+        try buf.append(alloc, '}');
+    }
+
     fn appendCommandRecordJson(
         buf: *std.ArrayListUnmanaged(u8),
         alloc: std.mem.Allocator,
@@ -3702,6 +3989,70 @@ pub const Application = extern struct {
         try buf.appendSlice(alloc, ",\"source\":");
         try appendJsonString(buf, alloc, item.source);
         try buf.appendSlice(alloc, "}");
+    }
+
+    fn dashboardParams(obj: std.json.ObjectMap) std.json.ObjectMap {
+        const params_val = obj.get("params") orelse .null;
+        return if (params_val == .object) params_val.object else obj;
+    }
+
+    fn dashboardWorkspaceIndex(self: *Self, params: std.json.ObjectMap) ?u32 {
+        const explicit_workspace =
+            params.get("workspace") != null or
+            params.get("ref") != null or
+            params.get("index") != null;
+        if (!explicit_workspace) return self.private().active_workspace_idx;
+        return self.resolveWorkspaceIdx(params);
+    }
+
+    fn ipcDashboardError(alloc: std.mem.Allocator, id: i64, code: []const u8, message: []const u8) ?[]u8 {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"ok\":false,\"error\":{\"code\":") catch return null;
+        appendJsonString(&buf, alloc, code) catch return null;
+        buf.appendSlice(alloc, ",\"message\":") catch return null;
+        appendJsonString(&buf, alloc, message) catch return null;
+        buf.appendSlice(alloc, "},\"id\":") catch return null;
+        appendJsonInt(&buf, alloc, id) catch return null;
+        buf.appendSlice(alloc, "}") catch return null;
+        return buf.toOwnedSlice(alloc) catch null;
+    }
+
+    fn ipcDashboardStatus(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = dashboardParams(obj);
+        const workspace_idx = self.dashboardWorkspaceIndex(params) orelse {
+            return ipcDashboardError(alloc, id, "not_found", "workspace not found");
+        };
+        const limit = jsonLimitParam(params, "limit", 8, 25);
+
+        const status = self.workspaceDashboardStatus(alloc, workspace_idx, limit) catch |err| {
+            log.warn("failed to build dashboard status: {}", .{err});
+            return ipcDashboardError(alloc, id, "dashboard_status_failed", "failed to read dashboard status");
+        };
+        defer status.deinit(alloc);
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        appendDashboardStatusJson(&buf, alloc, status) catch return null;
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcDashboardShow(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            if (gobject.ext.cast(Window, active_win)) |win| {
+                win.toggleWorkspaceDashboard();
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":true,\"result\":{{\"shown\":true}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            }
+        }
+        return ipcDashboardError(alloc, id, "no_window", "no active window");
     }
 
     fn ipcHistorySearch(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {

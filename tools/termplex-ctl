@@ -223,6 +223,14 @@ def main():
     storage_project = storage_sub.add_parser("delete-project", help="Delete a project/workspace and its persisted history")
     storage_project.add_argument("--workspace", help="Workspace name or index")
 
+    # --- dashboard ---
+    dashboard = subparsers.add_parser("dashboard", help="Workspace dashboard operations")
+    dashboard_sub = dashboard.add_subparsers(dest="action")
+    dashboard_status = dashboard_sub.add_parser("status", help="Show workspace dashboard status")
+    dashboard_status.add_argument("--workspace", help="Workspace name or index")
+    dashboard_status.add_argument("--limit", type=int, default=8, help="Maximum recent commands to return")
+    dashboard_sub.add_parser("show", help="Show the workspace dashboard dialog")
+
     args = parser.parse_args()
 
     if not args.resource:
@@ -361,6 +369,16 @@ def build_request(args):
             if args.workspace:
                 p["workspace"] = parse_workspace_ref(args.workspace)
             return "storage.delete_project", p
+        return None, None
+
+    if resource == "dashboard":
+        if action == "status":
+            p = {"limit": args.limit}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "dashboard.status", p
+        if action == "show":
+            return "dashboard.show", {}
         return None, None
 
     if resource == "workspace":

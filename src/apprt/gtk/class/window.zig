@@ -33,6 +33,7 @@ const CommandHistoryDialog = @import("command_history_dialog.zig").CommandHistor
 const TranscriptViewerDialog = @import("transcript_viewer_dialog.zig").TranscriptViewerDialog;
 const SourceControlDialog = @import("source_control_dialog.zig").SourceControlDialog;
 const StorageManagementDialog = @import("storage_management_dialog.zig").StorageManagementDialog;
+const WorkspaceDashboardDialog = @import("workspace_dashboard_dialog.zig").WorkspaceDashboardDialog;
 const Sidebar = @import("sidebar.zig").Sidebar;
 const WorkspaceTab = @import("workspace_tab.zig").WorkspaceTab;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
@@ -276,6 +277,9 @@ pub const Window = extern struct {
 
         /// A weak reference to the storage management dialog.
         storage_management_dialog: WeakRef(StorageManagementDialog) = .empty,
+
+        /// A weak reference to the workspace dashboard dialog.
+        workspace_dashboard_dialog: WeakRef(WorkspaceDashboardDialog) = .empty,
 
         /// Tab page that the context menu was opened for.
         /// setup by `setup-menu`.
@@ -583,6 +587,7 @@ pub const Window = extern struct {
             .init("clear", actionClear, null),
             // TODO: accept the surface that toggled the command palette
             .init("toggle-command-palette", actionToggleCommandPalette, null),
+            .init("termplex-workspace-dashboard", actionTermplexWorkspaceDashboard, null),
             .init("termplex-command-history", actionTermplexCommandHistory, null),
             .init("termplex-transcript-viewer", actionTermplexTranscriptViewer, null),
             .init("termplex-source-control", actionTermplexSourceControl, null),
@@ -3008,6 +3013,63 @@ pub const Window = extern struct {
         dialog.toggle(self);
     }
 
+    pub fn toggleWorkspaceDashboard(self: *Window) void {
+        const priv = self.private();
+
+        const dialog = priv.workspace_dashboard_dialog.get() orelse dialog: {
+            const dialog = WorkspaceDashboardDialog.new();
+
+            _ = WorkspaceDashboardDialog.signals.@"open-command-history".connect(
+                dialog,
+                *Window,
+                signalDashboardOpenCommandHistory,
+                self,
+                .{},
+            );
+            _ = WorkspaceDashboardDialog.signals.@"open-source-control".connect(
+                dialog,
+                *Window,
+                signalDashboardOpenSourceControl,
+                self,
+                .{},
+            );
+            _ = WorkspaceDashboardDialog.signals.@"open-storage".connect(
+                dialog,
+                *Window,
+                signalDashboardOpenStorage,
+                self,
+                .{},
+            );
+            _ = WorkspaceDashboardDialog.signals.@"open-transcript".connect(
+                dialog,
+                *Window,
+                signalDashboardOpenTranscript,
+                self,
+                .{},
+            );
+            _ = WorkspaceDashboardDialog.signals.copy.connect(
+                dialog,
+                *Window,
+                signalDashboardCopyCommand,
+                self,
+                .{},
+            );
+            _ = WorkspaceDashboardDialog.signals.rerun.connect(
+                dialog,
+                *Window,
+                signalDashboardRerunCommand,
+                self,
+                .{},
+            );
+
+            priv.workspace_dashboard_dialog.set(dialog);
+            break :dialog dialog;
+        };
+        defer dialog.unref();
+
+        dialog.toggle(self);
+    }
+
     fn signalCommandHistoryCopy(_: *CommandHistoryDialog, command: [*:0]const u8, self: *Self) callconv(.c) void {
         self.as(gtk.Widget).getClipboard().setText(command);
         self.addToast(i18n._("Copied command to clipboard"));
@@ -3030,6 +3092,40 @@ pub const Window = extern struct {
         }
     }
 
+    fn signalDashboardOpenCommandHistory(_: *WorkspaceDashboardDialog, self: *Self) callconv(.c) void {
+        self.toggleCommandHistory();
+    }
+
+    fn signalDashboardOpenSourceControl(_: *WorkspaceDashboardDialog, self: *Self) callconv(.c) void {
+        self.toggleSourceControl();
+    }
+
+    fn signalDashboardOpenStorage(_: *WorkspaceDashboardDialog, self: *Self) callconv(.c) void {
+        self.toggleStorageManagement();
+    }
+
+    fn signalDashboardOpenTranscript(_: *WorkspaceDashboardDialog, history_id: [*:0]const u8, self: *Self) callconv(.c) void {
+        if (!self.showTranscriptViewer(std.mem.span(history_id))) {
+            self.addToast(i18n._("Unable to open transcript"));
+        }
+    }
+
+    fn signalDashboardCopyCommand(_: *WorkspaceDashboardDialog, command: [*:0]const u8, self: *Self) callconv(.c) void {
+        self.as(gtk.Widget).getClipboard().setText(command);
+        self.addToast(i18n._("Copied command to clipboard"));
+    }
+
+    fn signalDashboardRerunCommand(_: *WorkspaceDashboardDialog, command: [*:0]const u8, self: *Self) callconv(.c) void {
+        const command_text = std.mem.span(command);
+        const alloc = Application.default().allocator();
+        const text = std.fmt.allocPrint(alloc, "{s}\n", .{command_text}) catch return;
+        defer alloc.free(text);
+
+        if (self.writeTextToActiveSurface(text)) {
+            self.addToast(i18n._("Command sent"));
+        }
+    }
+
     /// React to a GTK action requesting that the command palette be toggled.
     fn actionToggleCommandPalette(
         _: *gio.SimpleAction,
@@ -3039,6 +3135,14 @@ pub const Window = extern struct {
         // TODO: accept the surface that toggled the command palette as a
         // parameter
         self.toggleCommandPalette();
+    }
+
+    fn actionTermplexWorkspaceDashboard(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        self.toggleWorkspaceDashboard();
     }
 
     fn actionTermplexCommandHistory(

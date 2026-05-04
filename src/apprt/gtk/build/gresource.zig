@@ -58,6 +58,7 @@ pub const blueprints: []const Blueprint = &.{
     .{ .major = 1, .minor = 5, .name = "transcript-viewer-dialog" },
     .{ .major = 1, .minor = 5, .name = "source-control-dialog" },
     .{ .major = 1, .minor = 5, .name = "storage-management-dialog" },
+    .{ .major = 1, .minor = 5, .name = "workspace-dashboard-dialog" },
 };
 
 /// CSS files in css_path

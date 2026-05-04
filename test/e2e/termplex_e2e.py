@@ -453,6 +453,44 @@ def assert_history_transcript_cli(args, env, history_item, marker, timeout):
         raise E2EError("history transcript viewer returned wrong history_id: {}".format(shown))
 
 
+def assert_dashboard_status(args, env, workspace_name, command_marker, timeout):
+    def dashboard_has_context():
+        status = ctl(args, env, "dashboard", "status", "--workspace", workspace_name)
+        workspace = status.get("workspace", {})
+        commands = status.get("recent_commands", [])
+        git = status.get("git", {})
+        storage = status.get("storage", {})
+        if workspace.get("name") != workspace_name:
+            return None
+        if not any(command_marker in item.get("command", "") for item in commands):
+            return None
+        if not git.get("is_repo"):
+            return None
+        if storage.get("command_count", 0) <= 0:
+            return None
+        return status
+
+    status = wait_until("workspace dashboard status", timeout, dashboard_has_context)
+    workspace = status["workspace"]
+    if workspace.get("tab_count", 0) <= 0:
+        raise E2EError("dashboard status did not report tabs: {}".format(status))
+    if not workspace.get("active_history_id"):
+        raise E2EError("dashboard status did not report active history id: {}".format(status))
+
+    git = status["git"]
+    if git.get("staged_count", 0) < 0 or git.get("unstaged_count", 0) < 0:
+        raise E2EError("dashboard git counts were invalid: {}".format(status))
+
+    storage = status["storage"]
+    if storage.get("transcript_file_count", 0) <= 0:
+        raise E2EError("dashboard storage did not report transcript files: {}".format(status))
+
+    shown = ctl(args, env, "dashboard", "show")
+    if not shown.get("shown"):
+        raise E2EError("dashboard dialog did not report shown: {}".format(shown))
+    ctl(args, env, "dashboard", "show")
+
+
 def change_paths(status, section):
     return {item.get("path") for item in status.get(section, [])}
 
@@ -753,6 +791,7 @@ def run_scenario(args, profile, env):
         ctl(args, env, "history", "show")
         transcript_path = assert_transcript_contains(profile, workspace_name, marker, args.timeout)
         assert_storage_status_has_history(args, env, args.timeout)
+        assert_dashboard_status(args, env, workspace_name, command_name, args.timeout)
         assert_storage_management_flow(args, env, profile, storage_workspace_name, storage_workspace_dir, args.timeout)
 
         ctl(args, env, "workspace", "create", "--name", delete_workspace_name, "--dir", delete_workspace_dir)

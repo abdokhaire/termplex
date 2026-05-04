@@ -1,0 +1,180 @@
+using Gtk 4.0;
+using Gio 2.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 920;
+  content-height: 680;
+  closed => $closed();
+
+  Adw.ToolbarView {
+    top-bar-style: flat;
+
+    [top]
+    Adw.HeaderBar {
+      [title]
+      Adw.WindowTitle {
+        title: _("Workspace Dashboard");
+        subtitle: _("Active workspace");
+      }
+
+      [end]
+      Gtk.Button refresh_button {
+        icon-name: "view-refresh-symbolic";
+        tooltip-text: _("Refresh");
+        clicked => $refresh_clicked();
+      }
+    }
+
+    Gtk.Box {
+      orientation: vertical;
+      spacing: 10;
+      margin-top: 12;
+      margin-bottom: 12;
+      margin-start: 12;
+      margin-end: 12;
+
+      Gtk.Box {
+        orientation: horizontal;
+        spacing: 8;
+
+        Gtk.Button {
+          label: _("Command History");
+          clicked => $command_history_clicked();
+        }
+
+        Gtk.Button {
+          label: _("Transcript Viewer");
+          clicked => $transcript_clicked();
+        }
+
+        Gtk.Button {
+          label: _("Source Control");
+          clicked => $source_control_clicked();
+        }
+
+        Gtk.Button {
+          label: _("Storage And History");
+          clicked => $storage_clicked();
+        }
+      }
+
+      Gtk.Label workspace_label {
+        xalign: 0;
+        wrap: true;
+        selectable: true;
+      }
+
+      Gtk.Label summary_label {
+        xalign: 0;
+        wrap: true;
+        selectable: true;
+
+        styles [
+          "caption",
+        ]
+      }
+
+      Gtk.Paned {
+        orientation: horizontal;
+        hexpand: true;
+        vexpand: true;
+
+        Gtk.ScrolledWindow {
+          min-content-width: 360;
+          min-content-height: 420;
+          vexpand: true;
+
+          Gtk.ListView command_view {
+            show-separators: true;
+            single-click-activate: true;
+            activate => $command_activated();
+
+            model: Gtk.SingleSelection command_model {
+              model: Gio.ListStore command_source {
+                item-type: typeof<$TermplexDashboardCommand>;
+              };
+            };
+
+            styles [
+              "rich-list",
+            ]
+
+            factory: Gtk.BuilderListItemFactory {
+              template Gtk.ListItem {
+                child: Gtk.Box {
+                  orientation: vertical;
+                  spacing: 3;
+                  tooltip-text: bind template.item as <$TermplexDashboardCommand>.command;
+
+                  Gtk.Label {
+                    ellipsize: end;
+                    halign: start;
+                    wrap: false;
+                    single-line-mode: true;
+
+                    styles [
+                      "title",
+                      "monospace",
+                    ]
+
+                    label: bind template.item as <$TermplexDashboardCommand>.command;
+                  }
+
+                  Gtk.Label {
+                    ellipsize: end;
+                    halign: start;
+                    wrap: false;
+                    single-line-mode: true;
+
+                    styles [
+                      "subtitle",
+                    ]
+
+                    label: bind template.item as <$TermplexDashboardCommand>.metadata;
+                  }
+                };
+              }
+            };
+          }
+        }
+
+        Gtk.ScrolledWindow {
+          min-content-width: 420;
+          min-content-height: 420;
+          vexpand: true;
+
+          Gtk.TextView details_view {
+            editable: false;
+            cursor-visible: false;
+            monospace: true;
+            wrap-mode: word_char;
+          }
+        }
+      }
+
+      Gtk.Box {
+        orientation: horizontal;
+        spacing: 8;
+
+        Gtk.Button {
+          icon-name: "edit-copy-symbolic";
+          tooltip-text: _("Copy Command");
+          clicked => $copy_command_clicked();
+        }
+
+        Gtk.Button {
+          icon-name: "media-playback-start-symbolic";
+          tooltip-text: _("Rerun Command");
+          clicked => $rerun_command_clicked();
+        }
+
+        Gtk.Button {
+          icon-name: "text-x-generic-symbolic";
+          tooltip-text: _("Open Command Transcript");
+          clicked => $command_transcript_clicked();
+        }
+      }
+    }
+  }
+}
