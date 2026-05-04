@@ -76,7 +76,7 @@ CLI commands mirror IPC:
 - [x] Add `tools/termplex-ctl storage ...` commands.
 - [x] Add the storage management dialog and menu action.
 - [x] Run formatting, unit tests, GTK build, and E2E.
-- [ ] Commit with a focused message such as `feat: add storage history management`.
+- [x] Commit with a focused message such as `feat: add storage history management`.
 
 ## Security And Privacy Requirements
 

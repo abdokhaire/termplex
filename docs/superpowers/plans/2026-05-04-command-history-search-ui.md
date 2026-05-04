@@ -83,7 +83,7 @@ Phase 1 defers:
 - [x] Run `/opt/zig-x86_64-linux-0.15.2/zig build test -fno-sys=gtk4-layer-shell`.
 - [x] Run `/opt/zig-x86_64-linux-0.15.2/zig build -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell`.
 - [x] Run `/opt/zig-x86_64-linux-0.15.2/zig build e2e -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell`.
-- [ ] Commit with a focused message such as `feat: add command history search`.
+- [x] Commit with a focused message such as `feat: add command history search`.
 
 ## Security And Privacy Requirements
 

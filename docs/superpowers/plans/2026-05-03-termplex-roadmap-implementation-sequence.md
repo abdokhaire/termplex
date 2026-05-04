@@ -27,6 +27,10 @@ Detailed plan:
 
 - `docs/superpowers/plans/2026-05-03-automated-e2e-harness.md`
 
+Status:
+
+- Completed and committed.
+
 Value:
 
 - Highest.
@@ -45,7 +49,13 @@ Scope:
 
 ### 2. In-App AppImage Update Flow
 
-Next detailed plan to write after the E2E harness plan is approved.
+Detailed plan:
+
+- `docs/superpowers/plans/2026-05-03-appimage-update-flow.md`
+
+Status:
+
+- Completed and committed.
 
 Value:
 
@@ -79,6 +89,14 @@ Defer:
 
 ### 3. Command History Search UI
 
+Detailed plan:
+
+- `docs/superpowers/plans/2026-05-04-command-history-search-ui.md`
+
+Status:
+
+- Completed and committed.
+
 Value:
 
 - High.
@@ -107,6 +125,14 @@ Defer:
 - Transcript body full-text search unless the schema is ready.
 
 ### 4. Basic Source Control Panel
+
+Detailed plan:
+
+- `docs/superpowers/plans/2026-05-04-basic-source-control-panel.md`
+
+Status:
+
+- Completed and committed.
 
 Value:
 
@@ -140,6 +166,14 @@ Defer:
 
 ### 5. Storage And History Management UI
 
+Detailed plan:
+
+- `docs/superpowers/plans/2026-05-04-storage-history-management-ui.md`
+
+Status:
+
+- Completed and committed.
+
 Value:
 
 - Medium-high.
@@ -168,6 +202,14 @@ Defer:
 - Complicated retention policy editors.
 
 ### 6. Transcript Viewer And Replay UI
+
+Detailed plan:
+
+- `docs/superpowers/plans/2026-05-04-transcript-viewer-replay-ui.md`
+
+Status:
+
+- Planned. This is the next implementation phase.
 
 Value:
 
@@ -340,11 +382,11 @@ Recommended later scope:
 Create detailed implementation plans in this order:
 
 1. `2026-05-03-automated-e2e-harness.md`
-2. `YYYY-MM-DD-appimage-update-flow.md`
-3. `YYYY-MM-DD-command-history-search-ui.md`
-4. `YYYY-MM-DD-basic-source-control-panel.md`
-5. `YYYY-MM-DD-storage-history-management-ui.md`
-6. `YYYY-MM-DD-transcript-viewer-replay-ui.md`
+2. `2026-05-03-appimage-update-flow.md`
+3. `2026-05-04-command-history-search-ui.md`
+4. `2026-05-04-basic-source-control-panel.md`
+5. `2026-05-04-storage-history-management-ui.md`
+6. `2026-05-04-transcript-viewer-replay-ui.md`
 7. `YYYY-MM-DD-workspace-dashboard.md`
 8. `YYYY-MM-DD-background-tab-hydration.md`
 9. `YYYY-MM-DD-workspace-task-shortcuts.md`
