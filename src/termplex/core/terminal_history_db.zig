@@ -159,6 +159,18 @@ pub const RecentQuery = struct {
     history_id: ?[]const u8 = null,
 };
 
+pub const SearchQuery = struct {
+    text: ?[]const u8 = null,
+    workspace_id: ?[]const u8 = null,
+    workspace_name: ?[]const u8 = null,
+    workspace_dir: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+    exit_code: ?i32 = null,
+    started_after: ?[]const u8 = null,
+    started_before: ?[]const u8 = null,
+    limit: u32 = 50,
+};
+
 pub const Database = struct {
     allocator: std.mem.Allocator,
     sqlite: Sqlite,
@@ -434,6 +446,46 @@ pub const Database = struct {
         return .{ .items = try items.toOwnedSlice(self.allocator) };
     }
 
+    pub fn searchCommands(self: *Database, query: SearchQuery) !CommandList {
+        var stmt = try self.prepare(
+            \\SELECT id, history_id, workspace_id, workspace_name, workspace_dir,
+            \\       command, started_at, ended_at, exit_code, source
+            \\FROM command_history
+            \\WHERE (?1 IS NULL OR command LIKE '%' || ?1 || '%')
+            \\  AND (?2 IS NULL OR workspace_id = ?2)
+            \\  AND (?3 IS NULL OR workspace_name = ?3)
+            \\  AND (?4 IS NULL OR workspace_dir = ?4)
+            \\  AND (?5 IS NULL OR source = ?5)
+            \\  AND (?6 IS NULL OR exit_code = ?6)
+            \\  AND (?7 IS NULL OR started_at >= ?7)
+            \\  AND (?8 IS NULL OR started_at <= ?8)
+            \\ORDER BY started_at DESC, id DESC
+            \\LIMIT ?9
+        );
+        defer stmt.deinit();
+
+        const text = nonEmptyOptional(query.text);
+        try stmt.bindOptionalText(1, text);
+        try stmt.bindOptionalText(2, nonEmptyOptional(query.workspace_id));
+        try stmt.bindOptionalText(3, nonEmptyOptional(query.workspace_name));
+        try stmt.bindOptionalText(4, nonEmptyOptional(query.workspace_dir));
+        try stmt.bindOptionalText(5, nonEmptyOptional(query.source));
+        try stmt.bindOptionalInt(6, query.exit_code);
+        try stmt.bindOptionalText(7, nonEmptyOptional(query.started_after));
+        try stmt.bindOptionalText(8, nonEmptyOptional(query.started_before));
+        try stmt.bindInt64(9, @max(query.limit, 1));
+
+        var items: std.ArrayListUnmanaged(CommandRecord) = .empty;
+        errdefer {
+            for (items.items) |*item| item.deinit(self.allocator);
+            items.deinit(self.allocator);
+        }
+        while (try stmt.stepRow()) {
+            try items.append(self.allocator, try stmt.readCommandRecord());
+        }
+        return .{ .items = try items.toOwnedSlice(self.allocator) };
+    }
+
     pub fn pruneCommandsOlderThan(self: *Database, cutoff_iso: []const u8) !void {
         var stmt = try self.prepare(
             \\DELETE FROM command_history
@@ -491,6 +543,12 @@ pub const Database = struct {
         try mark_project.stepDone();
     }
 };
+
+fn nonEmptyOptional(value: ?[]const u8) ?[]const u8 {
+    const text = value orelse return null;
+    if (text.len == 0) return null;
+    return text;
+}
 
 const Statement = struct {
     allocator: std.mem.Allocator,
@@ -670,4 +728,105 @@ test "terminal history db creates nested parent directories" {
     const parent = std.fs.path.dirname(db_path) orelse return error.InvalidPath;
     var dir = try std.fs.openDirAbsolute(parent, .{});
     dir.close();
+}
+
+test "terminal history db searches commands with filters" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    try db.upsertProject(.{
+        .workspace_id = "workspace-1",
+        .workspace_name = "backend",
+        .workspace_dir = "/repo/backend",
+        .timestamp = "2026-05-04T10:00:00Z",
+    });
+    try db.upsertProject(.{
+        .workspace_id = "workspace-2",
+        .workspace_name = "frontend",
+        .workspace_dir = "/repo/frontend",
+        .timestamp = "2026-05-04T10:00:00Z",
+    });
+
+    _ = try db.startCommand(.{
+        .history_id = "hist-1",
+        .workspace_id = "workspace-1",
+        .workspace_name = "backend",
+        .workspace_dir = "/repo/backend",
+        .command = "npm test -- --watch",
+        .started_at = "2026-05-04T10:00:01Z",
+        .source = "osc_7337",
+    });
+    try db.finishLatestCommand(.{
+        .history_id = "hist-1",
+        .ended_at = "2026-05-04T10:00:02Z",
+        .exit_code = 0,
+    });
+
+    _ = try db.startCommand(.{
+        .history_id = "hist-2",
+        .workspace_id = "workspace-1",
+        .workspace_name = "backend",
+        .workspace_dir = "/repo/backend",
+        .command = "zig build test",
+        .started_at = "2026-05-04T10:00:03Z",
+        .source = "manual",
+    });
+    try db.finishLatestCommand(.{
+        .history_id = "hist-2",
+        .ended_at = "2026-05-04T10:00:04Z",
+        .exit_code = 1,
+    });
+
+    _ = try db.startCommand(.{
+        .history_id = "hist-3",
+        .workspace_id = "workspace-2",
+        .workspace_name = "frontend",
+        .workspace_dir = "/repo/frontend",
+        .command = "npm test frontend",
+        .started_at = "2026-05-04T10:00:05Z",
+        .source = "osc_7337",
+    });
+
+    const backend_npm = try db.searchCommands(.{
+        .text = "npm",
+        .workspace_id = "workspace-1",
+        .source = "osc_7337",
+        .exit_code = 0,
+        .limit = 10,
+    });
+    defer backend_npm.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), backend_npm.items.len);
+    try std.testing.expectEqualStrings("npm test -- --watch", backend_npm.items[0].command);
+    try std.testing.expectEqualStrings("/repo/backend", backend_npm.items[0].workspace_dir);
+
+    const failed_zig = try db.searchCommands(.{
+        .text = "zig",
+        .workspace_name = "backend",
+        .exit_code = 1,
+        .started_after = "2026-05-04T10:00:02Z",
+        .started_before = "2026-05-04T10:00:05Z",
+        .limit = 10,
+    });
+    defer failed_zig.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), failed_zig.items.len);
+    try std.testing.expectEqualStrings("zig build test", failed_zig.items[0].command);
+
+    const limited = try db.searchCommands(.{
+        .text = "test",
+        .limit = 2,
+    });
+    defer limited.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), limited.items.len);
+    try std.testing.expectEqualStrings("npm test frontend", limited.items[0].command);
+    try std.testing.expectEqualStrings("zig build test", limited.items[1].command);
 }

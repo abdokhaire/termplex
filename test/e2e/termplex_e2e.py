@@ -348,6 +348,31 @@ def assert_sqlite_rows(profile, workspace_name, marker_command, timeout):
     )
 
 
+def assert_history_search(args, env, workspace_name, marker_command, timeout):
+    def probe():
+        result = ctl(
+            args,
+            env,
+            "history",
+            "search",
+            "--query",
+            marker_command,
+            "--workspace",
+            workspace_name,
+        )
+        items = result.get("items", [])
+        for item in items:
+            if item.get("command") == marker_command and item.get("workspace_name") == workspace_name:
+                return item
+        return None
+
+    item = wait_until("history search result for {}".format(marker_command), timeout, probe)
+    if item.get("exit_code") != 0:
+        raise E2EError("history search returned wrong exit code: {}".format(item))
+    if item.get("source") != "osc_7337":
+        raise E2EError("history search returned wrong source: {}".format(item))
+
+
 def assert_transcript_contains(profile, workspace_name, marker, timeout):
     def probe():
         rows = query_all(
@@ -461,6 +486,8 @@ def run_scenario(args, profile, env):
         ctl(args, env, "agent", "unregister", "--pid", str(os.getpid()))
 
         assert_sqlite_rows(profile, workspace_name, command_name, args.timeout)
+        assert_history_search(args, env, workspace_name, command_name, args.timeout)
+        ctl(args, env, "history", "show")
         transcript_path = assert_transcript_contains(profile, workspace_name, marker, args.timeout)
 
         ctl(args, env, "workspace", "create", "--name", delete_workspace_name, "--dir", delete_workspace_dir)

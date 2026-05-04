@@ -1188,6 +1188,26 @@ pub const Application = extern struct {
         };
     }
 
+    pub fn searchTerminalCommands(self: *Self, query: terminal_history_db.SearchQuery) !terminal_history_db.CommandList {
+        const priv = self.private();
+        var db = if (priv.terminal_history_db) |*database| database else return error.HistoryUnavailable;
+
+        const alloc = std.heap.c_allocator;
+        var workspace_id: ?[]u8 = null;
+        defer if (workspace_id) |value| alloc.free(value);
+
+        var scoped_query = query;
+        if (scoped_query.workspace_id == null and
+            scoped_query.workspace_name == null and
+            scoped_query.workspace_dir == null)
+        {
+            workspace_id = self.currentWorkspaceIdString(alloc) catch null;
+            scoped_query.workspace_id = workspace_id;
+        }
+
+        return try db.searchCommands(scoped_query);
+    }
+
     fn workspaceIndexForUuid(self: *Self, id: Uuid) ?u32 {
         const priv = self.private();
         for (priv.workspace_ids.items, 0..) |workspace_id, idx| {
@@ -2417,6 +2437,14 @@ pub const Application = extern struct {
             ) catch null;
         }
 
+        if (std.mem.eql(u8, method, "history.search")) {
+            return self.ipcHistorySearch(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "history.show")) {
+            return self.ipcHistoryShow(alloc, id);
+        }
+
         if (std.mem.eql(u8, method, "workspace.list")) {
             return ipcWorkspaceList(self, alloc, id);
         }
@@ -3187,6 +3215,167 @@ pub const Application = extern struct {
         } else {
             try buf.appendSlice(alloc, "null");
         }
+    }
+
+    fn appendJsonInt(buf: *std.ArrayListUnmanaged(u8), alloc: std.mem.Allocator, value: anytype) !void {
+        var num_buf: [32]u8 = undefined;
+        const text = try std.fmt.bufPrint(&num_buf, "{d}", .{value});
+        try buf.appendSlice(alloc, text);
+    }
+
+    fn appendOptionalJsonInt(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        value: ?i32,
+    ) !void {
+        if (value) |int_value| {
+            try appendJsonInt(buf, alloc, int_value);
+        } else {
+            try buf.appendSlice(alloc, "null");
+        }
+    }
+
+    fn jsonStringParam(params: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+        const value = params.get(name) orelse return null;
+        return switch (value) {
+            .string => |text| if (text.len > 0) text else null,
+            else => null,
+        };
+    }
+
+    fn jsonI32Param(params: std.json.ObjectMap, name: []const u8) ?i32 {
+        const value = params.get(name) orelse return null;
+        return switch (value) {
+            .integer => |n| @intCast(n),
+            else => null,
+        };
+    }
+
+    fn jsonLimitParam(params: std.json.ObjectMap, name: []const u8, default_value: u32, max_value: u32) u32 {
+        const value = params.get(name) orelse return default_value;
+        const raw: u32 = switch (value) {
+            .integer => |n| if (n > 0) @intCast(n) else 1,
+            else => default_value,
+        };
+        return @min(raw, max_value);
+    }
+
+    fn appendCommandRecordJson(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        item: terminal_history_db.CommandRecord,
+    ) !void {
+        try buf.appendSlice(alloc, "{\"id\":");
+        try appendJsonInt(buf, alloc, item.id);
+        try buf.appendSlice(alloc, ",\"history_id\":");
+        try appendJsonString(buf, alloc, item.history_id);
+        try buf.appendSlice(alloc, ",\"workspace_id\":");
+        try appendJsonString(buf, alloc, item.workspace_id);
+        try buf.appendSlice(alloc, ",\"workspace_name\":");
+        try appendJsonString(buf, alloc, item.workspace_name);
+        try buf.appendSlice(alloc, ",\"workspace_dir\":");
+        try appendJsonString(buf, alloc, item.workspace_dir);
+        try buf.appendSlice(alloc, ",\"command\":");
+        try appendJsonString(buf, alloc, item.command);
+        try buf.appendSlice(alloc, ",\"started_at\":");
+        try appendJsonString(buf, alloc, item.started_at);
+        try buf.appendSlice(alloc, ",\"ended_at\":");
+        try appendOptionalJsonString(buf, alloc, item.ended_at);
+        try buf.appendSlice(alloc, ",\"exit_code\":");
+        try appendOptionalJsonInt(buf, alloc, item.exit_code);
+        try buf.appendSlice(alloc, ",\"source\":");
+        try appendJsonString(buf, alloc, item.source);
+        try buf.appendSlice(alloc, "}");
+    }
+
+    fn ipcHistorySearch(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        const params = if (params_val == .object) params_val.object else obj;
+
+        var workspace_id: ?[]u8 = null;
+        defer if (workspace_id) |value| alloc.free(value);
+
+        if (params.get("workspace") != null or params.get("ref") != null or params.get("index") != null) {
+            const workspace_idx = self.resolveWorkspaceIdx(params) orelse {
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            };
+            workspace_id = self.workspaceIdString(alloc, workspace_idx) catch {
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            };
+        }
+
+        const query = terminal_history_db.SearchQuery{
+            .text = jsonStringParam(params, "query") orelse jsonStringParam(params, "text"),
+            .workspace_id = workspace_id orelse jsonStringParam(params, "workspace_id"),
+            .workspace_name = jsonStringParam(params, "workspace_name"),
+            .workspace_dir = jsonStringParam(params, "dir") orelse jsonStringParam(params, "workspace_dir"),
+            .source = jsonStringParam(params, "source"),
+            .exit_code = jsonI32Param(params, "exit_code"),
+            .started_after = jsonStringParam(params, "started_after"),
+            .started_before = jsonStringParam(params, "started_before"),
+            .limit = jsonLimitParam(params, "limit", 50, 200),
+        };
+
+        const list = self.searchTerminalCommands(query) catch |err| switch (err) {
+            error.HistoryUnavailable => {
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":true,\"result\":{{\"items\":[],\"history_enabled\":false}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            },
+            else => {
+                log.warn("failed to search command history: {}", .{err});
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":false,\"error\":{{\"code\":\"history_search_failed\",\"message\":\"failed to search command history\"}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            },
+        };
+        defer list.deinit(std.heap.c_allocator);
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"items\":[") catch return null;
+        for (list.items, 0..) |item, index| {
+            if (index > 0) buf.appendSlice(alloc, ",") catch return null;
+            appendCommandRecordJson(&buf, alloc, item) catch return null;
+        }
+        buf.appendSlice(alloc, "],\"history_enabled\":true}") catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcHistoryShow(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            if (gobject.ext.cast(Window, active_win)) |win| {
+                win.toggleCommandHistory();
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":true,\"result\":{{\"shown\":true}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            }
+        }
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"no active window\"}},\"id\":{d}}}",
+            .{id},
+        ) catch null;
     }
 
     const SurfaceUuidEntry = struct {

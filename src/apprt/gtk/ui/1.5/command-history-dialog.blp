@@ -1,0 +1,95 @@
+using Gtk 4.0;
+using Gio 2.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 760;
+  closed => $closed();
+
+  Adw.ToolbarView {
+    top-bar-style: flat;
+
+    [top]
+    Adw.HeaderBar {
+      [title]
+      Gtk.SearchEntry search {
+        hexpand: true;
+        placeholder-text: _("Search command history...");
+        search-changed => $search_changed();
+        stop-search => $search_stopped();
+        activate => $search_activated();
+      }
+
+      [end]
+      Gtk.Button copy_button {
+        icon-name: "edit-copy-symbolic";
+        tooltip-text: _("Copy Command");
+        clicked => $copy_clicked();
+      }
+
+      [end]
+      Gtk.Button rerun_button {
+        icon-name: "media-playback-start-symbolic";
+        tooltip-text: _("Rerun Command");
+        clicked => $rerun_clicked();
+      }
+    }
+
+    Gtk.ScrolledWindow {
+      min-content-height: 340;
+
+      Gtk.ListView view {
+        show-separators: true;
+        single-click-activate: true;
+        activate => $row_activated();
+
+        model: Gtk.SingleSelection model {
+          model: Gio.ListStore source {
+            item-type: typeof<$TermplexHistoryCommand>;
+          };
+        };
+
+        styles [
+          "rich-list",
+        ]
+
+        factory: Gtk.BuilderListItemFactory {
+          template Gtk.ListItem {
+            child: Gtk.Box {
+              orientation: vertical;
+              spacing: 3;
+              tooltip-text: bind template.item as <$TermplexHistoryCommand>.command;
+
+              Gtk.Label {
+                ellipsize: end;
+                halign: start;
+                wrap: false;
+                single-line-mode: true;
+
+                styles [
+                  "title",
+                  "monospace",
+                ]
+
+                label: bind template.item as <$TermplexHistoryCommand>.command;
+              }
+
+              Gtk.Label {
+                ellipsize: end;
+                halign: start;
+                wrap: false;
+                single-line-mode: true;
+
+                styles [
+                  "subtitle",
+                ]
+
+                label: bind template.item as <$TermplexHistoryCommand>.metadata;
+              }
+            };
+          }
+        };
+      }
+    }
+  }
+}

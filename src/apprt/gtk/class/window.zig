@@ -14,6 +14,7 @@ const configpkg = @import("../../../config.zig");
 const TitlebarStyle = configpkg.Config.GtkTitlebarStyle;
 const input = @import("../../../input.zig");
 const CoreSurface = @import("../../../Surface.zig");
+const termio = @import("../../../termio.zig");
 const ext = @import("../ext.zig");
 const gtk_version = @import("../gtk_version.zig");
 const adw_version = @import("../adw_version.zig");
@@ -28,6 +29,7 @@ const Surface = @import("surface.zig").Surface;
 const Tab = @import("tab.zig").Tab;
 const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const CommandPalette = @import("command_palette.zig").CommandPalette;
+const CommandHistoryDialog = @import("command_history_dialog.zig").CommandHistoryDialog;
 const Sidebar = @import("sidebar.zig").Sidebar;
 const WorkspaceTab = @import("workspace_tab.zig").WorkspaceTab;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
@@ -259,6 +261,9 @@ pub const Window = extern struct {
 
         /// A weak reference to a command palette.
         command_palette: WeakRef(CommandPalette) = .empty,
+
+        /// A weak reference to the command history search dialog.
+        command_history_dialog: WeakRef(CommandHistoryDialog) = .empty,
 
         /// Tab page that the context menu was opened for.
         /// setup by `setup-menu`.
@@ -566,6 +571,7 @@ pub const Window = extern struct {
             .init("clear", actionClear, null),
             // TODO: accept the surface that toggled the command palette
             .init("toggle-command-palette", actionToggleCommandPalette, null),
+            .init("termplex-command-history", actionTermplexCommandHistory, null),
             .init("toggle-inspector", actionToggleInspector, null),
             // Termplex workspace actions
             .init("termplex-new-workspace", actionTermplexNewWorkspace, null),
@@ -2893,6 +2899,62 @@ pub const Window = extern struct {
         self.performBindingAction(action.*);
     }
 
+    fn writeTextToActiveSurface(self: *Self, text: []const u8) bool {
+        const surface = self.getActiveSurface() orelse return false;
+        const core_surface = surface.core() orelse return false;
+        const msg = termio.Message.writeReq(core_surface.alloc, text) catch |err| {
+            log.warn("failed to create command history write request: {}", .{err});
+            return false;
+        };
+        core_surface.io.queueMessage(msg, .unlocked);
+        return true;
+    }
+
+    pub fn toggleCommandHistory(self: *Window) void {
+        const priv = self.private();
+
+        const dialog = priv.command_history_dialog.get() orelse dialog: {
+            const dialog = CommandHistoryDialog.new();
+
+            _ = CommandHistoryDialog.signals.copy.connect(
+                dialog,
+                *Window,
+                signalCommandHistoryCopy,
+                self,
+                .{},
+            );
+            _ = CommandHistoryDialog.signals.rerun.connect(
+                dialog,
+                *Window,
+                signalCommandHistoryRerun,
+                self,
+                .{},
+            );
+
+            priv.command_history_dialog.set(dialog);
+            break :dialog dialog;
+        };
+        defer dialog.unref();
+
+        dialog.toggle(self);
+    }
+
+    fn signalCommandHistoryCopy(_: *CommandHistoryDialog, command: [*:0]const u8, self: *Self) callconv(.c) void {
+        self.as(gtk.Widget).getClipboard().setText(command);
+        self.addToast(i18n._("Copied command to clipboard"));
+    }
+
+    fn signalCommandHistoryRerun(_: *CommandHistoryDialog, command: [*:0]const u8, self: *Self) callconv(.c) void {
+        const command_text = std.mem.span(command);
+        const alloc = Application.default().allocator();
+        const text = std.fmt.allocPrint(alloc, "{s}\n", .{command_text}) catch return;
+        defer alloc.free(text);
+
+        if (self.writeTextToActiveSurface(text)) {
+            self.addToast(i18n._("Command sent"));
+        }
+    }
+
     /// React to a GTK action requesting that the command palette be toggled.
     fn actionToggleCommandPalette(
         _: *gio.SimpleAction,
@@ -2902,6 +2964,14 @@ pub const Window = extern struct {
         // TODO: accept the surface that toggled the command palette as a
         // parameter
         self.toggleCommandPalette();
+    }
+
+    fn actionTermplexCommandHistory(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        self.toggleCommandHistory();
     }
 
     /// Toggle the Termplex inspector for the active surface.

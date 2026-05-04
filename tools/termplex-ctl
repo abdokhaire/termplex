@@ -165,6 +165,20 @@ def main():
     update_sub.add_parser("check", help="Check for updates")
     update_sub.add_parser("download", help="Download available AppImage update")
 
+    # --- history ---
+    history = subparsers.add_parser("history", help="Command history operations")
+    history_sub = history.add_subparsers(dest="action")
+    history_sub.add_parser("show", help="Show the command history dialog")
+    history_search = history_sub.add_parser("search", help="Search persisted command history")
+    history_search.add_argument("--query", default="", help="Command text to search for")
+    history_search.add_argument("--workspace", help="Workspace name or index")
+    history_search.add_argument("--dir", help="Workspace/project directory filter")
+    history_search.add_argument("--source", help="Command source filter, such as osc_7337")
+    history_search.add_argument("--exit-code", type=int, help="Exit code filter")
+    history_search.add_argument("--started-after", help="ISO timestamp lower bound")
+    history_search.add_argument("--started-before", help="ISO timestamp upper bound")
+    history_search.add_argument("--limit", type=int, default=50, help="Maximum rows to return")
+
     args = parser.parse_args()
 
     if not args.resource:
@@ -214,6 +228,26 @@ def build_request(args):
             return "update.check", {}
         if action == "download":
             return "update.download", {}
+        return None, None
+
+    if resource == "history":
+        if action == "show":
+            return "history.show", {}
+        if action == "search":
+            p = {"query": args.query, "limit": args.limit}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            if args.dir:
+                p["dir"] = args.dir
+            if args.source:
+                p["source"] = args.source
+            if args.exit_code is not None:
+                p["exit_code"] = args.exit_code
+            if args.started_after:
+                p["started_after"] = args.started_after
+            if args.started_before:
+                p["started_before"] = args.started_before
+            return "history.search", p
         return None, None
 
     if resource == "workspace":
