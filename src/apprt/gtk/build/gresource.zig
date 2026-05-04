@@ -56,6 +56,7 @@ pub const blueprints: []const Blueprint = &.{
     .{ .major = 1, .minor = 5, .name = "command-palette" },
     .{ .major = 1, .minor = 5, .name = "command-history-dialog" },
     .{ .major = 1, .minor = 5, .name = "source-control-dialog" },
+    .{ .major = 1, .minor = 5, .name = "storage-management-dialog" },
 };
 
 /// CSS files in css_path

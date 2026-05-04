@@ -199,6 +199,19 @@ def main():
     git_commit.add_argument("--message", required=True, help="Commit message")
     git_sub.add_parser("show", help="Show the source control dialog")
 
+    # --- storage ---
+    storage = subparsers.add_parser("storage", help="Storage and history operations")
+    storage_sub = storage.add_subparsers(dest="action")
+    storage_sub.add_parser("status", help="Show storage and history status")
+    storage_sub.add_parser("show", help="Show the storage and history dialog")
+    storage_terminal = storage_sub.add_parser("clear-terminal", help="Clear one terminal's persisted history")
+    storage_terminal.add_argument("--workspace", help="Workspace name or index")
+    storage_terminal.add_argument("--tab", type=int, help="Tab index")
+    storage_workspace = storage_sub.add_parser("clear-workspace", help="Clear one workspace's persisted history")
+    storage_workspace.add_argument("--workspace", help="Workspace name or index")
+    storage_project = storage_sub.add_parser("delete-project", help="Delete a project/workspace and its persisted history")
+    storage_project.add_argument("--workspace", help="Workspace name or index")
+
     args = parser.parse_args()
 
     if not args.resource:
@@ -298,6 +311,30 @@ def build_request(args):
             if args.workspace:
                 p["workspace"] = parse_workspace_ref(args.workspace)
             return "git.commit", p
+        return None, None
+
+    if resource == "storage":
+        if action == "status":
+            return "storage.status", {}
+        if action == "show":
+            return "storage.show", {}
+        if action == "clear-terminal":
+            p = {}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            if args.tab is not None:
+                p["tab"] = args.tab
+            return "storage.clear_terminal", p
+        if action == "clear-workspace":
+            p = {}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "storage.clear_workspace", p
+        if action == "delete-project":
+            p = {}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "storage.delete_project", p
         return None, None
 
     if resource == "workspace":

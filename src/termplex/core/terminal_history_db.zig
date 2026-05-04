@@ -30,6 +30,7 @@ const Sqlite = struct {
     column_type: *const fn (*sqlite3_stmt, c_int) callconv(.c) c_int,
     column_int64: *const fn (*sqlite3_stmt, c_int) callconv(.c) i64,
     last_insert_rowid: *const fn (*sqlite3) callconv(.c) i64,
+    get_autocommit: *const fn (*sqlite3) callconv(.c) c_int,
 
     fn load() !Sqlite {
         var lib = std.DynLib.open("libsqlite3.so.0") catch |primary_err| blk: {
@@ -54,6 +55,7 @@ const Sqlite = struct {
             .column_type = lib.lookup(@TypeOf(@as(Sqlite, undefined).column_type), "sqlite3_column_type") orelse return error.SqliteSymbolMissing,
             .column_int64 = lib.lookup(@TypeOf(@as(Sqlite, undefined).column_int64), "sqlite3_column_int64") orelse return error.SqliteSymbolMissing,
             .last_insert_rowid = lib.lookup(@TypeOf(@as(Sqlite, undefined).last_insert_rowid), "sqlite3_last_insert_rowid") orelse return error.SqliteSymbolMissing,
+            .get_autocommit = lib.lookup(@TypeOf(@as(Sqlite, undefined).get_autocommit), "sqlite3_get_autocommit") orelse return error.SqliteSymbolMissing,
         };
     }
 
@@ -153,6 +155,12 @@ pub const CommandList = struct {
     }
 };
 
+pub const RowCounts = struct {
+    project_count: u64,
+    surface_count: u64,
+    command_count: u64,
+};
+
 pub const RecentQuery = struct {
     limit: u32 = 20,
     workspace_id: ?[]const u8 = null,
@@ -211,6 +219,11 @@ pub const Database = struct {
         if (self.sqlite.exec(self.handle, sql.ptr, null, null, &err_msg) != SQLITE_OK) {
             return error.SqlExecFailed;
         }
+    }
+
+    pub fn commitIfNeeded(self: *Database) !void {
+        if (self.sqlite.get_autocommit(self.handle) != 0) return;
+        try self.exec("COMMIT");
     }
 
     fn prepare(self: *Database, sql: [:0]const u8) !Statement {
@@ -542,6 +555,29 @@ pub const Database = struct {
         try mark_project.bindText(3, workspace_id);
         try mark_project.stepDone();
     }
+
+    fn countScalar(self: *Database, sql: [:0]const u8) !u64 {
+        var stmt = try self.prepare(sql);
+        defer stmt.deinit();
+        if (!try stmt.stepRow()) return 0;
+        return @intCast(stmt.sqlite.column_int64(stmt.stmt, 0));
+    }
+
+    pub fn rowCounts(self: *Database) !RowCounts {
+        return .{
+            .project_count = try self.countScalar(
+                \\SELECT count(*) FROM terminal_projects
+                \\WHERE deleted_at IS NULL
+            ),
+            .surface_count = try self.countScalar(
+                \\SELECT count(*) FROM terminal_surfaces
+                \\WHERE deleted_at IS NULL
+            ),
+            .command_count = try self.countScalar(
+                \\SELECT count(*) FROM command_history
+            ),
+        };
+    }
 };
 
 fn nonEmptyOptional(value: ?[]const u8) ?[]const u8 {
@@ -829,4 +865,96 @@ test "terminal history db searches commands with filters" {
     try std.testing.expectEqual(@as(usize, 2), limited.items.len);
     try std.testing.expectEqualStrings("npm test frontend", limited.items[0].command);
     try std.testing.expectEqualStrings("zig build test", limited.items[1].command);
+}
+
+test "terminal history db reports active project surface and command counts" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    try db.upsertProject(.{
+        .workspace_id = "workspace-counts",
+        .workspace_name = "counts",
+        .workspace_dir = "/repo/counts",
+        .timestamp = "2026-05-04T11:00:00Z",
+    });
+    try db.upsertSurface(.{
+        .history_id = "hist-counts",
+        .workspace_id = "workspace-counts",
+        .workspace_name = "counts",
+        .workspace_dir = "/repo/counts",
+        .working_directory = "/repo/counts",
+        .transcript_path = "/tmp/hist-counts.ansi",
+        .timestamp = "2026-05-04T11:00:00Z",
+    });
+    _ = try db.startCommand(.{
+        .history_id = "hist-counts",
+        .workspace_id = "workspace-counts",
+        .workspace_name = "counts",
+        .workspace_dir = "/repo/counts",
+        .command = "zig build test",
+        .started_at = "2026-05-04T11:00:01Z",
+        .source = "osc_7337",
+    });
+
+    const counts = try db.rowCounts();
+    try std.testing.expectEqual(@as(u64, 1), counts.project_count);
+    try std.testing.expectEqual(@as(u64, 1), counts.surface_count);
+    try std.testing.expectEqual(@as(u64, 1), counts.command_count);
+}
+
+test "terminal history db deletes project metadata surfaces and commands" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    try db.upsertProject(.{
+        .workspace_id = "workspace-delete",
+        .workspace_name = "delete",
+        .workspace_dir = "/repo/delete",
+        .timestamp = "2026-05-04T11:00:00Z",
+    });
+    try db.upsertSurface(.{
+        .history_id = "hist-delete",
+        .workspace_id = "workspace-delete",
+        .workspace_name = "delete",
+        .workspace_dir = "/repo/delete",
+        .working_directory = "/repo/delete",
+        .transcript_path = "/tmp/hist-delete.ansi",
+        .timestamp = "2026-05-04T11:00:01Z",
+    });
+    _ = try db.startCommand(.{
+        .history_id = "hist-delete",
+        .workspace_id = "workspace-delete",
+        .workspace_name = "delete",
+        .workspace_dir = "/repo/delete",
+        .command = "zig build test",
+        .started_at = "2026-05-04T11:00:02Z",
+        .source = "osc_7337",
+    });
+
+    try db.deleteProject("workspace-delete", "2026-05-04T11:00:03Z");
+
+    const counts = try db.rowCounts();
+    try std.testing.expectEqual(@as(u64, 0), counts.project_count);
+    try std.testing.expectEqual(@as(u64, 0), counts.surface_count);
+    try std.testing.expectEqual(@as(u64, 0), counts.command_count);
 }

@@ -1,0 +1,144 @@
+using Gtk 4.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 820;
+  closed => $closed();
+
+  Adw.ToolbarView {
+    top-bar-style: flat;
+
+    [top]
+    Adw.HeaderBar {
+      [title]
+      Adw.WindowTitle {
+        title: _("Storage And History");
+        subtitle: _("Local persistence");
+      }
+
+      [end]
+      Gtk.Button refresh_button {
+        icon-name: "view-refresh-symbolic";
+        tooltip-text: _("Refresh");
+        clicked => $refresh_clicked();
+      }
+    }
+
+    Gtk.Box {
+      orientation: vertical;
+      spacing: 12;
+      margin-top: 12;
+      margin-bottom: 12;
+      margin-start: 12;
+      margin-end: 12;
+
+      Gtk.Box {
+        orientation: horizontal;
+        spacing: 16;
+        vexpand: true;
+
+        Gtk.Box {
+          orientation: vertical;
+          spacing: 8;
+          hexpand: true;
+          vexpand: true;
+
+          Gtk.Label {
+            label: _("Usage");
+            halign: start;
+
+            styles [
+              "heading",
+            ]
+          }
+
+          Gtk.ScrolledWindow {
+            min-content-height: 210;
+            hexpand: true;
+            vexpand: true;
+
+            Gtk.Label summary_label {
+              selectable: true;
+              wrap: true;
+              xalign: 0;
+              yalign: 0;
+              halign: start;
+              valign: start;
+
+              styles [
+                "monospace",
+              ]
+            }
+          }
+        }
+
+        Gtk.Box {
+          orientation: vertical;
+          spacing: 8;
+          hexpand: true;
+          vexpand: true;
+
+          Gtk.Label {
+            label: _("Settings");
+            halign: start;
+
+            styles [
+              "heading",
+            ]
+          }
+
+          Gtk.ScrolledWindow {
+            min-content-height: 210;
+            hexpand: true;
+            vexpand: true;
+
+            Gtk.Label settings_label {
+              selectable: true;
+              wrap: true;
+              xalign: 0;
+              yalign: 0;
+              halign: start;
+              valign: start;
+            }
+          }
+        }
+      }
+
+      Gtk.Separator {}
+
+      Gtk.Box {
+        orientation: horizontal;
+        spacing: 8;
+
+        Gtk.Button clear_terminal_button {
+          label: _("Clear Terminal History");
+          clicked => $clear_terminal_clicked();
+        }
+
+        Gtk.Button clear_workspace_button {
+          label: _("Clear Workspace History");
+          clicked => $clear_workspace_clicked();
+        }
+
+        Gtk.Button delete_project_button {
+          label: _("Delete Project");
+          clicked => $delete_project_clicked();
+
+          styles [
+            "destructive-action",
+          ]
+        }
+      }
+
+      Gtk.Label action_label {
+        halign: start;
+        xalign: 0;
+        ellipsize: end;
+
+        styles [
+          "caption",
+        ]
+      }
+    }
+  }
+}

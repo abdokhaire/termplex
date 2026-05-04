@@ -25,6 +25,7 @@ test {
     _ = entrypoint;
     _ = @import("termplex/core/config.zig");
     _ = @import("termplex/core/session.zig");
+    _ = @import("termplex/core/storage_status.zig");
     _ = @import("termplex/core/terminal_history.zig");
     _ = @import("termplex/core/terminal_history_db.zig");
     _ = @import("termplex/core/update_checker.zig");

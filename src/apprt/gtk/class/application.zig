@@ -47,6 +47,7 @@ const git_status = @import("../../../termplex/core/git_status.zig");
 const notification_mod = @import("../../../termplex/core/notification.zig");
 const port_scanner = @import("../../../termplex/core/port_scanner.zig");
 const session_mod = @import("../../../termplex/core/session.zig");
+const storage_status = @import("../../../termplex/core/storage_status.zig");
 const terminal_history = @import("../../../termplex/core/terminal_history.zig");
 const terminal_history_db = @import("../../../termplex/core/terminal_history_db.zig");
 const update_checker_mod = @import("../../../termplex/core/update_checker.zig");
@@ -1086,10 +1087,31 @@ pub const Application = extern struct {
                 }
             }
 
-            if (priv.memory_manager) |*mgr| {
+            self.refreshTerminalHistoryDatabaseLink();
+        }
+    }
+
+    fn refreshTerminalHistoryDatabaseLink(self: *Self) void {
+        const priv = self.private();
+        if (priv.memory_manager) |*mgr| {
+            if (priv.terminal_history_db) |*db| {
                 mgr.setCommandHistoryDatabase(db);
+            } else {
+                mgr.setCommandHistoryDatabase(null);
             }
         }
+    }
+
+    fn reopenTerminalHistoryDatabase(self: *Self) void {
+        const priv = self.private();
+        if (priv.terminal_history_db) |*db| {
+            db.deinit();
+            priv.terminal_history_db = null;
+        }
+        if (priv.memory_manager) |*mgr| {
+            mgr.setCommandHistoryDatabase(null);
+        }
+        self.initTerminalHistoryDatabase();
     }
 
     fn terminalHistoryTimestamp(self: *Self, alloc: std.mem.Allocator) ?[]const u8 {
@@ -1158,6 +1180,13 @@ pub const Application = extern struct {
         };
         defer alloc.free(workspace_id);
 
+        self.deleteTerminalHistoryProjectById(workspace_id);
+    }
+
+    fn deleteTerminalHistoryProjectById(self: *Self, workspace_id: []const u8) void {
+        const alloc = self.allocator();
+        const priv = self.private();
+
         terminal_history.clearWorkspaceHistory(alloc, workspace_id) catch |err| {
             log.warn("failed to clear terminal transcript history for workspace: {}", .{err});
         };
@@ -1168,7 +1197,72 @@ pub const Application = extern struct {
             db.deleteProject(workspace_id, timestamp) catch |err| {
                 log.warn("failed to delete terminal history project: {}", .{err});
             };
+            db.commitIfNeeded() catch |err| {
+                log.warn("failed to commit terminal history project deletion: {}", .{err});
+            };
+            self.reopenTerminalHistoryDatabase();
         }
+
+        const db_path = terminal_history.databasePath(alloc) catch |err| {
+            log.warn("failed to resolve terminal history database path for deletion: {}", .{err});
+            return;
+        };
+        defer alloc.free(db_path);
+
+        var db = terminal_history_db.Database.open(alloc, db_path) catch |err| {
+            log.warn("failed to open terminal history database for deletion: {}", .{err});
+            return;
+        };
+        defer db.deinit();
+
+        db.migrate() catch |err| {
+            log.warn("failed to migrate terminal history database for deletion: {}", .{err});
+            return;
+        };
+
+        const timestamp = self.terminalHistoryTimestamp(alloc) orelse return;
+        defer alloc.free(timestamp);
+        db.deleteProject(workspace_id, timestamp) catch |err| {
+            log.warn("failed to delete terminal history project from fallback database: {}", .{err});
+            return;
+        };
+        self.refreshTerminalHistoryDatabaseLink();
+    }
+
+    const DeferredProjectHistoryDelete = struct {
+        app: *Self,
+        workspace_id: []u8,
+        attempts_left: u8,
+    };
+
+    fn scheduleTerminalHistoryProjectDelete(self: *Self, workspace_id: []const u8) void {
+        const alloc = std.heap.c_allocator;
+        const ctx = alloc.create(DeferredProjectHistoryDelete) catch return;
+        ctx.* = .{
+            .app = self,
+            .workspace_id = alloc.dupe(u8, workspace_id) catch {
+                alloc.destroy(ctx);
+                return;
+            },
+            .attempts_left = 5,
+        };
+        _ = glib.timeoutAdd(500, deferredTerminalHistoryProjectDelete, ctx);
+    }
+
+    fn deferredTerminalHistoryProjectDelete(ud: ?*anyopaque) callconv(.c) c_int {
+        const ctx: *DeferredProjectHistoryDelete = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        ctx.app.deleteTerminalHistoryProjectById(ctx.workspace_id);
+
+        if (ctx.attempts_left > 1) {
+            ctx.attempts_left -= 1;
+            return @intFromBool(glib.SOURCE_CONTINUE);
+        }
+
+        {
+            std.heap.c_allocator.free(ctx.workspace_id);
+            std.heap.c_allocator.destroy(ctx);
+        }
+        return @intFromBool(glib.SOURCE_REMOVE);
     }
 
     pub fn terminalHistoryOptions(self: *Self) terminal_history.Options {
@@ -1187,6 +1281,146 @@ pub const Application = extern struct {
             .replay_notice = cfg.replay_notice,
             .retention_days = cfg.retention_days,
         };
+    }
+
+    pub fn storageSummaryText(self: *Self, alloc: std.mem.Allocator) ![]u8 {
+        var usage = try self.storageDiskUsage(alloc);
+        defer usage.deinit(alloc);
+        const counts = self.storageRowCounts();
+
+        const total = try storage_status.formatBytes(alloc, usage.total_bytes);
+        defer alloc.free(total);
+        const transcripts = try storage_status.formatBytes(alloc, usage.transcript_bytes);
+        defer alloc.free(transcripts);
+        const db_size = try storage_status.formatBytes(alloc, usage.db_bytes);
+        defer alloc.free(db_size);
+
+        return std.fmt.allocPrint(
+            alloc,
+            "Total: {s}\nTranscripts: {s} ({d} files)\nSQLite: {s}\nProjects: {d}  Surfaces: {d}  Commands: {d}\nBase: {s}\nDatabase: {s}",
+            .{
+                total,
+                transcripts,
+                usage.transcript_file_count,
+                db_size,
+                counts.project_count,
+                counts.surface_count,
+                counts.command_count,
+                usage.base_path,
+                usage.db_path,
+            },
+        );
+    }
+
+    pub fn storageSettingsText(self: *Self, alloc: std.mem.Allocator) ![]u8 {
+        const cfg = self.private().termplex_cfg.terminal_history;
+        return std.fmt.allocPrint(
+            alloc,
+            "History: {s}\nRestore mode: {s}\nRetention: {d} days\nMax lines per terminal: {d}\nMax bytes per terminal: {d}\nAlternate screen: {s}\nReplay notice: {s}\n\nTermplex stores terminal transcripts and command metadata locally under XDG state. These controls only affect local files and SQLite rows.",
+            .{
+                if (cfg.enabled) "enabled" else "disabled",
+                cfg.restore_mode,
+                cfg.retention_days,
+                cfg.max_lines_per_surface,
+                cfg.max_bytes_per_surface,
+                if (cfg.persist_alternate_screen) "stored" else "not stored",
+                if (cfg.replay_notice) "shown" else "hidden",
+            },
+        );
+    }
+
+    fn storageDiskUsage(self: *Self, alloc: std.mem.Allocator) !storage_status.DiskUsage {
+        _ = self;
+        const base = try terminal_history.getBaseDir(alloc);
+        defer alloc.free(base);
+        const db_path = try terminal_history.databasePath(alloc);
+        defer alloc.free(db_path);
+        return try storage_status.scanBasePath(alloc, base, db_path);
+    }
+
+    fn storageRowCounts(self: *Self) terminal_history_db.RowCounts {
+        const priv = self.private();
+        if (priv.terminal_history_db) |*db| {
+            return db.rowCounts() catch |err| {
+                log.warn("failed to count terminal history rows: {}", .{err});
+                return .{ .project_count = 0, .surface_count = 0, .command_count = 0 };
+            };
+        }
+        return .{ .project_count = 0, .surface_count = 0, .command_count = 0 };
+    }
+
+    fn clearTerminalHistoryForParams(self: *Self, alloc: std.mem.Allocator, params: std.json.ObjectMap) !void {
+        const workspace_idx = self.resolveWorkspaceIdx(params) orelse self.private().active_workspace_idx;
+        const tab_view = self.workspaceTabView(workspace_idx) orelse return error.NotFound;
+        const tab_idx: c_int = blk: {
+            const value = params.get("tab") orelse {
+                if (self.activeTabIndexForWorkspace(workspace_idx)) |idx| break :blk @intCast(idx);
+                break :blk 0;
+            };
+            break :blk switch (value) {
+                .integer => |n| if (n >= 0 and n < tab_view.getNPages()) @intCast(n) else return error.NotFound,
+                else => return error.InvalidParams,
+            };
+        };
+
+        if (tab_idx < 0 or tab_idx >= tab_view.getNPages()) return error.NotFound;
+        const page = tab_view.getNthPage(tab_idx);
+        const tab_widget = gobject.ext.cast(Tab, page.getChild()) orelse return error.NotFound;
+        const surface = tab_widget.getActiveSurface() orelse return error.NotFound;
+        const history_id = surface.getHistoryId() orelse return error.NotFound;
+
+        const workspace_id = try self.workspaceIdString(alloc, workspace_idx);
+        defer alloc.free(workspace_id);
+        try terminal_history.clearSurfaceHistory(alloc, workspace_id, history_id);
+
+        if (self.private().terminal_history_db) |*db| {
+            try db.deleteSurface(history_id);
+        }
+        self.refreshTerminalHistoryDatabaseLink();
+    }
+
+    pub fn clearActiveTerminalStorage(self: *Self) !void {
+        var params = std.json.ObjectMap.init(std.heap.c_allocator);
+        defer params.deinit();
+        try self.clearTerminalHistoryForParams(std.heap.c_allocator, params);
+    }
+
+    fn clearWorkspaceHistoryForIndex(self: *Self, alloc: std.mem.Allocator, workspace_idx: u32) !void {
+        const workspace_id = try self.workspaceIdString(alloc, workspace_idx);
+        defer alloc.free(workspace_id);
+        try terminal_history.clearWorkspaceHistory(alloc, workspace_id);
+
+        if (self.private().terminal_history_db) |*db| {
+            const timestamp = self.terminalHistoryTimestamp(alloc) orelse return error.TimestampUnavailable;
+            defer alloc.free(timestamp);
+            try db.deleteProject(workspace_id, timestamp);
+        }
+
+        self.upsertTerminalHistoryProject(workspace_idx);
+        self.refreshTerminalHistoryDatabaseLink();
+    }
+
+    pub fn clearActiveWorkspaceStorage(self: *Self) !void {
+        try self.clearWorkspaceHistoryForIndex(std.heap.c_allocator, self.private().active_workspace_idx);
+    }
+
+    pub fn deleteActiveProjectStorage(self: *Self) !void {
+        const idx = self.private().active_workspace_idx;
+        if (self.private().workspace_names.items.len <= 1) return error.InvalidOperation;
+        const workspace_id = try self.workspaceIdString(self.allocator(), idx);
+        defer self.allocator().free(workspace_id);
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            if (gobject.ext.cast(Window, active_win)) |win| {
+                win.closeWorkspace(idx);
+                self.scheduleTerminalHistoryProjectDelete(workspace_id);
+                return;
+            }
+        }
+        self.removeWorkspaceFromAllWindows(idx);
+        self.removeWorkspace(idx);
+        self.refreshAllWorkspaceSidebars();
+        self.syncActiveWorkspaceHeaders();
+        self.scheduleTerminalHistoryProjectDelete(workspace_id);
     }
 
     pub fn searchTerminalCommands(self: *Self, query: terminal_history_db.SearchQuery) !terminal_history_db.CommandList {
@@ -2512,6 +2746,26 @@ pub const Application = extern struct {
             return self.ipcHistoryShow(alloc, id);
         }
 
+        if (std.mem.eql(u8, method, "storage.status")) {
+            return self.ipcStorageStatus(alloc, id);
+        }
+
+        if (std.mem.eql(u8, method, "storage.clear_terminal")) {
+            return self.ipcStorageClearTerminal(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "storage.clear_workspace")) {
+            return self.ipcStorageClearWorkspace(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "storage.delete_project")) {
+            return self.ipcStorageDeleteProject(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "storage.show")) {
+            return self.ipcStorageShow(alloc, id);
+        }
+
         if (std.mem.eql(u8, method, "git.status")) {
             return self.ipcGitStatus(alloc, id, root.object);
         }
@@ -3475,6 +3729,165 @@ pub const Application = extern struct {
             "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"no active window\"}},\"id\":{d}}}",
             .{id},
         ) catch null;
+    }
+
+    fn storageParams(obj: std.json.ObjectMap) std.json.ObjectMap {
+        const params_val = obj.get("params") orelse .null;
+        return if (params_val == .object) params_val.object else obj;
+    }
+
+    fn ipcStorageError(alloc: std.mem.Allocator, id: i64, code: []const u8, message: []const u8) ?[]u8 {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"ok\":false,\"error\":{\"code\":") catch return null;
+        appendJsonString(&buf, alloc, code) catch return null;
+        buf.appendSlice(alloc, ",\"message\":") catch return null;
+        appendJsonString(&buf, alloc, message) catch return null;
+        buf.appendSlice(alloc, "},\"id\":") catch return null;
+        appendJsonInt(&buf, alloc, id) catch return null;
+        buf.appendSlice(alloc, "}") catch return null;
+        return buf.toOwnedSlice(alloc) catch null;
+    }
+
+    fn appendStorageStatusJson(
+        self: *Self,
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+    ) !void {
+        const cfg = self.private().termplex_cfg.terminal_history;
+        var usage = try self.storageDiskUsage(alloc);
+        defer usage.deinit(alloc);
+        const counts = self.storageRowCounts();
+
+        try buf.appendSlice(alloc, "{\"history_enabled\":");
+        try buf.appendSlice(alloc, if (cfg.enabled) "true" else "false");
+        try buf.appendSlice(alloc, ",\"restore_mode\":");
+        try appendJsonString(buf, alloc, cfg.restore_mode);
+        try buf.appendSlice(alloc, ",\"retention_days\":");
+        try appendJsonInt(buf, alloc, cfg.retention_days);
+        try buf.appendSlice(alloc, ",\"max_lines_per_surface\":");
+        try appendJsonInt(buf, alloc, cfg.max_lines_per_surface);
+        try buf.appendSlice(alloc, ",\"max_bytes_per_surface\":");
+        try appendJsonInt(buf, alloc, cfg.max_bytes_per_surface);
+        try buf.appendSlice(alloc, ",\"persist_alternate_screen\":");
+        try buf.appendSlice(alloc, if (cfg.persist_alternate_screen) "true" else "false");
+        try buf.appendSlice(alloc, ",\"replay_notice\":");
+        try buf.appendSlice(alloc, if (cfg.replay_notice) "true" else "false");
+        try buf.appendSlice(alloc, ",\"base_path\":");
+        try appendJsonString(buf, alloc, usage.base_path);
+        try buf.appendSlice(alloc, ",\"db_path\":");
+        try appendJsonString(buf, alloc, usage.db_path);
+        try buf.appendSlice(alloc, ",\"total_bytes\":");
+        try appendJsonInt(buf, alloc, usage.total_bytes);
+        try buf.appendSlice(alloc, ",\"transcript_bytes\":");
+        try appendJsonInt(buf, alloc, usage.transcript_bytes);
+        try buf.appendSlice(alloc, ",\"db_bytes\":");
+        try appendJsonInt(buf, alloc, usage.db_bytes);
+        try buf.appendSlice(alloc, ",\"transcript_file_count\":");
+        try appendJsonInt(buf, alloc, usage.transcript_file_count);
+        try buf.appendSlice(alloc, ",\"project_count\":");
+        try appendJsonInt(buf, alloc, counts.project_count);
+        try buf.appendSlice(alloc, ",\"surface_count\":");
+        try appendJsonInt(buf, alloc, counts.surface_count);
+        try buf.appendSlice(alloc, ",\"command_count\":");
+        try appendJsonInt(buf, alloc, counts.command_count);
+        try buf.append(alloc, '}');
+    }
+
+    fn ipcStorageStatus(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        self.appendStorageStatusJson(&buf, alloc) catch |err| {
+            log.warn("failed to build storage status: {}", .{err});
+            return ipcStorageError(alloc, id, "storage_status_failed", "failed to read storage status");
+        };
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcStorageClearTerminal(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = storageParams(obj);
+        self.clearTerminalHistoryForParams(alloc, params) catch |err| {
+            log.warn("failed to clear terminal storage: {}", .{err});
+            return ipcStorageError(alloc, id, "storage_clear_terminal_failed", "failed to clear terminal history");
+        };
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"cleared\":true}},\"id\":{d}}}",
+            .{id},
+        ) catch null;
+    }
+
+    fn ipcStorageClearWorkspace(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = storageParams(obj);
+        const workspace_idx = self.resolveWorkspaceIdx(params) orelse {
+            return ipcStorageError(alloc, id, "not_found", "workspace not found");
+        };
+        self.clearWorkspaceHistoryForIndex(alloc, workspace_idx) catch |err| {
+            log.warn("failed to clear workspace storage: {}", .{err});
+            return ipcStorageError(alloc, id, "storage_clear_workspace_failed", "failed to clear workspace history");
+        };
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"cleared\":true,\"workspace\":{d}}},\"id\":{d}}}",
+            .{ workspace_idx, id },
+        ) catch null;
+    }
+
+    fn ipcStorageDeleteProject(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = storageParams(obj);
+        const workspace_idx = self.resolveWorkspaceIdx(params) orelse {
+            return ipcStorageError(alloc, id, "not_found", "workspace not found");
+        };
+        if (self.private().workspace_names.items.len <= 1) {
+            return ipcStorageError(alloc, id, "invalid_operation", "cannot delete the last project");
+        }
+
+        const workspace_id = self.workspaceIdString(self.allocator(), workspace_idx) catch {
+            return ipcStorageError(alloc, id, "not_found", "workspace not found");
+        };
+        defer self.allocator().free(workspace_id);
+
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            if (gobject.ext.cast(Window, active_win)) |win| {
+                win.closeWorkspace(workspace_idx);
+                self.scheduleTerminalHistoryProjectDelete(workspace_id);
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":true,\"result\":{{\"deleted\":true,\"workspace\":{d}}},\"id\":{d}}}",
+                    .{ workspace_idx, id },
+                ) catch null;
+            }
+        }
+
+        self.removeWorkspaceFromAllWindows(workspace_idx);
+        self.removeWorkspace(workspace_idx);
+        self.refreshAllWorkspaceSidebars();
+        self.syncActiveWorkspaceHeaders();
+        self.scheduleTerminalHistoryProjectDelete(workspace_id);
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{{\"deleted\":true,\"workspace\":{d}}},\"id\":{d}}}",
+            .{ workspace_idx, id },
+        ) catch null;
+    }
+
+    fn ipcStorageShow(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            if (gobject.ext.cast(Window, active_win)) |win| {
+                win.toggleStorageManagement();
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":true,\"result\":{{\"shown\":true}},\"id\":{d}}}",
+                    .{id},
+                ) catch null;
+            }
+        }
+
+        return ipcStorageError(alloc, id, "no_window", "no active window");
     }
 
     fn gitParams(obj: std.json.ObjectMap) std.json.ObjectMap {

@@ -125,6 +125,7 @@ def make_profile(args):
     mkdir(profile / "home")
     mkdir(profile / "workspace")
     mkdir(profile / "workspace-delete")
+    mkdir(profile / "workspace-storage")
     mkdir(profile / "artifacts")
     write_config(profile)
     return profile
@@ -460,6 +461,127 @@ def assert_source_control_flow(args, env, workspace_name, timeout):
         raise E2EError("source control dialog did not report shown: {}".format(shown))
 
 
+def assert_storage_status_has_history(args, env, timeout):
+    def probe():
+        status = ctl(args, env, "storage", "status")
+        if status.get("command_count", 0) > 0 and status.get("transcript_file_count", 0) > 0:
+            return status
+        return None
+
+    status = wait_until("storage status with history rows", timeout, probe)
+    if not status.get("history_enabled"):
+        raise E2EError("storage status did not report enabled history: {}".format(status))
+    if status.get("restore_mode") != "transcript":
+        raise E2EError("storage status returned wrong restore mode: {}".format(status))
+    if status.get("retention_days") != 90:
+        raise E2EError("storage status returned wrong retention days: {}".format(status))
+    if status.get("total_bytes", 0) <= 0:
+        raise E2EError("storage status returned no storage usage: {}".format(status))
+
+
+def assert_storage_management_flow(args, env, profile, workspace_name, workspace_dir, timeout):
+    marker_one = "TPX_E2E_STORAGE_ONE_001"
+    marker_two = "TPX_E2E_STORAGE_TWO_001"
+    marker_three = "TPX_E2E_STORAGE_THREE_001"
+    command_one = "termplex-e2e-storage-one"
+    command_two = "termplex-e2e-storage-two"
+    command_three = "termplex-e2e-storage-three"
+
+    ctl(args, env, "workspace", "create", "--name", workspace_name, "--dir", workspace_dir)
+    select_workspace(args, env, workspace_name, timeout)
+    tab_result = ctl(
+        args,
+        env,
+        "tab",
+        "create",
+        "--workspace",
+        workspace_name,
+        "--title",
+        "storage",
+        "--dir",
+        workspace_dir,
+    )
+    tab = tab_index(tab_result, 0)
+
+    send_manual_command_marker(args, env, workspace_name, tab, marker_one, command_one, timeout)
+    wait_for_output(args, env, workspace_name, tab, marker_one, timeout)
+    assert_sqlite_rows(profile, workspace_name, command_one, timeout)
+    transcript_one = assert_transcript_contains(profile, workspace_name, marker_one, timeout)
+
+    assert_storage_status_has_history(args, env, timeout)
+    shown = ctl(args, env, "storage", "show")
+    if not shown.get("shown"):
+        raise E2EError("storage dialog did not report shown: {}".format(shown))
+
+    ctl(args, env, "storage", "clear-terminal", "--workspace", workspace_name, "--tab", str(tab))
+    wait_until(
+        "storage clear-terminal removes command rows",
+        timeout,
+        lambda: query_one(
+            profile,
+            "SELECT count(*) FROM command_history WHERE workspace_name = ?",
+            (workspace_name,),
+        )
+        == 0,
+    )
+    if pathlib.Path(transcript_one).exists():
+        raise E2EError("terminal transcript still exists after storage clear-terminal: {}".format(transcript_one))
+
+    send_manual_command_marker(args, env, workspace_name, tab, marker_two, command_two, timeout)
+    wait_for_output(args, env, workspace_name, tab, marker_two, timeout)
+    assert_sqlite_rows(profile, workspace_name, command_two, timeout)
+    transcript_two = assert_transcript_contains(profile, workspace_name, marker_two, timeout)
+
+    ctl(args, env, "storage", "clear-workspace", "--workspace", workspace_name)
+    wait_until(
+        "storage clear-workspace removes command rows",
+        timeout,
+        lambda: query_one(
+            profile,
+            "SELECT count(*) FROM command_history WHERE workspace_name = ?",
+            (workspace_name,),
+        )
+        == 0,
+    )
+    if pathlib.Path(transcript_two).exists():
+        raise E2EError("workspace transcript still exists after storage clear-workspace: {}".format(transcript_two))
+    active_projects = query_one(
+        profile,
+        "SELECT count(*) FROM terminal_projects WHERE workspace_name = ? AND deleted_at IS NULL",
+        (workspace_name,),
+    )
+    if active_projects != 1:
+        raise E2EError("clear-workspace did not keep live project metadata")
+
+    send_manual_command_marker(args, env, workspace_name, tab, marker_three, command_three, timeout)
+    wait_for_output(args, env, workspace_name, tab, marker_three, timeout)
+    assert_sqlite_rows(profile, workspace_name, command_three, timeout)
+    transcript_three = assert_transcript_contains(profile, workspace_name, marker_three, timeout)
+
+    ctl(args, env, "storage", "delete-project", "--workspace", workspace_name)
+    wait_until(
+        "storage delete-project removes workspace",
+        timeout,
+        lambda: workspace_name not in [item["name"] for item in ctl(args, env, "workspace", "list")["items"]],
+    )
+    wait_until(
+        "storage delete-project removes active project metadata",
+        timeout,
+        lambda: query_one(
+            profile,
+            "SELECT count(*) FROM terminal_projects WHERE workspace_name = ? AND deleted_at IS NULL",
+            (workspace_name,),
+        )
+        == 0,
+    )
+    transcript_three_path = pathlib.Path(transcript_three)
+    wait_until(
+        "storage delete-project removes transcript file",
+        timeout,
+        lambda: not transcript_three_path.exists(),
+    )
+
+
 def assert_transcript_contains(profile, workspace_name, marker, timeout):
     def probe():
         rows = query_all(
@@ -497,8 +619,10 @@ def quit_app(args, env, proc, timeout):
 def run_scenario(args, profile, env):
     workspace_name = "E2E Workspace"
     delete_workspace_name = "E2E DeleteMe"
+    storage_workspace_name = "E2E Storage"
     workspace_dir = str(profile / "workspace")
     delete_workspace_dir = str(profile / "workspace-delete")
+    storage_workspace_dir = str(profile / "workspace-storage")
     marker = "TPX_E2E_MARKER_001"
     second_marker = "TPX_E2E_SECOND_TAB_001"
     delete_marker = "TPX_E2E_DELETE_001"
@@ -579,6 +703,8 @@ def run_scenario(args, profile, env):
         assert_history_search(args, env, workspace_name, command_name, args.timeout)
         ctl(args, env, "history", "show")
         transcript_path = assert_transcript_contains(profile, workspace_name, marker, args.timeout)
+        assert_storage_status_has_history(args, env, args.timeout)
+        assert_storage_management_flow(args, env, profile, storage_workspace_name, storage_workspace_dir, args.timeout)
 
         ctl(args, env, "workspace", "create", "--name", delete_workspace_name, "--dir", delete_workspace_dir)
         select_workspace(args, env, delete_workspace_name, args.timeout)
@@ -610,8 +736,12 @@ def run_scenario(args, profile, env):
             )
             == 0,
         )
-        if pathlib.Path(delete_transcript_path).exists():
-            raise E2EError("transcript still exists after workspace close: {}".format(delete_transcript_path))
+        delete_transcript = pathlib.Path(delete_transcript_path)
+        wait_until(
+            "workspace close removes transcript file",
+            args.timeout,
+            lambda: not delete_transcript.exists(),
+        )
 
         quit_app(args, env, proc, args.timeout)
         log_file.close()

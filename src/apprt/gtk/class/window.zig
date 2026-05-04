@@ -31,6 +31,7 @@ const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const CommandPalette = @import("command_palette.zig").CommandPalette;
 const CommandHistoryDialog = @import("command_history_dialog.zig").CommandHistoryDialog;
 const SourceControlDialog = @import("source_control_dialog.zig").SourceControlDialog;
+const StorageManagementDialog = @import("storage_management_dialog.zig").StorageManagementDialog;
 const Sidebar = @import("sidebar.zig").Sidebar;
 const WorkspaceTab = @import("workspace_tab.zig").WorkspaceTab;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
@@ -268,6 +269,9 @@ pub const Window = extern struct {
 
         /// A weak reference to the source control dialog.
         source_control_dialog: WeakRef(SourceControlDialog) = .empty,
+
+        /// A weak reference to the storage management dialog.
+        storage_management_dialog: WeakRef(StorageManagementDialog) = .empty,
 
         /// Tab page that the context menu was opened for.
         /// setup by `setup-menu`.
@@ -577,6 +581,7 @@ pub const Window = extern struct {
             .init("toggle-command-palette", actionToggleCommandPalette, null),
             .init("termplex-command-history", actionTermplexCommandHistory, null),
             .init("termplex-source-control", actionTermplexSourceControl, null),
+            .init("termplex-storage-management", actionTermplexStorageManagement, null),
             .init("toggle-inspector", actionToggleInspector, null),
             // Termplex workspace actions
             .init("termplex-new-workspace", actionTermplexNewWorkspace, null),
@@ -2957,6 +2962,19 @@ pub const Window = extern struct {
         dialog.toggle(self);
     }
 
+    pub fn toggleStorageManagement(self: *Window) void {
+        const priv = self.private();
+
+        const dialog = priv.storage_management_dialog.get() orelse dialog: {
+            const dialog = StorageManagementDialog.new();
+            priv.storage_management_dialog.set(dialog);
+            break :dialog dialog;
+        };
+        defer dialog.unref();
+
+        dialog.toggle(self);
+    }
+
     fn signalCommandHistoryCopy(_: *CommandHistoryDialog, command: [*:0]const u8, self: *Self) callconv(.c) void {
         self.as(gtk.Widget).getClipboard().setText(command);
         self.addToast(i18n._("Copied command to clipboard"));
@@ -2998,6 +3016,14 @@ pub const Window = extern struct {
         self: *Window,
     ) callconv(.c) void {
         self.toggleSourceControl();
+    }
+
+    fn actionTermplexStorageManagement(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        self.toggleStorageManagement();
     }
 
     /// Toggle the Termplex inspector for the active surface.
