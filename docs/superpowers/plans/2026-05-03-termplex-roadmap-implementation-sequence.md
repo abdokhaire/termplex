@@ -209,7 +209,7 @@ Detailed plan:
 
 Status:
 
-- Planned. This is the next implementation phase.
+- Completed and committed.
 
 Value:
 
@@ -230,6 +230,14 @@ Recommended first scope:
 
 ### 7. Workspace Dashboard
 
+Detailed plan:
+
+- `docs/superpowers/plans/2026-05-05-workspace-dashboard.md`
+
+Status:
+
+- Planned. This is the next implementation phase.
+
 Value:
 
 - Medium.
@@ -239,15 +247,16 @@ Dependencies:
 
 - Command history search API.
 - Basic source control panel.
-- Agent/runtime state summary.
+- Storage/history management UI.
+- Transcript viewer.
 
 Recommended first scope:
 
-- Active terminals.
-- Recent commands.
-- Git dirty state.
-- Recent agent registrations/tasks.
-- Quick actions.
+- Workspace identity and active terminal/session summary.
+- Recent commands with copy, rerun, and open-transcript actions.
+- Git repository, branch, dirty state, and staged/unstaged counts.
+- Storage/history summary.
+- Quick actions into Command History, Transcript Viewer, Source Control, and Storage And History.
 
 ### 8. Background Tab Hydration
 
@@ -387,7 +396,7 @@ Create detailed implementation plans in this order:
 4. `2026-05-04-basic-source-control-panel.md`
 5. `2026-05-04-storage-history-management-ui.md`
 6. `2026-05-04-transcript-viewer-replay-ui.md`
-7. `YYYY-MM-DD-workspace-dashboard.md`
+7. `2026-05-05-workspace-dashboard.md`
 8. `YYYY-MM-DD-background-tab-hydration.md`
 9. `YYYY-MM-DD-workspace-task-shortcuts.md`
 10. `YYYY-MM-DD-diagnostics-support-bundle.md`
