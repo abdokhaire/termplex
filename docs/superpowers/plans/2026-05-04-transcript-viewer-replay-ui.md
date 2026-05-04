@@ -59,59 +59,59 @@ Phase 2 first slice defers:
 
 ### Task 1: Core Transcript View Helpers
 
-- [ ] Add failing unit tests in `transcript_view.zig` for CSI/OSC stripping, carriage-return normalization, C0 control dropping, last-line extraction, and case-insensitive line search.
-- [ ] Implement `stripControlSequences`, `extractLastLines`, and a small `SearchResult`/`searchLines` helper over plain text.
-- [ ] Move the existing private `Application.stripControlSequencesForIpc` logic to `transcript_view.stripControlSequences`.
-- [ ] Update the existing application-level sanitizer test to call the core helper or replace it with a core test.
-- [ ] Run `/opt/zig-x86_64-linux-0.15.2/zig build test -fno-sys=gtk4-layer-shell -Dtest-filter="transcript view"`.
+- [x] Add failing unit tests in `transcript_view.zig` for CSI/OSC stripping, carriage-return normalization, C0 control dropping, last-line extraction, and case-insensitive line search.
+- [x] Implement `stripControlSequences`, `extractLastLines`, and a small `SearchResult`/`searchLines` helper over plain text.
+- [x] Move the existing private `Application.stripControlSequencesForIpc` logic to `transcript_view.stripControlSequences`.
+- [x] Update the existing application-level sanitizer test to call the core helper or replace it with a core test.
+- [x] Run `/opt/zig-x86_64-linux-0.15.2/zig build test -fno-sys=gtk4-layer-shell -Dtest-filter="transcript view"`.
 
 ### Task 2: SQLite Metadata For Transcript Opening
 
-- [ ] Add a failing unit test in `terminal_history_db.zig` that upserts surfaces and commands, then looks up a non-deleted surface by `history_id`.
-- [ ] Add `SurfaceRecord`, `SurfaceList` if needed, and `getSurface(history_id)` with `transcript_path`, workspace metadata, status, and last exit code.
-- [ ] Add or reuse a `listRecentCommands(.{ .history_id = id })` query for command markers, ordered oldest-to-newest for viewer navigation.
-- [ ] Keep all queries parameterized.
-- [ ] Run the filtered database tests.
+- [x] Add a failing unit test in `terminal_history_db.zig` that upserts surfaces and commands, then looks up a non-deleted surface by `history_id`.
+- [x] Add `SurfaceRecord`, `SurfaceList` if needed, and `getSurface(history_id)` with `transcript_path`, workspace metadata, status, and last exit code.
+- [x] Add or reuse a `listRecentCommands(.{ .history_id = id })` query for command markers, ordered oldest-to-newest for viewer navigation.
+- [x] Keep all queries parameterized.
+- [x] Run the filtered database tests.
 
 ### Task 3: IPC And CLI Transcript Surface
 
-- [ ] Add failing E2E assertions that `tools/termplex-ctl history transcript --history-id <id>` returns sanitized output from the transcript file.
-- [ ] Add failing E2E assertions that `tools/termplex-ctl history transcript-search --history-id <id> --query <text>` returns line numbers and snippets.
-- [ ] Add IPC method `history.transcript` with params: `history_id`, optional `workspace`, optional `lines`, optional `plain`.
-- [ ] Add IPC method `history.transcript_search` with params: `history_id`, `query`, optional `workspace`, optional `limit`.
-- [ ] Clamp transcript read line count and search result count to bounded values.
-- [ ] Return structured metadata: `history_id`, `workspace_id`, `workspace_name`, `workspace_dir`, `transcript_path`, `output`, and `commands`.
-- [ ] Keep IPC responses sanitized and JSON-escaped.
+- [x] Add failing E2E assertions that `tools/termplex-ctl history transcript --history-id <id>` returns sanitized output from the transcript file.
+- [x] Add failing E2E assertions that `tools/termplex-ctl history transcript-search --history-id <id> --query <text>` returns line numbers and snippets.
+- [x] Add IPC method `history.transcript` with params: `history_id`, optional `workspace`, optional `lines`, optional `plain`.
+- [x] Add IPC method `history.transcript_search` with params: `history_id`, `query`, optional `workspace`, optional `limit`.
+- [x] Clamp transcript read line count and search result count to bounded values.
+- [x] Return structured metadata: `history_id`, `workspace_id`, `workspace_name`, `workspace_dir`, `transcript_path`, `output`, and `commands`.
+- [x] Keep IPC responses sanitized and JSON-escaped.
 
 ### Task 4: GTK Transcript Viewer Dialog
 
-- [ ] Create `TranscriptViewerDialog` and a marker row object.
-- [ ] Load active terminal transcript on open from the main menu.
-- [ ] Load a specific `history_id` when opened from command history.
-- [ ] Show sanitized transcript text in a selectable monospace text view or label inside a scrolled window.
-- [ ] Add a search entry that highlights or scrolls to matching lines and displays match count.
-- [ ] Add previous/next match actions.
-- [ ] Add a command marker list using `command_history` metadata for the selected `history_id`.
-- [ ] Selecting a marker should scroll to the first matching command text when present and update a status label when no textual anchor is found.
+- [x] Create `TranscriptViewerDialog` and a marker row object.
+- [x] Load active terminal transcript on open from the main menu.
+- [x] Load a specific `history_id` when opened from command history.
+- [x] Show sanitized transcript text in a selectable monospace text view or label inside a scrolled window.
+- [x] Add a search entry that highlights or scrolls to matching lines and displays match count.
+- [x] Add previous/next match actions.
+- [x] Add a command marker list using `command_history` metadata for the selected `history_id`.
+- [x] Selecting a marker should scroll to the first matching command text when present and update a status label when no textual anchor is found.
 
 ### Task 5: Wire Window And Command History Actions
 
-- [ ] Add `win.termplex-transcript-viewer` to the window action map.
-- [ ] Add "Transcript Viewer..." to the main menu near "Command History...".
-- [ ] Add an `open-transcript` signal/action to `CommandHistoryDialog` rows.
-- [ ] In `Window`, present one transcript dialog instance per window with a weak ref.
-- [ ] From command history, open the viewer with the selected command row's `history_id`.
-- [ ] Keep existing command copy and rerun behavior unchanged.
+- [x] Add `win.termplex-transcript-viewer` to the window action map.
+- [x] Add "Transcript Viewer..." to the main menu near "Command History...".
+- [x] Add an `open-transcript` signal/action to `CommandHistoryDialog` rows.
+- [x] In `Window`, present one transcript dialog instance per window with a weak ref.
+- [x] From command history, open the viewer with the selected command row's `history_id`.
+- [x] Keep existing command copy and rerun behavior unchanged.
 
 ### Task 6: Verification And Commit
 
-- [ ] Run `/opt/zig-x86_64-linux-0.15.2/zig fmt .`.
-- [ ] Run `python3 -m py_compile test/e2e/termplex_e2e.py tools/termplex-ctl`.
-- [ ] Run `/opt/zig-x86_64-linux-0.15.2/zig build test -fno-sys=gtk4-layer-shell`.
-- [ ] Run `/opt/zig-x86_64-linux-0.15.2/zig build -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell`.
-- [ ] Run `/opt/zig-x86_64-linux-0.15.2/zig build e2e -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell`.
-- [ ] Run `git diff --check`.
-- [ ] Commit with a focused message such as `feat: add transcript viewer`.
+- [x] Run `/opt/zig-x86_64-linux-0.15.2/zig fmt .`.
+- [x] Run `python3 -m py_compile test/e2e/termplex_e2e.py tools/termplex-ctl`.
+- [x] Run `/opt/zig-x86_64-linux-0.15.2/zig build test -fno-sys=gtk4-layer-shell`.
+- [x] Run `/opt/zig-x86_64-linux-0.15.2/zig build -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell`.
+- [x] Run `/opt/zig-x86_64-linux-0.15.2/zig build e2e -Dapp-runtime=gtk -fno-sys=gtk4-layer-shell`.
+- [x] Run `git diff --check`.
+- [x] Commit with a focused message such as `feat: add transcript viewer`.
 
 ## Security And Privacy Requirements
 

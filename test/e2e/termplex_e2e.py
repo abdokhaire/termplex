@@ -403,6 +403,54 @@ def assert_history_search(args, env, workspace_name, marker_command, timeout):
         raise E2EError("history search returned wrong exit code: {}".format(item))
     if item.get("source") != "osc_7337":
         raise E2EError("history search returned wrong source: {}".format(item))
+    return item
+
+
+def assert_history_transcript_cli(args, env, history_item, marker, timeout):
+    history_id = history_item.get("history_id")
+    if not history_id:
+        raise E2EError("history search result missing history_id: {}".format(history_item))
+
+    def transcript_has_marker():
+        result = ctl(
+            args,
+            env,
+            "history",
+            "transcript",
+            "--history-id",
+            history_id,
+            "--lines",
+            "200",
+        )
+        if marker in result.get("output", ""):
+            return result
+        return None
+
+    transcript = wait_until("history transcript output for {}".format(marker), timeout, transcript_has_marker)
+    if transcript.get("history_id") != history_id:
+        raise E2EError("history transcript returned wrong history_id: {}".format(transcript))
+    if not transcript.get("commands"):
+        raise E2EError("history transcript did not include command markers: {}".format(transcript))
+
+    search = ctl(
+        args,
+        env,
+        "history",
+        "transcript-search",
+        "--history-id",
+        history_id,
+        "--query",
+        marker,
+    )
+    items = search.get("items", [])
+    if not any(marker in item.get("line", "") for item in items):
+        raise E2EError("history transcript search missing marker: {}".format(search))
+
+    shown = ctl(args, env, "history", "transcript-show", "--history-id", history_id)
+    if not shown.get("shown"):
+        raise E2EError("history transcript viewer did not report shown: {}".format(shown))
+    if shown.get("history_id") != history_id:
+        raise E2EError("history transcript viewer returned wrong history_id: {}".format(shown))
 
 
 def change_paths(status, section):
@@ -700,7 +748,8 @@ def run_scenario(args, profile, env):
         ctl(args, env, "agent", "unregister", "--pid", str(os.getpid()))
 
         assert_sqlite_rows(profile, workspace_name, command_name, args.timeout)
-        assert_history_search(args, env, workspace_name, command_name, args.timeout)
+        history_item = assert_history_search(args, env, workspace_name, command_name, args.timeout)
+        assert_history_transcript_cli(args, env, history_item, marker, args.timeout)
         ctl(args, env, "history", "show")
         transcript_path = assert_transcript_contains(profile, workspace_name, marker, args.timeout)
         assert_storage_status_has_history(args, env, args.timeout)

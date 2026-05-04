@@ -50,6 +50,7 @@ const session_mod = @import("../../../termplex/core/session.zig");
 const storage_status = @import("../../../termplex/core/storage_status.zig");
 const terminal_history = @import("../../../termplex/core/terminal_history.zig");
 const terminal_history_db = @import("../../../termplex/core/terminal_history_db.zig");
+const transcript_view = @import("../../../termplex/core/transcript_view.zig");
 const update_checker_mod = @import("../../../termplex/core/update_checker.zig");
 const update_manifest_mod = @import("../../../termplex/core/update_manifest.zig");
 const update_state_mod = @import("../../../termplex/core/update_state.zig");
@@ -1443,6 +1444,56 @@ pub const Application = extern struct {
         return try db.searchCommands(scoped_query);
     }
 
+    pub const TerminalTranscript = struct {
+        surface: terminal_history_db.SurfaceRecord,
+        output: []u8,
+        commands: terminal_history_db.CommandList,
+
+        pub fn deinit(self: TerminalTranscript) void {
+            const alloc = std.heap.c_allocator;
+            var surface = self.surface;
+            surface.deinit(alloc);
+            alloc.free(self.output);
+            self.commands.deinit(alloc);
+        }
+    };
+
+    pub fn readTerminalTranscript(self: *Self, history_id: []const u8, lines: u32) !TerminalTranscript {
+        const alloc = std.heap.c_allocator;
+        var surface = try self.transcriptSurfaceForHistoryId(history_id);
+        errdefer surface.deinit(alloc);
+
+        const plain_text = try self.readSanitizedTranscriptForSurface(alloc, surface);
+        defer alloc.free(plain_text);
+        const visible_text = transcript_view.extractLastLines(plain_text, lines);
+        const output = try alloc.dupe(u8, visible_text);
+        errdefer alloc.free(output);
+
+        const priv = self.private();
+        var db = if (priv.terminal_history_db) |*database| database else return error.HistoryUnavailable;
+        const commands = try db.listSurfaceCommands(surface.history_id, 200);
+
+        return .{
+            .surface = surface,
+            .output = output,
+            .commands = commands,
+        };
+    }
+
+    pub fn searchTerminalTranscript(
+        self: *Self,
+        history_id: []const u8,
+        query: []const u8,
+        limit: u32,
+    ) !transcript_view.SearchResults {
+        const alloc = std.heap.c_allocator;
+        var surface = try self.transcriptSurfaceForHistoryId(history_id);
+        defer surface.deinit(alloc);
+        const plain_text = try self.readSanitizedTranscriptForSurface(alloc, surface);
+        defer alloc.free(plain_text);
+        return try transcript_view.searchLines(alloc, plain_text, query, limit);
+    }
+
     pub fn queryActiveGitStatus(self: *Self) !git_status.Status {
         const alloc = std.heap.c_allocator;
         const priv = self.private();
@@ -2742,6 +2793,18 @@ pub const Application = extern struct {
             return self.ipcHistorySearch(alloc, id, root.object);
         }
 
+        if (std.mem.eql(u8, method, "history.transcript")) {
+            return self.ipcHistoryTranscript(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "history.transcript_search")) {
+            return self.ipcHistoryTranscriptSearch(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "history.transcript_show")) {
+            return self.ipcHistoryTranscriptShow(alloc, id, root.object);
+        }
+
         if (std.mem.eql(u8, method, "history.show")) {
             return self.ipcHistoryShow(alloc, id);
         }
@@ -3729,6 +3792,234 @@ pub const Application = extern struct {
             "{{\"ok\":false,\"error\":{{\"code\":\"no_window\",\"message\":\"no active window\"}},\"id\":{d}}}",
             .{id},
         ) catch null;
+    }
+
+    fn historyParams(obj: std.json.ObjectMap) std.json.ObjectMap {
+        const params_val = obj.get("params") orelse .null;
+        return if (params_val == .object) params_val.object else obj;
+    }
+
+    fn ipcHistoryError(alloc: std.mem.Allocator, id: i64, code: []const u8, message: []const u8) ?[]u8 {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"ok\":false,\"error\":{\"code\":") catch return null;
+        appendJsonString(&buf, alloc, code) catch return null;
+        buf.appendSlice(alloc, ",\"message\":") catch return null;
+        appendJsonString(&buf, alloc, message) catch return null;
+        buf.appendSlice(alloc, "},\"id\":") catch return null;
+        appendJsonInt(&buf, alloc, id) catch return null;
+        buf.appendSlice(alloc, "}") catch return null;
+        return buf.toOwnedSlice(alloc) catch null;
+    }
+
+    fn transcriptSurfaceForParams(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        params: std.json.ObjectMap,
+    ) !terminal_history_db.SurfaceRecord {
+        const history_id = jsonStringParam(params, "history_id") orelse return error.MissingHistoryId;
+        var surface = try self.transcriptSurfaceForHistoryId(history_id);
+        errdefer surface.deinit(std.heap.c_allocator);
+
+        if (params.get("workspace") != null or params.get("ref") != null or params.get("index") != null) {
+            const workspace_idx = self.resolveWorkspaceIdx(params) orelse return error.NotFound;
+            const workspace_id = try self.workspaceIdString(alloc, workspace_idx);
+            defer alloc.free(workspace_id);
+            if (!std.mem.eql(u8, workspace_id, surface.workspace_id)) return error.NotFound;
+        }
+
+        return surface;
+    }
+
+    fn transcriptSurfaceForHistoryId(self: *Self, history_id: []const u8) !terminal_history_db.SurfaceRecord {
+        const priv = self.private();
+        var db = if (priv.terminal_history_db) |*database| database else return error.HistoryUnavailable;
+        return try db.getSurface(history_id);
+    }
+
+    fn appendTranscriptCommandArrayJson(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        commands: terminal_history_db.CommandList,
+    ) !void {
+        try buf.append(alloc, '[');
+        for (commands.items, 0..) |command, index| {
+            if (index > 0) try buf.append(alloc, ',');
+            try appendCommandRecordJson(buf, alloc, command);
+        }
+        try buf.append(alloc, ']');
+    }
+
+    fn appendTranscriptSurfaceJson(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        surface: terminal_history_db.SurfaceRecord,
+        output: []const u8,
+        commands: terminal_history_db.CommandList,
+    ) !void {
+        try buf.appendSlice(alloc, "{\"history_id\":");
+        try appendJsonString(buf, alloc, surface.history_id);
+        try buf.appendSlice(alloc, ",\"workspace_id\":");
+        try appendJsonString(buf, alloc, surface.workspace_id);
+        try buf.appendSlice(alloc, ",\"workspace_name\":");
+        try appendJsonString(buf, alloc, surface.workspace_name);
+        try buf.appendSlice(alloc, ",\"workspace_dir\":");
+        try appendJsonString(buf, alloc, surface.workspace_dir);
+        try buf.appendSlice(alloc, ",\"working_directory\":");
+        try appendJsonString(buf, alloc, surface.working_directory);
+        try buf.appendSlice(alloc, ",\"transcript_path\":");
+        try appendJsonString(buf, alloc, surface.transcript_path);
+        try buf.appendSlice(alloc, ",\"status\":");
+        try appendJsonString(buf, alloc, surface.status);
+        try buf.appendSlice(alloc, ",\"last_exit_code\":");
+        try appendOptionalJsonInt(buf, alloc, surface.last_exit_code);
+        try buf.appendSlice(alloc, ",\"output\":");
+        try appendJsonString(buf, alloc, output);
+        try buf.appendSlice(alloc, ",\"commands\":");
+        try appendTranscriptCommandArrayJson(buf, alloc, commands);
+        try buf.append(alloc, '}');
+    }
+
+    fn readSanitizedTranscriptForSurface(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        surface: terminal_history_db.SurfaceRecord,
+    ) ![]u8 {
+        const full_text = try terminal_history.readTranscript(alloc, surface.transcript_path, self.terminalHistoryOptions());
+        defer alloc.free(full_text);
+        return try transcript_view.stripControlSequences(alloc, full_text);
+    }
+
+    fn ipcHistoryTranscript(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = historyParams(obj);
+        var surface = self.transcriptSurfaceForParams(alloc, params) catch |err| switch (err) {
+            error.MissingHistoryId => return ipcHistoryError(alloc, id, "missing_param", "history_id is required"),
+            error.HistoryUnavailable => return ipcHistoryError(alloc, id, "history_unavailable", "history is unavailable"),
+            error.NotFound => return ipcHistoryError(alloc, id, "not_found", "transcript not found"),
+            else => {
+                log.warn("failed to resolve transcript surface: {}", .{err});
+                return ipcHistoryError(alloc, id, "transcript_failed", "failed to resolve transcript");
+            },
+        };
+        defer surface.deinit(std.heap.c_allocator);
+
+        const lines = jsonLimitParam(params, "lines", 1000, 5000);
+        const plain_text = self.readSanitizedTranscriptForSurface(alloc, surface) catch |err| {
+            log.warn("failed to read transcript: {}", .{err});
+            return ipcHistoryError(alloc, id, "transcript_read_failed", "failed to read transcript");
+        };
+        defer alloc.free(plain_text);
+
+        const output = transcript_view.extractLastLines(plain_text, lines);
+        const priv = self.private();
+        var db = if (priv.terminal_history_db) |*database| database else {
+            return ipcHistoryError(alloc, id, "history_unavailable", "history is unavailable");
+        };
+        const commands = db.listSurfaceCommands(surface.history_id, 200) catch |err| {
+            log.warn("failed to list transcript command markers: {}", .{err});
+            return ipcHistoryError(alloc, id, "transcript_failed", "failed to read command markers");
+        };
+        defer commands.deinit(std.heap.c_allocator);
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        appendTranscriptSurfaceJson(&buf, alloc, surface, output, commands) catch return null;
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn appendTranscriptSearchResultsJson(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        history_id: []const u8,
+        query: []const u8,
+        results: transcript_view.SearchResults,
+    ) !void {
+        try buf.appendSlice(alloc, "{\"history_id\":");
+        try appendJsonString(buf, alloc, history_id);
+        try buf.appendSlice(alloc, ",\"query\":");
+        try appendJsonString(buf, alloc, query);
+        try buf.appendSlice(alloc, ",\"items\":[");
+        for (results.items, 0..) |item, index| {
+            if (index > 0) try buf.append(alloc, ',');
+            try buf.appendSlice(alloc, "{\"line_number\":");
+            try appendJsonInt(buf, alloc, item.line_number);
+            try buf.appendSlice(alloc, ",\"line\":");
+            try appendJsonString(buf, alloc, item.line);
+            try buf.append(alloc, '}');
+        }
+        try buf.appendSlice(alloc, "]}");
+    }
+
+    fn ipcHistoryTranscriptSearch(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = historyParams(obj);
+        const query = jsonStringParam(params, "query") orelse {
+            return ipcHistoryError(alloc, id, "missing_param", "query is required");
+        };
+        var surface = self.transcriptSurfaceForParams(alloc, params) catch |err| switch (err) {
+            error.MissingHistoryId => return ipcHistoryError(alloc, id, "missing_param", "history_id is required"),
+            error.HistoryUnavailable => return ipcHistoryError(alloc, id, "history_unavailable", "history is unavailable"),
+            error.NotFound => return ipcHistoryError(alloc, id, "not_found", "transcript not found"),
+            else => {
+                log.warn("failed to resolve transcript search surface: {}", .{err});
+                return ipcHistoryError(alloc, id, "transcript_failed", "failed to resolve transcript");
+            },
+        };
+        defer surface.deinit(std.heap.c_allocator);
+
+        const plain_text = self.readSanitizedTranscriptForSurface(alloc, surface) catch |err| {
+            log.warn("failed to read transcript for search: {}", .{err});
+            return ipcHistoryError(alloc, id, "transcript_read_failed", "failed to read transcript");
+        };
+        defer alloc.free(plain_text);
+
+        const limit = jsonLimitParam(params, "limit", 50, 200);
+        const results = transcript_view.searchLines(alloc, plain_text, query, limit) catch |err| {
+            log.warn("failed to search transcript: {}", .{err});
+            return ipcHistoryError(alloc, id, "transcript_search_failed", "failed to search transcript");
+        };
+        defer results.deinit(alloc);
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        appendTranscriptSearchResultsJson(&buf, alloc, surface.history_id, query, results) catch return null;
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcHistoryTranscriptShow(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = historyParams(obj);
+        const history_id = jsonStringParam(params, "history_id");
+
+        if (self.as(gtk.Application).getActiveWindow()) |active_win| {
+            if (gobject.ext.cast(Window, active_win)) |win| {
+                if (!win.showTranscriptViewer(history_id)) {
+                    return ipcHistoryError(alloc, id, "not_found", "transcript not found");
+                }
+
+                var buf: std.ArrayListUnmanaged(u8) = .empty;
+                defer buf.deinit(alloc);
+                buf.appendSlice(alloc, "{\"shown\":true") catch return null;
+                if (history_id) |value| {
+                    buf.appendSlice(alloc, ",\"history_id\":") catch return null;
+                    appendJsonString(&buf, alloc, value) catch return null;
+                }
+                buf.append(alloc, '}') catch return null;
+                return std.fmt.allocPrint(
+                    alloc,
+                    "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+                    .{ buf.items, id },
+                ) catch null;
+            }
+        }
+
+        return ipcHistoryError(alloc, id, "no_window", "no active window");
     }
 
     fn storageParams(obj: std.json.ObjectMap) std.json.ObjectMap {
@@ -5348,7 +5639,7 @@ pub const Application = extern struct {
         defer alloc.free(full_text);
 
         // Extract the last N lines from the text.
-        const text = extractLastLines(full_text, lines);
+        const text = transcript_view.extractLastLines(full_text, lines);
 
         return allocSurfaceReadResponse(alloc, id, text);
     }
@@ -5396,7 +5687,7 @@ pub const Application = extern struct {
         };
         defer alloc.free(full_text);
 
-        const plain_text = stripControlSequencesForIpc(alloc, full_text) catch {
+        const plain_text = transcript_view.stripControlSequences(alloc, full_text) catch {
             return std.fmt.allocPrint(
                 alloc,
                 "{{\"ok\":false,\"error\":{{\"code\":\"read_error\",\"message\":\"failed to sanitize transcript\"}},\"id\":{d}}}",
@@ -5405,7 +5696,7 @@ pub const Application = extern struct {
         };
         defer alloc.free(plain_text);
 
-        const text = extractLastLines(plain_text, lines);
+        const text = transcript_view.extractLastLines(plain_text, lines);
         return allocSurfaceReadResponse(alloc, id, text);
     }
 
@@ -5450,91 +5741,6 @@ pub const Application = extern struct {
         buf.appendSlice(alloc, tail) catch return null;
 
         return buf.toOwnedSlice(alloc) catch null;
-    }
-
-    /// Extract the last N lines from a string. Returns a slice into the input.
-    fn extractLastLines(text: []const u8, n: usize) []const u8 {
-        if (text.len == 0) return text;
-
-        var end: usize = text.len;
-
-        // Skip trailing newline if present.
-        if (text[end - 1] == '\n') {
-            end -= 1;
-        }
-
-        // Scan backwards counting newlines.
-        var count: usize = 0;
-        var pos: usize = end;
-
-        while (pos > 0) {
-            pos -= 1;
-            if (text[pos] == '\n') {
-                count += 1;
-                if (count >= n) {
-                    return text[pos + 1 ..];
-                }
-            }
-        }
-
-        // Fewer than N lines — return everything.
-        return text;
-    }
-
-    fn isCsiFinalByte(c: u8) bool {
-        return c >= 0x40 and c <= 0x7e;
-    }
-
-    fn stripControlSequencesForIpc(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
-        var out: std.ArrayListUnmanaged(u8) = .empty;
-        errdefer out.deinit(alloc);
-
-        var i: usize = 0;
-        while (i < bytes.len) {
-            const c = bytes[i];
-            if (c == 0x1b) {
-                if (i + 1 >= bytes.len) break;
-                const next = bytes[i + 1];
-                if (next == '[') {
-                    var j = i + 2;
-                    while (j < bytes.len and !isCsiFinalByte(bytes[j])) : (j += 1) {}
-                    i = if (j < bytes.len) j + 1 else bytes.len;
-                    continue;
-                }
-                if (next == ']') {
-                    var j = i + 2;
-                    while (j < bytes.len) : (j += 1) {
-                        if (bytes[j] == 0x07) {
-                            j += 1;
-                            break;
-                        }
-                        if (bytes[j] == 0x1b and j + 1 < bytes.len and bytes[j + 1] == '\\') {
-                            j += 2;
-                            break;
-                        }
-                    }
-                    i = j;
-                    continue;
-                }
-                i += 2;
-                continue;
-            }
-
-            if (c == '\r') {
-                if (i + 1 >= bytes.len or bytes[i + 1] != '\n') {
-                    try out.append(alloc, '\n');
-                }
-                i += 1;
-                continue;
-            }
-
-            if (c == '\n' or c == '\t' or c >= 0x20) {
-                try out.append(alloc, c);
-            }
-            i += 1;
-        }
-
-        return out.toOwnedSlice(alloc);
     }
 
     /// Handle surface.split — creates a new split in the active surface.
@@ -10308,7 +10514,7 @@ fn findActiveWindow(data: ?*const anyopaque, _: ?*const anyopaque) callconv(.c) 
 
 test "ipc transcript fallback strips terminal control sequences" {
     const bytes = "one\r\n\x1b]133;A;aid=1\x07two\x1b[31m red\x1b[0m\rthree\x01four";
-    const out = try Application.stripControlSequencesForIpc(std.testing.allocator, bytes);
+    const out = try transcript_view.stripControlSequences(std.testing.allocator, bytes);
     defer std.testing.allocator.free(out);
 
     try std.testing.expectEqualStrings("one\ntwo red\nthreefour", out);

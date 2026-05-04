@@ -49,6 +49,17 @@ pub const CommandHistoryDialog = extern struct {
                 void,
             );
         };
+
+        pub const @"open-transcript" = struct {
+            pub const name = "open-transcript";
+            pub const connect = impl.connect;
+            const impl = gobject.ext.defineSignal(
+                name,
+                Self,
+                &.{[*:0]const u8},
+                void,
+            );
+        };
     };
 
     const Private = struct {
@@ -189,6 +200,20 @@ pub const CommandHistoryDialog = extern struct {
         self.emitSelected(.rerun, true);
     }
 
+    fn transcriptClicked(_: *gtk.Button, self: *CommandHistoryDialog) callconv(.c) void {
+        const item = self.selectedCommand() orelse return;
+        defer item.unref();
+
+        const history_id = item.historyId() orelse return;
+        signals.@"open-transcript".impl.emit(
+            self,
+            null,
+            .{history_id.ptr},
+            null,
+        );
+        self.close();
+    }
+
     pub fn toggle(self: *CommandHistoryDialog, window: *Window) void {
         const priv = self.private();
 
@@ -239,9 +264,11 @@ pub const CommandHistoryDialog = extern struct {
             class.bindTemplateCallback("row_activated", &rowActivated);
             class.bindTemplateCallback("copy_clicked", &copyClicked);
             class.bindTemplateCallback("rerun_clicked", &rerunClicked);
+            class.bindTemplateCallback("transcript_clicked", &transcriptClicked);
 
             signals.copy.impl.register(.{});
             signals.rerun.impl.register(.{});
+            signals.@"open-transcript".impl.register(.{});
 
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);
         }
@@ -305,10 +332,31 @@ const HistoryCommand = extern struct {
                 },
             );
         };
+
+        pub const @"history-id" = struct {
+            pub const name = "history-id";
+            const impl = gobject.ext.defineProperty(
+                name,
+                Self,
+                ?[:0]const u8,
+                .{
+                    .default = null,
+                    .accessor = gobject.ext.typedAccessor(
+                        Self,
+                        ?[:0]const u8,
+                        .{
+                            .getter = propGetHistoryId,
+                            .getter_transfer = .none,
+                        },
+                    ),
+                },
+            );
+        };
     };
 
     const Private = struct {
         arena: ArenaAllocator,
+        history_id: ?[:0]const u8 = null,
         command_text: ?[:0]const u8 = null,
         metadata_text: ?[:0]const u8 = null,
 
@@ -321,6 +369,7 @@ const HistoryCommand = extern struct {
 
         const priv = self.private();
         const alloc = priv.arena.allocator();
+        priv.history_id = try alloc.dupeZ(u8, record.history_id);
         priv.command_text = try alloc.dupeZ(u8, record.command);
         priv.metadata_text = try formatMetadata(alloc, record);
 
@@ -366,12 +415,20 @@ const HistoryCommand = extern struct {
         return self.private().command_text;
     }
 
+    fn propGetHistoryId(self: *Self) ?[:0]const u8 {
+        return self.private().history_id;
+    }
+
     fn propGetMetadata(self: *Self) ?[:0]const u8 {
         return self.private().metadata_text;
     }
 
     fn command(self: *Self) ?[:0]const u8 {
         return self.private().command_text;
+    }
+
+    fn historyId(self: *Self) ?[:0]const u8 {
+        return self.private().history_id;
     }
 
     const C = Common(Self, Private);
@@ -388,6 +445,7 @@ const HistoryCommand = extern struct {
             gobject.ext.registerProperties(class, &.{
                 properties.command.impl,
                 properties.metadata.impl,
+                properties.@"history-id".impl,
             });
 
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);

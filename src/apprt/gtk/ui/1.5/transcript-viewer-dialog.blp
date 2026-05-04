@@ -1,0 +1,159 @@
+using Gtk 4.0;
+using Gio 2.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 1040;
+  content-height: 620;
+  closed => $closed();
+
+  Adw.ToolbarView {
+    top-bar-style: flat;
+
+    [top]
+    Adw.HeaderBar {
+      [title]
+      Gtk.SearchEntry search {
+        hexpand: true;
+        placeholder-text: _("Search transcript...");
+        search-changed => $search_changed();
+        stop-search => $search_stopped();
+      }
+
+      [end]
+      Gtk.Button previous_button {
+        icon-name: "go-up-symbolic";
+        tooltip-text: _("Previous Match");
+        clicked => $previous_clicked();
+      }
+
+      [end]
+      Gtk.Button next_button {
+        icon-name: "go-down-symbolic";
+        tooltip-text: _("Next Match");
+        clicked => $next_clicked();
+      }
+    }
+
+    Gtk.Box {
+      orientation: vertical;
+      spacing: 8;
+      margin-top: 12;
+      margin-bottom: 12;
+      margin-start: 12;
+      margin-end: 12;
+
+      Gtk.Label status_label {
+        halign: start;
+        xalign: 0;
+        ellipsize: end;
+        single-line-mode: true;
+
+        styles [
+          "caption",
+        ]
+      }
+
+      Gtk.Box {
+        orientation: horizontal;
+        spacing: 12;
+        vexpand: true;
+
+        Gtk.Box {
+          orientation: vertical;
+          spacing: 8;
+          width-request: 300;
+          vexpand: true;
+
+          Gtk.Label {
+            label: _("Commands");
+            halign: start;
+
+            styles [
+              "heading",
+            ]
+          }
+
+          Gtk.ScrolledWindow {
+            min-content-height: 420;
+            vexpand: true;
+
+            Gtk.ListView marker_view {
+              show-separators: true;
+              single-click-activate: true;
+              activate => $marker_activated();
+
+              model: Gtk.SingleSelection marker_model {
+                model: Gio.ListStore marker_source {
+                  item-type: typeof<$TermplexTranscriptMarker>;
+                };
+              };
+
+              styles [
+                "rich-list",
+              ]
+
+              factory: Gtk.BuilderListItemFactory {
+                template Gtk.ListItem {
+                  child: Gtk.Box {
+                    orientation: vertical;
+                    spacing: 3;
+                    tooltip-text: bind template.item as <$TermplexTranscriptMarker>.command;
+
+                    Gtk.Label {
+                      ellipsize: end;
+                      halign: start;
+                      wrap: false;
+                      single-line-mode: true;
+
+                      styles [
+                        "title",
+                        "monospace",
+                      ]
+
+                      label: bind template.item as <$TermplexTranscriptMarker>.command;
+                    }
+
+                    Gtk.Label {
+                      ellipsize: end;
+                      halign: start;
+                      wrap: false;
+                      single-line-mode: true;
+
+                      styles [
+                        "subtitle",
+                      ]
+
+                      label: bind template.item as <$TermplexTranscriptMarker>.metadata;
+                    }
+                  };
+                }
+              };
+            }
+          }
+
+          Gtk.Button marker_open_button {
+            label: _("Jump To Command");
+            clicked => $marker_open_clicked();
+          }
+        }
+
+        Gtk.ScrolledWindow {
+          min-content-height: 500;
+          hexpand: true;
+          vexpand: true;
+
+          Gtk.TextView text_view {
+            editable: false;
+            cursor-visible: true;
+            monospace: true;
+            top-margin: 10;
+            left-margin: 10;
+            bottom-margin: 10;
+            right-margin: 10;
+          }
+        }
+      }
+    }
+  }
+}

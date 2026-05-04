@@ -21,6 +21,13 @@ Adw.Dialog dialog {
       }
 
       [end]
+      Gtk.Button transcript_button {
+        icon-name: "text-x-generic-symbolic";
+        tooltip-text: _("Open Transcript");
+        clicked => $transcript_clicked();
+      }
+
+      [end]
       Gtk.Button copy_button {
         icon-name: "edit-copy-symbolic";
         tooltip-text: _("Copy Command");

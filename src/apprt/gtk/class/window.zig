@@ -30,6 +30,7 @@ const Tab = @import("tab.zig").Tab;
 const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const CommandPalette = @import("command_palette.zig").CommandPalette;
 const CommandHistoryDialog = @import("command_history_dialog.zig").CommandHistoryDialog;
+const TranscriptViewerDialog = @import("transcript_viewer_dialog.zig").TranscriptViewerDialog;
 const SourceControlDialog = @import("source_control_dialog.zig").SourceControlDialog;
 const StorageManagementDialog = @import("storage_management_dialog.zig").StorageManagementDialog;
 const Sidebar = @import("sidebar.zig").Sidebar;
@@ -266,6 +267,9 @@ pub const Window = extern struct {
 
         /// A weak reference to the command history search dialog.
         command_history_dialog: WeakRef(CommandHistoryDialog) = .empty,
+
+        /// A weak reference to the transcript viewer dialog.
+        transcript_viewer_dialog: WeakRef(TranscriptViewerDialog) = .empty,
 
         /// A weak reference to the source control dialog.
         source_control_dialog: WeakRef(SourceControlDialog) = .empty,
@@ -580,6 +584,7 @@ pub const Window = extern struct {
             // TODO: accept the surface that toggled the command palette
             .init("toggle-command-palette", actionToggleCommandPalette, null),
             .init("termplex-command-history", actionTermplexCommandHistory, null),
+            .init("termplex-transcript-viewer", actionTermplexTranscriptViewer, null),
             .init("termplex-source-control", actionTermplexSourceControl, null),
             .init("termplex-storage-management", actionTermplexStorageManagement, null),
             .init("toggle-inspector", actionToggleInspector, null),
@@ -2940,6 +2945,13 @@ pub const Window = extern struct {
                 self,
                 .{},
             );
+            _ = CommandHistoryDialog.signals.@"open-transcript".connect(
+                dialog,
+                *Window,
+                signalCommandHistoryOpenTranscript,
+                self,
+                .{},
+            );
 
             priv.command_history_dialog.set(dialog);
             break :dialog dialog;
@@ -2947,6 +2959,27 @@ pub const Window = extern struct {
         defer dialog.unref();
 
         dialog.toggle(self);
+    }
+
+    fn transcriptViewerDialog(self: *Window) *TranscriptViewerDialog {
+        const priv = self.private();
+        return priv.transcript_viewer_dialog.get() orelse dialog: {
+            const dialog = TranscriptViewerDialog.new();
+            priv.transcript_viewer_dialog.set(dialog);
+            break :dialog dialog;
+        };
+    }
+
+    pub fn toggleTranscriptViewer(self: *Window) void {
+        const dialog = self.transcriptViewerDialog();
+        defer dialog.unref();
+        dialog.toggle(self);
+    }
+
+    pub fn showTranscriptViewer(self: *Window, history_id: ?[]const u8) bool {
+        const dialog = self.transcriptViewerDialog();
+        defer dialog.unref();
+        return dialog.presentForHistory(self, history_id);
     }
 
     pub fn toggleSourceControl(self: *Window) void {
@@ -2991,6 +3024,12 @@ pub const Window = extern struct {
         }
     }
 
+    fn signalCommandHistoryOpenTranscript(_: *CommandHistoryDialog, history_id: [*:0]const u8, self: *Self) callconv(.c) void {
+        if (!self.showTranscriptViewer(std.mem.span(history_id))) {
+            self.addToast(i18n._("Unable to open transcript"));
+        }
+    }
+
     /// React to a GTK action requesting that the command palette be toggled.
     fn actionToggleCommandPalette(
         _: *gio.SimpleAction,
@@ -3008,6 +3047,14 @@ pub const Window = extern struct {
         self: *Window,
     ) callconv(.c) void {
         self.toggleCommandHistory();
+    }
+
+    fn actionTermplexTranscriptViewer(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        self.toggleTranscriptViewer();
     }
 
     fn actionTermplexSourceControl(

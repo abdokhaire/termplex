@@ -28,6 +28,7 @@ test {
     _ = @import("termplex/core/storage_status.zig");
     _ = @import("termplex/core/terminal_history.zig");
     _ = @import("termplex/core/terminal_history_db.zig");
+    _ = @import("termplex/core/transcript_view.zig");
     _ = @import("termplex/core/update_checker.zig");
     _ = @import("termplex/core/update_manifest.zig");
     _ = @import("termplex/core/update_state.zig");

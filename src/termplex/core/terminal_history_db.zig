@@ -106,6 +106,31 @@ pub const SurfaceUpsert = struct {
     timestamp: []const u8,
 };
 
+pub const SurfaceRecord = struct {
+    history_id: []const u8,
+    workspace_id: []const u8,
+    workspace_name: []const u8,
+    workspace_dir: []const u8,
+    working_directory: []const u8,
+    env_fingerprint: ?[]const u8,
+    transcript_path: []const u8,
+    status: []const u8,
+    last_exit_code: ?i32,
+    updated_at: []const u8,
+
+    pub fn deinit(self: *SurfaceRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.history_id);
+        allocator.free(self.workspace_id);
+        allocator.free(self.workspace_name);
+        allocator.free(self.workspace_dir);
+        allocator.free(self.working_directory);
+        if (self.env_fingerprint) |v| allocator.free(v);
+        allocator.free(self.transcript_path);
+        allocator.free(self.status);
+        allocator.free(self.updated_at);
+    }
+};
+
 pub const CommandStart = struct {
     history_id: []const u8,
     workspace_id: []const u8,
@@ -394,6 +419,20 @@ pub const Database = struct {
         try stmt.stepDone();
     }
 
+    pub fn getSurface(self: *Database, history_id: []const u8) !SurfaceRecord {
+        var stmt = try self.prepare(
+            \\SELECT history_id, workspace_id, workspace_name, workspace_dir,
+            \\       working_directory, env_fingerprint, transcript_path,
+            \\       status, last_exit_code, updated_at
+            \\FROM terminal_surfaces
+            \\WHERE history_id = ? AND deleted_at IS NULL
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, history_id);
+        if (!try stmt.stepRow()) return error.NotFound;
+        return try stmt.readSurfaceRecord();
+    }
+
     pub fn startCommand(self: *Database, input: CommandStart) !i64 {
         var stmt = try self.prepare(
             \\INSERT INTO command_history (
@@ -447,6 +486,30 @@ pub const Database = struct {
         try stmt.bindOptionalText(1, query.workspace_id);
         try stmt.bindOptionalText(2, query.history_id);
         try stmt.bindInt64(3, query.limit);
+
+        var items: std.ArrayListUnmanaged(CommandRecord) = .empty;
+        errdefer {
+            for (items.items) |*item| item.deinit(self.allocator);
+            items.deinit(self.allocator);
+        }
+        while (try stmt.stepRow()) {
+            try items.append(self.allocator, try stmt.readCommandRecord());
+        }
+        return .{ .items = try items.toOwnedSlice(self.allocator) };
+    }
+
+    pub fn listSurfaceCommands(self: *Database, history_id: []const u8, limit: u32) !CommandList {
+        var stmt = try self.prepare(
+            \\SELECT id, history_id, workspace_id, workspace_name, workspace_dir,
+            \\       command, started_at, ended_at, exit_code, source
+            \\FROM command_history
+            \\WHERE history_id = ?
+            \\ORDER BY started_at ASC, id ASC
+            \\LIMIT ?2
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, history_id);
+        try stmt.bindInt64(2, @max(limit, 1));
 
         var items: std.ArrayListUnmanaged(CommandRecord) = .empty;
         errdefer {
@@ -659,6 +722,21 @@ const Statement = struct {
         };
     }
 
+    fn readSurfaceRecord(self: *Statement) !SurfaceRecord {
+        return .{
+            .history_id = try self.readTextAlloc(0),
+            .workspace_id = try self.readTextAlloc(1),
+            .workspace_name = try self.readTextAlloc(2),
+            .workspace_dir = try self.readTextAlloc(3),
+            .working_directory = try self.readTextAlloc(4),
+            .env_fingerprint = try self.readOptionalTextAlloc(5),
+            .transcript_path = try self.readTextAlloc(6),
+            .status = try self.readTextAlloc(7),
+            .last_exit_code = self.readOptionalInt(8),
+            .updated_at = try self.readTextAlloc(9),
+        };
+    }
+
     fn readCommandRecord(self: *Statement) !CommandRecord {
         return .{
             .id = self.sqlite.column_int64(self.stmt, 0),
@@ -865,6 +943,103 @@ test "terminal history db searches commands with filters" {
     try std.testing.expectEqual(@as(usize, 2), limited.items.len);
     try std.testing.expectEqualStrings("npm test frontend", limited.items[0].command);
     try std.testing.expectEqualStrings("zig build test", limited.items[1].command);
+}
+
+test "terminal history db looks up active surface metadata by history id" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    try db.upsertProject(.{
+        .workspace_id = "workspace-surface",
+        .workspace_name = "surface",
+        .workspace_dir = "/repo/surface",
+        .timestamp = "2026-05-04T11:00:00Z",
+    });
+    try db.upsertSurface(.{
+        .history_id = "hist-surface",
+        .workspace_id = "workspace-surface",
+        .workspace_name = "surface",
+        .workspace_dir = "/repo/surface",
+        .working_directory = "/repo/surface/subdir",
+        .env_fingerprint = "env-surface",
+        .transcript_path = "/tmp/hist-surface.ansi",
+        .status = "exited",
+        .last_exit_code = 7,
+        .timestamp = "2026-05-04T11:00:01Z",
+    });
+
+    var surface = try db.getSurface("hist-surface");
+    defer surface.deinit(allocator);
+    try std.testing.expectEqualStrings("hist-surface", surface.history_id);
+    try std.testing.expectEqualStrings("workspace-surface", surface.workspace_id);
+    try std.testing.expectEqualStrings("surface", surface.workspace_name);
+    try std.testing.expectEqualStrings("/repo/surface", surface.workspace_dir);
+    try std.testing.expectEqualStrings("/repo/surface/subdir", surface.working_directory);
+    try std.testing.expectEqualStrings("/tmp/hist-surface.ansi", surface.transcript_path);
+    try std.testing.expectEqualStrings("exited", surface.status);
+    try std.testing.expectEqual(@as(?i32, 7), surface.last_exit_code);
+
+    try db.deleteSurface("hist-surface");
+    try std.testing.expectError(error.NotFound, db.getSurface("hist-surface"));
+}
+
+test "terminal history db lists surface commands oldest first for transcript markers" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    _ = try db.startCommand(.{
+        .history_id = "hist-marker",
+        .workspace_id = "workspace-marker",
+        .workspace_name = "markers",
+        .workspace_dir = "/repo/markers",
+        .command = "first command",
+        .started_at = "2026-05-04T11:00:01Z",
+        .source = "osc_7337",
+    });
+    _ = try db.startCommand(.{
+        .history_id = "hist-marker",
+        .workspace_id = "workspace-marker",
+        .workspace_name = "markers",
+        .workspace_dir = "/repo/markers",
+        .command = "second command",
+        .started_at = "2026-05-04T11:00:02Z",
+        .source = "osc_7337",
+    });
+    _ = try db.startCommand(.{
+        .history_id = "other-marker",
+        .workspace_id = "workspace-marker",
+        .workspace_name = "markers",
+        .workspace_dir = "/repo/markers",
+        .command = "other command",
+        .started_at = "2026-05-04T11:00:03Z",
+        .source = "osc_7337",
+    });
+
+    const markers = try db.listSurfaceCommands("hist-marker", 10);
+    defer markers.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), markers.items.len);
+    try std.testing.expectEqualStrings("first command", markers.items[0].command);
+    try std.testing.expectEqualStrings("second command", markers.items[1].command);
 }
 
 test "terminal history db reports active project surface and command counts" {

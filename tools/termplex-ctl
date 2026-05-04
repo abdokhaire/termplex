@@ -178,6 +178,17 @@ def main():
     history_search.add_argument("--started-after", help="ISO timestamp lower bound")
     history_search.add_argument("--started-before", help="ISO timestamp upper bound")
     history_search.add_argument("--limit", type=int, default=50, help="Maximum rows to return")
+    history_transcript = history_sub.add_parser("transcript", help="Read a sanitized terminal transcript")
+    history_transcript.add_argument("--history-id", required=True, help="Terminal history ID")
+    history_transcript.add_argument("--workspace", help="Workspace name or index")
+    history_transcript.add_argument("--lines", type=int, default=1000, help="Maximum lines to return")
+    history_transcript_search = history_sub.add_parser("transcript-search", help="Search a sanitized terminal transcript")
+    history_transcript_search.add_argument("--history-id", required=True, help="Terminal history ID")
+    history_transcript_search.add_argument("--query", required=True, help="Transcript text to search for")
+    history_transcript_search.add_argument("--workspace", help="Workspace name or index")
+    history_transcript_search.add_argument("--limit", type=int, default=50, help="Maximum matches to return")
+    history_transcript_show = history_sub.add_parser("transcript-show", help="Show the transcript viewer dialog")
+    history_transcript_show.add_argument("--history-id", help="Terminal history ID")
 
     # --- git ---
     git = subparsers.add_parser("git", help="Source control operations")
@@ -281,6 +292,21 @@ def build_request(args):
             if args.started_before:
                 p["started_before"] = args.started_before
             return "history.search", p
+        if action == "transcript":
+            p = {"history_id": args.history_id, "lines": args.lines}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "history.transcript", p
+        if action == "transcript-search":
+            p = {"history_id": args.history_id, "query": args.query, "limit": args.limit}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "history.transcript_search", p
+        if action == "transcript-show":
+            p = {}
+            if args.history_id:
+                p["history_id"] = args.history_id
+            return "history.transcript_show", p
         return None, None
 
     if resource == "git":
