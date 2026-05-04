@@ -236,7 +236,7 @@ Detailed plan:
 
 Status:
 
-- Planned. This is the next implementation phase.
+- Completed and committed.
 
 Value:
 
@@ -260,22 +260,38 @@ Recommended first scope:
 
 ### 8. Background Tab Hydration
 
+Detailed plan:
+
+- `docs/superpowers/plans/2026-05-05-background-tab-hydration.md`
+
+Status:
+
+- Completed and committed.
+
 Value:
 
 - Medium.
-- Improves restore performance and resource usage for large sessions.
+- Improves restore responsiveness and resource use now that Termplex persists transcript-heavy sessions.
 
 Dependencies:
 
+- Session restore v6 with stable workspace, tab, split, surface, and history IDs.
+- Terminal transcript persistence.
 - E2E restore coverage.
-- Transcript restore behavior must be stable and measurable.
 
 Recommended first scope:
 
-- Restore visible tab immediately.
-- Defer replay for background tabs until selected.
-- Preserve predictable session state.
-- Add E2E coverage for lazy restore.
+- Preserve restored tab/split layout and history IDs immediately.
+- Defer restored transcript file reads until restored surfaces initialize.
+- Ensure background workspace transcripts hydrate when selected.
+- Keep replay on the existing frontend-only replay path.
+
+Defer:
+
+- Lazy shell process startup.
+- Placeholder-only background tab widgets.
+- Hydration progress UI.
+- Background prefetch.
 
 ### 9. Per-Workspace Task Shortcuts
 

@@ -17,6 +17,7 @@ const input = @import("../../../input.zig");
 const internal_os = @import("../../../os/main.zig");
 const renderer = @import("../../../renderer.zig");
 const terminal = @import("../../../terminal/main.zig");
+const terminal_history = @import("../../../termplex/core/terminal_history.zig");
 const termplex_uuid = @import("../../../termplex/util/uuid.zig");
 const CoreSurface = @import("../../../Surface.zig");
 const gresource = @import("../build/gresource.zig");
@@ -588,6 +589,11 @@ pub const Surface = extern struct {
         /// Stable logical terminal history ID used for transcript persistence.
         history_id: ?[:0]const u8 = null,
 
+        /// Workspace ID captured from session restore. This lets deferred
+        /// transcript replay resolve the original transcript path even if a
+        /// different workspace is active when the surface initializes.
+        restored_workspace_id: ?[:0]const u8 = null,
+
         /// Initial replay bytes to write into the frontend terminal only.
         initial_replay: ?[]const u8 = null,
 
@@ -716,6 +722,7 @@ pub const Surface = extern struct {
             command: ?configpkg.Command = null,
             working_directory: ?[:0]const u8 = null,
             history_id: ?[:0]const u8 = null,
+            restored_workspace_id: ?[:0]const u8 = null,
             initial_replay: ?[]const u8 = null,
 
             pub const none: @This() = .{};
@@ -729,6 +736,7 @@ pub const Surface = extern struct {
         working_directory: ?[:0]const u8 = null,
         title: ?[:0]const u8 = null,
         history_id: ?[:0]const u8 = null,
+        restored_workspace_id: ?[]const u8 = null,
         initial_replay: ?[]const u8 = null,
 
         pub const none: @This() = .{};
@@ -742,6 +750,7 @@ pub const Surface = extern struct {
             .command = if (overrides.command) |c| c.clone(alloc) catch null else null,
             .working_directory = if (overrides.working_directory) |wd| alloc.dupeZ(u8, wd) catch null else null,
             .history_id = if (overrides.history_id) |id| alloc.dupeZ(u8, id) catch null else null,
+            .restored_workspace_id = if (overrides.restored_workspace_id) |id| alloc.dupeZ(u8, id) catch null else null,
             .initial_replay = if (overrides.initial_replay) |bytes| alloc.dupe(u8, bytes) catch null else null,
         };
         if (priv.overrides.history_id) |id| {
@@ -750,6 +759,9 @@ pub const Surface = extern struct {
             var id_buf: [36]u8 = undefined;
             termplex_uuid.format(termplex_uuid.generate(), &id_buf);
             priv.history_id = alloc.dupeZ(u8, id_buf[0..]) catch null;
+        }
+        if (priv.overrides.restored_workspace_id) |id| {
+            priv.restored_workspace_id = alloc.dupeZ(u8, id) catch null;
         }
         if (priv.overrides.initial_replay) |bytes| {
             priv.initial_replay = alloc.dupe(u8, bytes) catch null;
@@ -1736,6 +1748,11 @@ pub const Surface = extern struct {
     pub fn grabFocus(self: *Self) void {
         const priv = self.private();
         _ = priv.gl_area.as(gtk.Widget).grabFocus();
+        self.initSurfaceFromCurrentAllocation("focus");
+    }
+
+    pub fn ensureInitializedFromAllocation(self: *Self, reason: []const u8) void {
+        self.initSurfaceFromCurrentAllocation(reason);
     }
 
     pub fn sendDesktopNotification(self: *Self, title: [:0]const u8, body: [:0]const u8) void {
@@ -1954,6 +1971,10 @@ pub const Surface = extern struct {
             alloc.free(v);
             priv.history_id = null;
         }
+        if (priv.restored_workspace_id) |v| {
+            alloc.free(v);
+            priv.restored_workspace_id = null;
+        }
         if (priv.initial_replay) |v| {
             alloc.free(v);
             priv.initial_replay = null;
@@ -1973,6 +1994,10 @@ pub const Surface = extern struct {
         if (priv.overrides.history_id) |id| {
             alloc.free(id);
             priv.overrides.history_id = null;
+        }
+        if (priv.overrides.restored_workspace_id) |id| {
+            alloc.free(id);
+            priv.overrides.restored_workspace_id = null;
         }
         if (priv.overrides.initial_replay) |bytes| {
             alloc.free(bytes);
@@ -2020,6 +2045,31 @@ pub const Surface = extern struct {
         const replay = priv.initial_replay;
         priv.initial_replay = null;
         return replay;
+    }
+
+    fn loadDeferredInitialReplay(self: *Self, alloc: std.mem.Allocator, workspace_id: []const u8, history_id: []const u8) ?[]u8 {
+        _ = self;
+        const app = Application.default();
+        const options = app.terminalHistoryOptions();
+        if (!options.enabled or options.restore_mode != .transcript) return null;
+
+        const path = terminal_history.transcriptPath(alloc, workspace_id, history_id) catch |err| {
+            log.warn("failed to resolve deferred terminal replay path: {}", .{err});
+            return null;
+        };
+        defer alloc.free(path);
+
+        const bytes = terminal_history.readTranscript(alloc, path, options) catch |err| {
+            log.warn("failed to read deferred terminal replay: {}", .{err});
+            return null;
+        };
+        if (bytes.len == 0) {
+            alloc.free(bytes);
+            return null;
+        }
+
+        log.info("loaded deferred terminal replay history_id={s} bytes={d}", .{ history_id, bytes.len });
+        return bytes;
     }
 
     /// Copies the effective title to the clipboard.
@@ -3294,6 +3344,8 @@ pub const Surface = extern struct {
         // create a strong reference back to ourself and we want to be
         // able to release that in unrealize.
         priv.im_context.as(gtk.IMContext).setClientWidget(self.as(gtk.Widget));
+
+        self.initSurfaceFromCurrentAllocation("realize");
     }
 
     fn glareaUnrealize(
@@ -3346,6 +3398,61 @@ pub const Surface = extern struct {
         };
 
         return 1;
+    }
+
+    fn initSurfaceFromCurrentAllocation(self: *Self, reason: []const u8) void {
+        const priv = self.private();
+        if (priv.core_surface != null) return;
+
+        const widget = priv.gl_area.as(gtk.Widget);
+        if (widget.getRealized() == 0) return;
+
+        const width = widget.getAllocatedWidth();
+        const height = widget.getAllocatedHeight();
+        const size: apprt.SurfaceSize = size: {
+            if (width > 0 and height > 0) {
+                break :size .{
+                    .width = @intCast(width),
+                    .height = @intCast(height),
+                };
+            }
+
+            if (priv.default_size == null) self.estimateInitialSize();
+            if (priv.default_size) |default_size| {
+                break :size .{
+                    .width = default_size.width,
+                    .height = default_size.height,
+                };
+            }
+
+            if (widget.getRoot()) |root| {
+                const root_widget = root.as(gtk.Widget);
+                const root_width = root_widget.getAllocatedWidth();
+                const root_height = root_widget.getAllocatedHeight();
+                if (root_width > 0 and root_height > 0) {
+                    break :size .{
+                        .width = @intCast(root_width),
+                        .height = @intCast(root_height),
+                    };
+                }
+            }
+
+            break :size .{
+                .width = 800,
+                .height = 600,
+            };
+        };
+
+        priv.size = size;
+
+        log.debug("initializing surface from {s} size width={} height={}", .{
+            reason,
+            size.width,
+            size.height,
+        });
+        self.initSurface() catch |err| {
+            log.warn("surface failed to initialize from {s} size err={}", .{ reason, err });
+        };
     }
 
     fn glareaResize(
@@ -3462,17 +3569,38 @@ pub const Surface = extern struct {
             config.@"working-directory" = wd_val;
         }
 
-        const workspace_id_owned = app.currentWorkspaceIdString(alloc) catch null;
+        const restored_workspace_id = priv.restored_workspace_id;
+        const workspace_id_owned = if (restored_workspace_id == null)
+            app.currentWorkspaceIdString(alloc) catch null
+        else
+            null;
         defer if (workspace_id_owned) |workspace_id| alloc.free(workspace_id);
+        const workspace_id_for_history = restored_workspace_id orelse workspace_id_owned orelse "default";
         const working_directory_for_history = if (config.@"working-directory") |wd|
             wd.value() orelse ""
         else
             "";
+
+        var deferred_initial_replay: ?[]u8 = null;
+        defer if (deferred_initial_replay) |bytes| alloc.free(bytes);
+        const initial_replay_for_history = replay: {
+            if (priv.initial_replay) |bytes| break :replay bytes;
+            if (restored_workspace_id) |workspace_id| {
+                if (priv.history_id) |history_id| {
+                    if (self.loadDeferredInitialReplay(alloc, workspace_id, history_id)) |bytes| {
+                        deferred_initial_replay = bytes;
+                        break :replay bytes;
+                    }
+                }
+            }
+            break :replay "";
+        };
+
         const history_context: ?@import("../../../termio/Options.zig").History = if (priv.history_id) |history_id| .{
-            .workspace_id = workspace_id_owned orelse "default",
+            .workspace_id = workspace_id_for_history,
             .history_id = history_id,
             .working_directory = working_directory_for_history,
-            .initial_replay = priv.initial_replay orelse "",
+            .initial_replay = initial_replay_for_history,
             .options = app.terminalHistoryOptions(),
         } else null;
 

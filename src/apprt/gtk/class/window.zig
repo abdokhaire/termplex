@@ -38,7 +38,6 @@ const Sidebar = @import("sidebar.zig").Sidebar;
 const WorkspaceTab = @import("workspace_tab.zig").WorkspaceTab;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 const session_mod = @import("../../../termplex/core/session.zig");
-const terminal_history = @import("../../../termplex/core/terminal_history.zig");
 const workspace_mod = @import("../../../termplex/core/workspace.zig");
 const uuid = @import("../../../termplex/util/uuid.zig");
 
@@ -734,6 +733,8 @@ pub const Window = extern struct {
         const alloc = Application.default().allocator();
         var surfaces = std.AutoHashMap(Uuid, *Surface).init(alloc);
         defer surfaces.deinit();
+        const restored_workspace_id = try Application.default().workspaceIdString(alloc, workspace_idx);
+        defer alloc.free(restored_workspace_id);
 
         errdefer {
             var it = surfaces.valueIterator();
@@ -764,21 +765,11 @@ pub const Window = extern struct {
             const history_id_z = self.allocZString(surface_data.history_id) orelse return error.OutOfMemory;
             defer Application.default().allocator().free(history_id_z);
 
-            const replay_bytes = replay: {
-                const app = Application.default();
-                const workspace_id = app.workspaceIdString(alloc, workspace_idx) catch break :replay null;
-                defer alloc.free(workspace_id);
-                const path = terminal_history.transcriptPath(alloc, workspace_id, surface_data.history_id) catch break :replay null;
-                defer alloc.free(path);
-                break :replay terminal_history.readTranscript(alloc, path, app.terminalHistoryOptions()) catch null;
-            };
-            defer if (replay_bytes) |bytes| alloc.free(bytes);
-
             const surface = Surface.new(.{
                 .working_directory = wd_z,
                 .title = title_z,
                 .history_id = history_id_z,
-                .initial_replay = replay_bytes,
+                .restored_workspace_id = restored_workspace_id,
             });
             _ = surface.refSink();
             try surfaces.put(surface_id, surface);

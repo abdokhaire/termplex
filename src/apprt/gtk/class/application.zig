@@ -1579,8 +1579,12 @@ pub const Application = extern struct {
             const timestamp = self.terminalHistoryTimestamp(alloc) orelse return error.TimestampUnavailable;
             defer alloc.free(timestamp);
             try db.deleteProject(workspace_id, timestamp);
+            db.commitIfNeeded() catch |err| {
+                log.warn("failed to commit workspace history clear: {}", .{err});
+            };
         }
 
+        self.reopenTerminalHistoryDatabase();
         self.upsertTerminalHistoryProject(workspace_idx);
         self.refreshTerminalHistoryDatabaseLink();
     }
@@ -5892,6 +5896,7 @@ pub const Application = extern struct {
                 .{id},
             ) catch null;
         };
+        gtk_surface.ensureInitializedFromAllocation("ipc-send");
         const core_surface = gtk_surface.core() orelse {
             return std.fmt.allocPrint(
                 alloc,

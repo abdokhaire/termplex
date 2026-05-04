@@ -139,6 +139,11 @@ def main():
     surface_read.add_argument("--tab", required=True, type=int, help="Tab index")
     surface_read.add_argument("--lines", type=int, default=50, help="Number of lines (default: 50)")
 
+    surface_focus = surface_sub.add_parser("focus", help="Focus a terminal surface")
+    surface_focus.add_argument("--workspace", required=True, help="Workspace name or index")
+    surface_focus.add_argument("--tab", required=True, type=int, help="Tab index")
+    surface_focus.add_argument("--surface", type=int, help="Surface index inside the tab")
+
     # --- agent ---
     agent = subparsers.add_parser("agent", help="Agent operations")
     agent_sub = agent.add_subparsers(dest="action")
@@ -436,6 +441,14 @@ def build_request(args):
                 "tab": args.tab,
                 "lines": args.lines,
             }
+        if action == "focus":
+            p = {
+                "workspace": parse_workspace_ref(args.workspace),
+                "tab": args.tab,
+            }
+            if args.surface is not None:
+                p["surface"] = args.surface
+            return "surface.focus", p
         return None, None
 
     if resource == "agent":

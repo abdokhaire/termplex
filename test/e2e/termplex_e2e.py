@@ -126,6 +126,7 @@ def make_profile(args):
     mkdir(profile / "workspace")
     mkdir(profile / "workspace-delete")
     mkdir(profile / "workspace-storage")
+    mkdir(profile / "workspace-lazy")
     mkdir(profile / "artifacts")
     write_config(profile)
     return profile
@@ -237,6 +238,10 @@ def select_workspace(args, env, workspace, timeout):
         return any(item["name"] == workspace and item["active"] for item in items)
 
     wait_until("active workspace {!r}".format(workspace), timeout, probe)
+
+
+def focus_surface(args, env, workspace, tab):
+    return ctl(args, env, "surface", "focus", "--workspace", workspace, "--tab", str(tab))
 
 
 def send_text(args, env, workspace, tab, text, timeout):
@@ -684,6 +689,25 @@ def assert_transcript_contains(profile, workspace_name, marker, timeout):
     return wait_until("transcript containing {}".format(marker), timeout, probe)
 
 
+def log_contains(log_path, needle):
+    return needle in pathlib.Path(log_path).read_text(errors="replace")
+
+
+def assert_background_workspace_hydrates_on_select(args, env, log_path, workspace_name, tab, marker, history_id, timeout):
+    needle = "loaded deferred terminal replay history_id={}".format(history_id)
+    if log_contains(log_path, needle):
+        raise E2EError("background workspace hydrated before it was selected")
+
+    select_workspace(args, env, workspace_name, timeout)
+    focus_surface(args, env, workspace_name, tab)
+    wait_until(
+        "deferred replay hydration log for {}".format(history_id),
+        timeout,
+        lambda: log_contains(log_path, needle),
+    )
+    wait_for_output(args, env, workspace_name, tab, marker, timeout)
+
+
 def quit_app(args, env, proc, timeout):
     try:
         ctl(args, env, "quit")
@@ -706,15 +730,20 @@ def run_scenario(args, profile, env):
     workspace_name = "E2E Workspace"
     delete_workspace_name = "E2E DeleteMe"
     storage_workspace_name = "E2E Storage"
+    lazy_workspace_name = "E2E Lazy Hydrate"
     workspace_dir = str(profile / "workspace")
     delete_workspace_dir = str(profile / "workspace-delete")
     storage_workspace_dir = str(profile / "workspace-storage")
+    lazy_workspace_dir = str(profile / "workspace-lazy")
     marker = "TPX_E2E_MARKER_001"
     second_marker = "TPX_E2E_SECOND_TAB_001"
     delete_marker = "TPX_E2E_DELETE_001"
+    lazy_marker = "TPX_E2E_LAZY_HYDRATE_001"
     boot_marker = "TPX_E2E_BOOT_READY_001"
     command_name = "termplex-e2e-manual"
     delete_command_name = "termplex-e2e-delete"
+    lazy_tab = None
+    lazy_history_id = None
 
     setup_git_fixture(profile / "workspace")
 
@@ -831,6 +860,32 @@ def run_scenario(args, profile, env):
             lambda: not delete_transcript.exists(),
         )
 
+        ctl(args, env, "workspace", "create", "--name", lazy_workspace_name, "--dir", lazy_workspace_dir)
+        select_workspace(args, env, lazy_workspace_name, args.timeout)
+        lazy_tab_result = ctl(
+            args,
+            env,
+            "tab",
+            "create",
+            "--workspace",
+            lazy_workspace_name,
+            "--title",
+            "lazy",
+            "--dir",
+            lazy_workspace_dir,
+        )
+        lazy_tab = tab_index(lazy_tab_result, 0)
+        send_text(args, env, lazy_workspace_name, lazy_tab, "printf '" + lazy_marker + "\\n'\\n", args.timeout)
+        wait_for_output(args, env, lazy_workspace_name, lazy_tab, lazy_marker, args.timeout)
+        lazy_history_id = query_one(
+            profile,
+            "SELECT history_id FROM terminal_surfaces WHERE workspace_name = ? ORDER BY updated_at DESC LIMIT 1",
+            (lazy_workspace_name,),
+        )
+        if not lazy_history_id:
+            raise E2EError("lazy workspace did not persist a history id")
+        select_workspace(args, env, workspace_name, args.timeout)
+
         quit_app(args, env, proc, args.timeout)
         log_file.close()
         session_path = profile / "state" / "termplex" / "session.json"
@@ -847,6 +902,19 @@ def run_scenario(args, profile, env):
             args.timeout,
             lambda: workspace_name in [item["name"] for item in ctl(args, env, "workspace", "list")["items"]],
         )
+        if lazy_tab is None or not lazy_history_id:
+            raise E2EError("lazy workspace fixture was not initialized before restore")
+        assert_background_workspace_hydrates_on_select(
+            args,
+            env,
+            log_path,
+            lazy_workspace_name,
+            lazy_tab,
+            lazy_marker,
+            lazy_history_id,
+            args.timeout,
+        )
+        select_workspace(args, env, workspace_name, args.timeout)
         wait_for_output(args, env, workspace_name, 0, marker, args.timeout)
         if not pathlib.Path(transcript_path).exists():
             raise E2EError("primary transcript disappeared after restore: {}".format(transcript_path))
