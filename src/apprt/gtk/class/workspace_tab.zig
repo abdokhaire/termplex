@@ -112,7 +112,7 @@ pub const WorkspaceTab = extern struct {
         outer.setSpacing(0);
         self.as(gtk.Widget).addCssClass("termplex-workspace-tab");
 
-        // -- Left border: 3px colored accent strip --
+        // -- Left border: colored status rail --
         const left_border = gtk.Box.new(.vertical, 0);
         left_border.as(gtk.Widget).setSizeRequest(3, -1);
         priv.left_border = left_border;
@@ -120,6 +120,7 @@ pub const WorkspaceTab = extern struct {
 
         // -- Content area (vertical box with padding) --
         const content = gtk.Box.new(.vertical, 2);
+        content.as(gtk.Widget).addCssClass("termplex-workspace-content");
         content.as(gtk.Widget).setMarginStart(6);
         content.as(gtk.Widget).setMarginEnd(6);
         content.as(gtk.Widget).setMarginTop(4);
@@ -129,6 +130,7 @@ pub const WorkspaceTab = extern struct {
 
         // -- Row 1: name (bold, left) + port (green, right) --
         const row1 = gtk.Box.new(.horizontal, 4);
+        row1.as(gtk.Widget).addCssClass("termplex-workspace-title-row");
         content.append(row1.as(gtk.Widget));
 
         const name_label = gtk.Label.new(null);
@@ -168,26 +170,32 @@ pub const WorkspaceTab = extern struct {
 
         // -- Action icons box: shown on hover, hidden by default --
         const action_box = gtk.Box.new(.horizontal, 2);
-        action_box.as(gtk.Widget).setVisible(0);
+        action_box.as(gtk.Widget).addCssClass("termplex-tab-actions");
+        action_box.as(gtk.Widget).setSizeRequest(68, -1);
+        action_box.as(gtk.Widget).setOpacity(0.0);
+        action_box.as(gtk.Widget).setSensitive(0);
         priv.action_box = action_box;
         row1.append(action_box.as(gtk.Widget));
 
-        const rename_btn = gtk.Button.newWithLabel("\xe2\x9c\x8e"); // ✎
+        const rename_btn = gtk.Button.newFromIconName("document-edit-symbolic");
         rename_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
         rename_btn.as(gtk.Widget).addCssClass("flat");
+        rename_btn.as(gtk.Widget).setTooltipText("Rename workspace");
         _ = gtk.Button.signals.clicked.connect(rename_btn, *Self, &onActionRename, self, .{});
         action_box.append(rename_btn.as(gtk.Widget));
 
-        const dir_btn = gtk.Button.newWithLabel("\xe2\x8c\x82"); // ⌂
+        const dir_btn = gtk.Button.newFromIconName("folder-open-symbolic");
         dir_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
         dir_btn.as(gtk.Widget).addCssClass("flat");
+        dir_btn.as(gtk.Widget).setTooltipText("Change workspace directory");
         _ = gtk.Button.signals.clicked.connect(dir_btn, *Self, &onActionChangeDir, self, .{});
         action_box.append(dir_btn.as(gtk.Widget));
 
-        const delete_btn = gtk.Button.newWithLabel("\xc3\x97"); // ×
+        const delete_btn = gtk.Button.newFromIconName("user-trash-symbolic");
         delete_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
         delete_btn.as(gtk.Widget).addCssClass("termplex-tab-action-delete");
         delete_btn.as(gtk.Widget).addCssClass("flat");
+        delete_btn.as(gtk.Widget).setTooltipText("Delete workspace");
         _ = gtk.Button.signals.clicked.connect(delete_btn, *Self, &onActionDelete, self, .{});
         action_box.append(delete_btn.as(gtk.Widget));
 
@@ -199,6 +207,7 @@ pub const WorkspaceTab = extern struct {
 
         // -- Row 2: directory label --
         const row2 = gtk.Box.new(.horizontal, 0);
+        row2.as(gtk.Widget).addCssClass("termplex-workspace-meta-row");
         content.append(row2.as(gtk.Widget));
 
         const dir_label = gtk.Label.new(null);
@@ -213,6 +222,7 @@ pub const WorkspaceTab = extern struct {
 
         // -- Row 3: branch label --
         const row3 = gtk.Box.new(.horizontal, 0);
+        row3.as(gtk.Widget).addCssClass("termplex-workspace-branch-row");
         content.append(row3.as(gtk.Widget));
 
         const branch_label = gtk.Label.new(null);
@@ -246,14 +256,16 @@ pub const WorkspaceTab = extern struct {
         // Only show actions if callbacks are wired (not orchestrator).
         if (priv.on_action_rename == null and priv.on_action_delete == null and priv.on_action_change_dir == null) return;
         priv.is_hovered = true;
-        priv.action_box.as(gtk.Widget).setVisible(1);
+        priv.action_box.as(gtk.Widget).setOpacity(1.0);
+        priv.action_box.as(gtk.Widget).setSensitive(1);
         priv.port_box.as(gtk.Widget).setVisible(0);
     }
 
     fn onHoverLeave(_: *gtk.EventControllerMotion, self: *Self) callconv(.c) void {
         const priv = self.private();
         priv.is_hovered = false;
-        priv.action_box.as(gtk.Widget).setVisible(0);
+        priv.action_box.as(gtk.Widget).setOpacity(0.0);
+        priv.action_box.as(gtk.Widget).setSensitive(0);
         priv.port_box.as(gtk.Widget).setVisible(@intFromBool(priv.has_ports));
     }
 

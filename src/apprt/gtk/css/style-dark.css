@@ -14,7 +14,7 @@
  */
 
 .termplex-sidebar {
-  background-color: #101722;
+  background-color: #0d141d;
   border-right: 1px solid #243447;
 }
 
@@ -24,25 +24,46 @@
 }
 
 .termplex-sidebar list row:selected {
-  background-color: rgba(0, 212, 255, 0.08);
+  background-color: rgba(0, 212, 255, 0.07);
 }
 
 .termplex-sidebar-active {
   background-color: #00d4ff;
-  min-width: 2px;
+  min-width: 3px;
 }
 
 .termplex-sidebar-unread {
-  background-color: rgba(0, 212, 255, 0.65);
-  min-width: 2px;
+  background-color: #facc15;
+  min-width: 3px;
+}
+
+.termplex-sidebar-header {
+  background-color: #101722;
+  border-bottom: 1px solid #243447;
 }
 
 .termplex-header {
-  font-weight: 700;
+  font-weight: 800;
   color: #00d4ff;
-  padding: 12px 14px;
   letter-spacing: 0;
-  border-bottom: 1px solid #243447;
+}
+
+.termplex-header-subtitle,
+.termplex-tab-dir {
+  color: #7a8ba3;
+}
+
+.termplex-sidebar-section-label {
+  color: #526177;
+}
+
+.termplex-sidebar-header-button {
+  color: #cbd5e1;
+}
+
+.termplex-sidebar-header-button:hover {
+  color: #00d4ff;
+  background-color: rgba(0, 212, 255, 0.08);
 }
 
 .termplex-tab-port {
@@ -50,11 +71,11 @@
 }
 
 .termplex-tab-branch {
-  color: #4ade80;
+  color: #38bdf8;
 }
 
 .termplex-sidebar-toggle {
-  background-color: #101722;
+  background-color: #0d141d;
   color: #00d4ff;
   border-color: #243447;
 }

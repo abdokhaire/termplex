@@ -15,8 +15,10 @@ const log = std.log.scoped(.gtk_termplex_sidebar);
 /// Layout:
 ///   Gtk.Box (vertical, the Sidebar itself)
 ///   +-- Gtk.Box (header)
-///   |   +-- Gtk.Label ("TERMPLEX", bold, termplex-header CSS class)
+///   |   +-- Gtk.Box (title stack)
+///   |   +-- Gtk.Button (new workspace)
 ///   +-- Gtk.Separator (horizontal)
+///   +-- Gtk.Label ("WORKSPACES")
 ///   +-- Gtk.ScrolledWindow (vexpand, scrolls when many workspaces)
 ///   |   +-- Gtk.ListBox (workspace_list)
 ///   |       +-- [WorkspaceTab widgets as rows]
@@ -81,23 +83,49 @@ pub const Sidebar = extern struct {
         self.as(gtk.Widget).addCssClass("termplex-sidebar");
 
         // -- Header box --
-        const header = gtk.Box.new(.horizontal, 0);
-        header.as(gtk.Widget).setMarginTop(12);
-        header.as(gtk.Widget).setMarginBottom(8);
-        header.as(gtk.Widget).setMarginStart(12);
-        header.as(gtk.Widget).setMarginEnd(12);
+        const header = gtk.Box.new(.horizontal, 8);
+        header.as(gtk.Widget).addCssClass("termplex-sidebar-header");
 
-        const header_label = gtk.Label.new("TERMPLEX");
+        const title_stack = gtk.Box.new(.vertical, 1);
+        title_stack.as(gtk.Widget).setHexpand(1);
+
+        const header_label = gtk.Label.new("Termplex");
         header_label.as(gtk.Widget).addCssClass("termplex-header");
         header_label.as(gtk.Widget).setHexpand(1);
         header_label.setXalign(0.0);
-        header.append(header_label.as(gtk.Widget));
+        title_stack.append(header_label.as(gtk.Widget));
+
+        const header_subtitle = gtk.Label.new("Workspace terminal");
+        header_subtitle.as(gtk.Widget).addCssClass("termplex-header-subtitle");
+        header_subtitle.as(gtk.Widget).setHexpand(1);
+        header_subtitle.setXalign(0.0);
+        title_stack.append(header_subtitle.as(gtk.Widget));
+
+        header.append(title_stack.as(gtk.Widget));
+
+        const header_new_button = gtk.Button.newFromIconName("list-add-symbolic");
+        header_new_button.as(gtk.Widget).addCssClass("termplex-sidebar-header-button");
+        header_new_button.as(gtk.Widget).addCssClass("flat");
+        header_new_button.as(gtk.Widget).setTooltipText("New workspace");
+        _ = gtk.Button.signals.clicked.connect(
+            header_new_button,
+            *Self,
+            &onNewWorkspaceClicked,
+            self,
+            .{},
+        );
+        header.append(header_new_button.as(gtk.Widget));
 
         outer.append(header.as(gtk.Widget));
 
         // -- Separator --
         const sep1 = gtk.Separator.new(.horizontal);
         outer.append(sep1.as(gtk.Widget));
+
+        const section_label = gtk.Label.new("WORKSPACES");
+        section_label.as(gtk.Widget).addCssClass("termplex-sidebar-section-label");
+        section_label.setXalign(0.0);
+        outer.append(section_label.as(gtk.Widget));
 
         // -- Scrolled window containing the workspace list --
         const scrolled = gtk.ScrolledWindow.new();
@@ -127,7 +155,7 @@ pub const Sidebar = extern struct {
         outer.append(sep2.as(gtk.Widget));
 
         // -- New Workspace button --
-        const new_button = gtk.Button.newWithLabel("+ New Workspace");
+        const new_button = gtk.Button.newWithLabel("New Workspace");
         new_button.as(gtk.Widget).addCssClass("termplex-new-workspace-button");
         new_button.as(gtk.Widget).setMarginTop(4);
         new_button.as(gtk.Widget).setMarginBottom(4);

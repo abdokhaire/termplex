@@ -22,6 +22,22 @@
   color: #e0e0e0;
 }
 
+.termplex-tab-branch,
+.termplex-header,
+.termplex-sidebar-header-button {
+  color: #00ffff;
+}
+
+.termplex-header-subtitle,
+.termplex-sidebar-section-label {
+  color: #e0e0e0;
+}
+
+.termplex-sidebar-header {
+  background-color: #000000;
+  border-bottom: 1px solid #ffffff;
+}
+
 .termplex-sidebar-active {
   background-color: #ffffff;
 }
@@ -47,6 +63,11 @@
 .termplex-tab-action-delete:hover {
   background-color: #ff0000;
   color: #ffffff;
+}
+
+.termplex-sidebar-header-button:hover {
+  background-color: #ffffff;
+  color: #000000;
 }
 
 .termplex-new-workspace-button {
