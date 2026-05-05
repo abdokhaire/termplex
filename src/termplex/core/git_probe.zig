@@ -23,6 +23,10 @@ pub const GitResult = struct {
     branch: ?[]const u8,
     /// True when `git status --porcelain` produces non-empty output.
     dirty: bool,
+    /// Number of porcelain rows with an index/staged-side change.
+    staged_count: u32 = 0,
+    /// Number of porcelain rows with a worktree/unstaged-side change.
+    unstaged_count: u32 = 0,
 
     /// Free all owned strings.  Safe to call on the zero-value struct.
     pub fn deinit(self: *GitResult, allocator: std.mem.Allocator) void {
@@ -39,7 +43,7 @@ pub const GitResult = struct {
 ///
 /// Runs:
 ///   git rev-parse --abbrev-ref HEAD   → branch name
-///   git status --porcelain            → non-empty ⇒ dirty
+///   git status --porcelain            → dirty + staged/unstaged counts
 ///
 /// Returns `{ .branch = null, .dirty = false }` when:
 ///   - the directory is not inside a git repository
@@ -59,13 +63,18 @@ pub fn probe(allocator: std.mem.Allocator, directory: []const u8) GitResult {
         return .{ .branch = null, .dirty = false };
     }
 
-    const dirty = getStatus(allocator, directory) catch |err| {
+    const counts = getStatusCounts(allocator, directory) catch |err| {
         log.debug("git status failed for '{s}': {}", .{ directory, err });
         // We already have a branch — keep it, just assume clean.
         return .{ .branch = branch, .dirty = false };
     };
 
-    return .{ .branch = branch, .dirty = dirty };
+    return .{
+        .branch = branch,
+        .dirty = counts.dirty,
+        .staged_count = counts.staged,
+        .unstaged_count = counts.unstaged,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -103,28 +112,54 @@ fn getBranch(allocator: std.mem.Allocator, directory: []const u8) !?[]const u8 {
     return try allocator.dupe(u8, trimmed);
 }
 
-/// Run `git status --porcelain` in `directory`.
-///
-/// Returns true when the output is non-empty (i.e., there are changes).
-/// Returns false on non-zero exit (shouldn't happen if branch succeeded).
-fn getStatus(allocator: std.mem.Allocator, directory: []const u8) !bool {
+const StatusCounts = struct {
+    dirty: bool,
+    staged: u32,
+    unstaged: u32,
+};
+
+/// Run `git status --porcelain` in `directory` and count staged/unstaged rows.
+fn getStatusCounts(allocator: std.mem.Allocator, directory: []const u8) !StatusCounts {
     const result = runGit(
         allocator,
         directory,
         &.{ "git", "status", "--porcelain" },
     ) catch |err| switch (err) {
-        error.FileNotFound => return false,
+        error.FileNotFound => return .{ .dirty = false, .staged = 0, .unstaged = 0 },
         else => return err,
     };
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
     if (result.term != .Exited or result.term.Exited != 0) {
-        return false;
+        return .{ .dirty = false, .staged = 0, .unstaged = 0 };
     }
 
-    const trimmed = std.mem.trimRight(u8, result.stdout, "\n\r ");
-    return trimmed.len > 0;
+    return parseStatusCounts(result.stdout);
+}
+
+fn parseStatusCounts(output: []const u8) StatusCounts {
+    var counts = StatusCounts{ .dirty = false, .staged = 0, .unstaged = 0 };
+
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        if (line.len < 2) continue;
+
+        const staged = line[0];
+        const unstaged = line[1];
+        const is_untracked = staged == '?' and unstaged == '?';
+
+        if (is_untracked) {
+            counts.unstaged += 1;
+            continue;
+        }
+
+        if (staged != ' ') counts.staged += 1;
+        if (unstaged != ' ') counts.unstaged += 1;
+    }
+
+    counts.dirty = counts.staged > 0 or counts.unstaged > 0;
+    return counts;
 }
 
 /// Subprocess result: stdout and stderr are owned by the caller.
@@ -225,4 +260,19 @@ test "probe on a real git repo returns non-null branch" {
         try std.testing.expect(b.len > 0);
     }
     // dirty can be true or false — just make sure it's a bool (always true in Zig).
+}
+
+test "git probe parses staged and unstaged porcelain counts" {
+    const counts = parseStatusCounts(
+        \\ M src/main.zig
+        \\M  README.md
+        \\MM build.zig
+        \\A  new-file.txt
+        \\?? scratch.txt
+        \\
+    );
+
+    try std.testing.expectEqual(@as(u32, 3), counts.staged);
+    try std.testing.expectEqual(@as(u32, 3), counts.unstaged);
+    try std.testing.expectEqual(true, counts.dirty);
 }

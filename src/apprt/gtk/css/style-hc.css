@@ -58,6 +58,23 @@
   font-weight: 700;
 }
 
+.termplex-git-count-badge,
+.termplex-git-staged-badge,
+.termplex-git-unstaged-badge {
+  border: 1px solid #ffffff;
+  font-weight: 700;
+}
+
+.termplex-git-staged-badge {
+  background-color: #00ff00;
+  color: #000000;
+}
+
+.termplex-git-unstaged-badge {
+  background-color: #ffff00;
+  color: #000000;
+}
+
 .termplex-tab-port {
   color: #00ff00;
 }

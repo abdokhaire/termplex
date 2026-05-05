@@ -88,6 +88,12 @@ pub const WorkspaceTab = extern struct {
         /// Badge shown when the workspace has dirty git changes.
         git_dirty_badge: *gtk.Label = undefined,
 
+        /// Badge showing staged git change count.
+        git_staged_badge: *gtk.Label = undefined,
+
+        /// Badge showing unstaged git change count.
+        git_unstaged_badge: *gtk.Label = undefined,
+
         /// Inline rename state.
         rename_entry: ?*gtk.Entry = null,
         is_renaming: bool = false,
@@ -119,6 +125,9 @@ pub const WorkspaceTab = extern struct {
 
         /// Callback invoked when the change-dir action icon is clicked.
         on_action_change_dir: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
+        /// Callback invoked when the source-control action icon is clicked.
+        on_action_source_control: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
 
         /// Opaque pointer passed to action callbacks.
         action_userdata: ?*anyopaque = null,
@@ -193,11 +202,19 @@ pub const WorkspaceTab = extern struct {
         // -- Action icons box: shown on hover, hidden by default --
         const action_box = gtk.Box.new(.horizontal, 2);
         action_box.as(gtk.Widget).addCssClass("termplex-tab-actions");
-        action_box.as(gtk.Widget).setSizeRequest(68, -1);
+        action_box.as(gtk.Widget).setSizeRequest(92, -1);
         action_box.as(gtk.Widget).setOpacity(0.0);
         action_box.as(gtk.Widget).setSensitive(0);
         priv.action_box = action_box;
         row1.append(action_box.as(gtk.Widget));
+
+        const source_control_btn = gtk.Button.newFromIconName("view-list-symbolic");
+        source_control_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
+        source_control_btn.as(gtk.Widget).addCssClass("termplex-tab-action-source-control");
+        source_control_btn.as(gtk.Widget).addCssClass("flat");
+        source_control_btn.as(gtk.Widget).setTooltipText("Open Source Control");
+        _ = gtk.Button.signals.clicked.connect(source_control_btn, *Self, &onActionSourceControl, self, .{});
+        action_box.append(source_control_btn.as(gtk.Widget));
 
         const rename_btn = gtk.Button.newFromIconName("document-edit-symbolic");
         rename_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
@@ -260,6 +277,20 @@ pub const WorkspaceTab = extern struct {
         priv.git_dirty_badge = git_dirty_badge;
         row3.append(git_dirty_badge.as(gtk.Widget));
 
+        const git_staged_badge = gtk.Label.new(null);
+        git_staged_badge.as(gtk.Widget).addCssClass("termplex-git-count-badge");
+        git_staged_badge.as(gtk.Widget).addCssClass("termplex-git-staged-badge");
+        git_staged_badge.as(gtk.Widget).setVisible(0);
+        priv.git_staged_badge = git_staged_badge;
+        row3.append(git_staged_badge.as(gtk.Widget));
+
+        const git_unstaged_badge = gtk.Label.new(null);
+        git_unstaged_badge.as(gtk.Widget).addCssClass("termplex-git-count-badge");
+        git_unstaged_badge.as(gtk.Widget).addCssClass("termplex-git-unstaged-badge");
+        git_unstaged_badge.as(gtk.Widget).setVisible(0);
+        priv.git_unstaged_badge = git_unstaged_badge;
+        row3.append(git_unstaged_badge.as(gtk.Widget));
+
         // -- Port detail box (hidden by default, shown when "+N" badge clicked) --
         const port_detail_box = gtk.Box.new(.vertical, 1);
         port_detail_box.as(gtk.Widget).addCssClass("termplex-port-detail");
@@ -283,7 +314,10 @@ pub const WorkspaceTab = extern struct {
     fn onHoverEnter(_: *gtk.EventControllerMotion, _: f64, _: f64, self: *Self) callconv(.c) void {
         const priv = self.private();
         // Only show actions if callbacks are wired (not orchestrator).
-        if (priv.on_action_rename == null and priv.on_action_delete == null and priv.on_action_change_dir == null) return;
+        if (priv.on_action_rename == null and
+            priv.on_action_delete == null and
+            priv.on_action_change_dir == null and
+            priv.on_action_source_control == null) return;
         priv.is_hovered = true;
         priv.action_box.as(gtk.Widget).setOpacity(1.0);
         priv.action_box.as(gtk.Widget).setSensitive(1);
@@ -319,6 +353,13 @@ pub const WorkspaceTab = extern struct {
         cb(index, priv.action_userdata);
     }
 
+    fn onActionSourceControl(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        const cb = priv.on_action_source_control orelse return;
+        const index = self.getRowIndex() orelse return;
+        cb(index, priv.action_userdata);
+    }
+
     fn getRowIndex(self: *Self) ?u32 {
         const parent = self.as(gtk.Widget).getParent() orelse return null;
         const row: *gtk.ListBoxRow = @ptrCast(@alignCast(parent));
@@ -341,12 +382,14 @@ pub const WorkspaceTab = extern struct {
         on_rename: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_delete: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_change_dir: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        on_source_control: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         userdata: ?*anyopaque,
     ) void {
         const priv = self.private();
         priv.on_action_rename = on_rename;
         priv.on_action_delete = on_delete;
         priv.on_action_change_dir = on_change_dir;
+        priv.on_action_source_control = on_source_control;
         priv.action_userdata = userdata;
     }
 
@@ -360,6 +403,8 @@ pub const WorkspaceTab = extern struct {
         dir_text: ?[:0]const u8,
         is_active: bool,
         has_unread: bool,
+        staged_count: u32,
+        unstaged_count: u32,
     ) void {
         const priv = self.private();
 
@@ -436,16 +481,16 @@ pub const WorkspaceTab = extern struct {
                 const branch_label = std.fmt.bufPrintZ(&branch_buf, "{s}", .{status.branch}) catch b;
                 priv.branch_label.setLabel(branch_label);
                 priv.branch_label.as(gtk.Widget).setVisible(1);
-                priv.git_dirty_badge.as(gtk.Widget).setVisible(@intFromBool(status.dirty));
+                self.updateGitBadges(status.dirty, staged_count, unstaged_count);
             } else {
                 priv.branch_label.setLabel("");
                 priv.branch_label.as(gtk.Widget).setVisible(0);
-                priv.git_dirty_badge.as(gtk.Widget).setVisible(0);
+                self.updateGitBadges(false, 0, 0);
             }
         } else {
             priv.branch_label.setLabel("");
             priv.branch_label.as(gtk.Widget).setVisible(0);
-            priv.git_dirty_badge.as(gtk.Widget).setVisible(0);
+            self.updateGitBadges(false, 0, 0);
         }
 
         // Update directory label. Preserve existing text when null.
@@ -479,6 +524,30 @@ pub const WorkspaceTab = extern struct {
         } else {
             border_widget.removeCssClass("termplex-sidebar-unread");
         }
+    }
+
+    fn updateGitBadges(self: *Self, dirty: bool, staged_count: u32, unstaged_count: u32) void {
+        const priv = self.private();
+
+        if (staged_count > 0) {
+            var staged_buf: [16]u8 = undefined;
+            const text = std.fmt.bufPrintZ(&staged_buf, "+{d}", .{staged_count}) catch "+?";
+            priv.git_staged_badge.setLabel(text);
+            priv.git_staged_badge.as(gtk.Widget).setVisible(1);
+        } else {
+            priv.git_staged_badge.as(gtk.Widget).setVisible(0);
+        }
+
+        if (unstaged_count > 0) {
+            var unstaged_buf: [16]u8 = undefined;
+            const text = std.fmt.bufPrintZ(&unstaged_buf, "~{d}", .{unstaged_count}) catch "~?";
+            priv.git_unstaged_badge.setLabel(text);
+            priv.git_unstaged_badge.as(gtk.Widget).setVisible(1);
+        } else {
+            priv.git_unstaged_badge.as(gtk.Widget).setVisible(0);
+        }
+
+        priv.git_dirty_badge.as(gtk.Widget).setVisible(@intFromBool(dirty and staged_count == 0 and unstaged_count == 0));
     }
 
     // ---------------------------------------------------------------

@@ -268,6 +268,12 @@ pub const Application = extern struct {
         /// Per-workspace dirty flag. Parallel to workspace_names.
         workspace_git_dirty: std.ArrayListUnmanaged(bool) = .empty,
 
+        /// Per-workspace staged git change count. Parallel to workspace_names.
+        workspace_git_staged_counts: std.ArrayListUnmanaged(u32) = .empty,
+
+        /// Per-workspace unstaged git change count. Parallel to workspace_names.
+        workspace_git_unstaged_counts: std.ArrayListUnmanaged(u32) = .empty,
+
         /// Index of the currently active workspace (0-based). Only
         /// meaningful when workspace_names is non-empty.
         active_workspace_idx: u32 = 0,
@@ -749,6 +755,8 @@ pub const Application = extern struct {
         }
         priv.workspace_git_branches.deinit(alloc);
         priv.workspace_git_dirty.deinit(alloc);
+        priv.workspace_git_staged_counts.deinit(alloc);
+        priv.workspace_git_unstaged_counts.deinit(alloc);
 
         // Termplex: free any unconsumed restore tab counts.
         if (priv.restore_tab_counts) |counts| {
@@ -1752,6 +1760,12 @@ pub const Application = extern struct {
             if (workspace_idx < priv.workspace_git_dirty.items.len) {
                 priv.workspace_git_dirty.items[workspace_idx] = status.dirty;
             }
+            if (workspace_idx < priv.workspace_git_staged_counts.items.len) {
+                priv.workspace_git_staged_counts.items[workspace_idx] = @intCast(status.staged.len);
+            }
+            if (workspace_idx < priv.workspace_git_unstaged_counts.items.len) {
+                priv.workspace_git_unstaged_counts.items[workspace_idx] = @intCast(status.unstaged.len);
+            }
             self.upsertTerminalHistoryProject(workspace_idx);
         }
 
@@ -1918,6 +1932,31 @@ pub const Application = extern struct {
             return null;
         };
         priv.workspace_git_dirty.append(alloc, false) catch {
+            _ = priv.workspace_git_branches.pop();
+            _ = priv.workspace_tab_views.pop();
+            _ = priv.workspace_ids.pop();
+            _ = priv.workspace_dirs.pop();
+            _ = priv.workspace_names.pop();
+            alloc.free(name);
+            alloc.free(resolved_dir);
+            tab_view.as(gobject.Object).unref();
+            return null;
+        };
+        priv.workspace_git_staged_counts.append(alloc, 0) catch {
+            _ = priv.workspace_git_dirty.pop();
+            _ = priv.workspace_git_branches.pop();
+            _ = priv.workspace_tab_views.pop();
+            _ = priv.workspace_ids.pop();
+            _ = priv.workspace_dirs.pop();
+            _ = priv.workspace_names.pop();
+            alloc.free(name);
+            alloc.free(resolved_dir);
+            tab_view.as(gobject.Object).unref();
+            return null;
+        };
+        priv.workspace_git_unstaged_counts.append(alloc, 0) catch {
+            _ = priv.workspace_git_staged_counts.pop();
+            _ = priv.workspace_git_dirty.pop();
             _ = priv.workspace_git_branches.pop();
             _ = priv.workspace_tab_views.pop();
             _ = priv.workspace_ids.pop();
@@ -2118,6 +2157,8 @@ pub const Application = extern struct {
         if (priv.workspace_git_branches.items[index]) |b| alloc.free(b);
         _ = priv.workspace_git_branches.orderedRemove(index);
         _ = priv.workspace_git_dirty.orderedRemove(index);
+        _ = priv.workspace_git_staged_counts.orderedRemove(index);
+        _ = priv.workspace_git_unstaged_counts.orderedRemove(index);
 
         // Adjust active_workspace_idx: shift down if removed index was before active,
         // clamp if it was the active (or last).
@@ -2189,6 +2230,8 @@ pub const Application = extern struct {
         else
             null;
         priv.workspace_git_dirty.items[index] = result.dirty;
+        priv.workspace_git_staged_counts.items[index] = result.staged_count;
+        priv.workspace_git_unstaged_counts.items[index] = result.unstaged_count;
 
         self.deleteTerminalHistoryProject(index);
         self.upsertTerminalHistoryProject(index);
@@ -5838,6 +5881,8 @@ pub const Application = extern struct {
             if (priv.workspace_git_branches.items[ws_idx]) |old_branch| alloc.free(old_branch);
             priv.workspace_git_branches.items[ws_idx] = if (result.branch) |branch| alloc.dupeZ(u8, branch) catch null else null;
             priv.workspace_git_dirty.items[ws_idx] = result.dirty;
+            priv.workspace_git_staged_counts.items[ws_idx] = result.staged_count;
+            priv.workspace_git_unstaged_counts.items[ws_idx] = result.unstaged_count;
             self.upsertTerminalHistoryProject(ws_idx);
         }
 
@@ -7160,6 +7205,8 @@ pub const Application = extern struct {
         }
         priv.workspace_git_branches.clearRetainingCapacity();
         priv.workspace_git_dirty.clearRetainingCapacity();
+        priv.workspace_git_staged_counts.clearRetainingCapacity();
+        priv.workspace_git_unstaged_counts.clearRetainingCapacity();
         priv.notifications.clearAll();
         // Reset counter so addWorkspaceWithDir assigns correct numbers below.
         priv.next_workspace_number = 1;
@@ -7536,6 +7583,33 @@ pub const Application = extern struct {
                 alloc.free(dir);
                 tab_view.as(gobject.Object).unref();
                 log.warn("session restore: OOM appending git_dirty", .{});
+                continue;
+            };
+            priv.workspace_git_staged_counts.append(alloc, 0) catch {
+                _ = priv.workspace_git_dirty.pop();
+                _ = priv.workspace_git_branches.pop();
+                _ = priv.workspace_tab_views.pop();
+                _ = priv.workspace_ids.pop();
+                _ = priv.workspace_dirs.pop();
+                _ = priv.workspace_names.pop();
+                alloc.free(name);
+                alloc.free(dir);
+                tab_view.as(gobject.Object).unref();
+                log.warn("session restore: OOM appending git staged count", .{});
+                continue;
+            };
+            priv.workspace_git_unstaged_counts.append(alloc, 0) catch {
+                _ = priv.workspace_git_staged_counts.pop();
+                _ = priv.workspace_git_dirty.pop();
+                _ = priv.workspace_git_branches.pop();
+                _ = priv.workspace_tab_views.pop();
+                _ = priv.workspace_ids.pop();
+                _ = priv.workspace_dirs.pop();
+                _ = priv.workspace_names.pop();
+                alloc.free(name);
+                alloc.free(dir);
+                tab_view.as(gobject.Object).unref();
+                log.warn("session restore: OOM appending git unstaged count", .{});
                 continue;
             };
             // Non-fatal if tab_count/title tracking fails; window will fall back to defaults.
@@ -7968,6 +8042,8 @@ pub const Application = extern struct {
             else
                 null;
             priv.workspace_git_dirty.items[active_idx] = result.dirty;
+            priv.workspace_git_staged_counts.items[active_idx] = result.staged_count;
+            priv.workspace_git_unstaged_counts.items[active_idx] = result.unstaged_count;
             self.upsertTerminalHistoryProject(active_idx);
         }
 
@@ -8067,6 +8143,8 @@ pub const Application = extern struct {
             const new_branch = result.branch;
             const old_dirty = priv.workspace_git_dirty.items[i];
             const new_dirty = result.dirty;
+            const old_staged = priv.workspace_git_staged_counts.items[i];
+            const old_unstaged = priv.workspace_git_unstaged_counts.items[i];
 
             const branch_changed = blk: {
                 if (old_branch == null and new_branch == null) break :blk false;
@@ -8074,13 +8152,19 @@ pub const Application = extern struct {
                 break :blk !std.mem.eql(u8, old_branch.?, new_branch.?);
             };
 
-            if (branch_changed or old_dirty != new_dirty) {
+            if (branch_changed or
+                old_dirty != new_dirty or
+                old_staged != result.staged_count or
+                old_unstaged != result.unstaged_count)
+            {
                 if (old_branch) |b| alloc.free(b);
                 priv.workspace_git_branches.items[i] = if (new_branch) |b|
                     alloc.dupeZ(u8, b) catch null
                 else
                     null;
                 priv.workspace_git_dirty.items[i] = new_dirty;
+                priv.workspace_git_staged_counts.items[i] = result.staged_count;
+                priv.workspace_git_unstaged_counts.items[i] = result.unstaged_count;
                 self.upsertTerminalHistoryProject(@intCast(i));
             }
         }
@@ -8125,6 +8209,8 @@ pub const Application = extern struct {
             else
                 null;
             priv.workspace_git_dirty.items[i] = result.dirty;
+            priv.workspace_git_staged_counts.items[i] = result.staged_count;
+            priv.workspace_git_unstaged_counts.items[i] = result.unstaged_count;
             self_ptr.upsertTerminalHistoryProject(@intCast(i));
         }
 
@@ -8193,17 +8279,25 @@ pub const Application = extern struct {
             const b = priv.git_branch orelse break :blk null;
             const label = std.fmt.bufPrintZ(
                 &branch_buf,
-                "{s}{s}",
-                .{ b, if (priv.git_dirty) "*" else "" },
+                "{s}",
+                .{b},
             ) catch break :blk null;
             break :blk label;
         };
 
         var dir_buf: [512]u8 = undefined;
         const dir_z: ?[:0]const u8 = self.formatDirDisplay(active_idx, &dir_buf);
+        const staged_count = if (active_idx < priv.workspace_git_staged_counts.items.len)
+            priv.workspace_git_staged_counts.items[active_idx]
+        else
+            0;
+        const unstaged_count = if (active_idx < priv.workspace_git_unstaged_counts.items.len)
+            priv.workspace_git_unstaged_counts.items[active_idx]
+        else
+            0;
 
         // Update the sidebar in every open window.
-        updateSidebarForAllWindows(self, active_idx, name, priv.listening_ports_str, branch_z, dir_z);
+        updateSidebarForAllWindows(self, active_idx, name, priv.listening_ports_str, branch_z, dir_z, staged_count, unstaged_count);
     }
 
     /// Push the current port state to the active workspace tab in the sidebar.
@@ -8224,15 +8318,23 @@ pub const Application = extern struct {
             const label = std.fmt.bufPrintZ(
                 &branch_buf,
                 "{s}{s}",
-                .{ b, if (dirty) "*" else "" },
+                .{ b, if (dirty and active_idx >= priv.workspace_git_staged_counts.items.len and active_idx >= priv.workspace_git_unstaged_counts.items.len) "*" else "" },
             ) catch break :blk null;
             break :blk label;
         };
 
         var dir_buf: [512]u8 = undefined;
         const dir_z: ?[:0]const u8 = self.formatDirDisplay(active_idx, &dir_buf);
+        const staged_count = if (active_idx < priv.workspace_git_staged_counts.items.len)
+            priv.workspace_git_staged_counts.items[active_idx]
+        else
+            0;
+        const unstaged_count = if (active_idx < priv.workspace_git_unstaged_counts.items.len)
+            priv.workspace_git_unstaged_counts.items[active_idx]
+        else
+            0;
 
-        updateSidebarForAllWindows(self, active_idx, name, priv.listening_ports_str, branch_z, dir_z);
+        updateSidebarForAllWindows(self, active_idx, name, priv.listening_ports_str, branch_z, dir_z, staged_count, unstaged_count);
     }
 
     /// Update the active workspace tab in the sidebar of every open window.
@@ -8243,6 +8345,8 @@ pub const Application = extern struct {
         port_text: ?[:0]const u8,
         branch_text: ?[:0]const u8,
         dir_text: ?[:0]const u8,
+        staged_count: u32,
+        unstaged_count: u32,
     ) void {
         const Ctx = struct {
             active_idx: u32,
@@ -8250,6 +8354,8 @@ pub const Application = extern struct {
             port_text: ?[:0]const u8,
             branch_text: ?[:0]const u8,
             dir_text: ?[:0]const u8,
+            staged_count: u32,
+            unstaged_count: u32,
             has_unread: bool,
         };
         var ctx = Ctx{
@@ -8258,6 +8364,8 @@ pub const Application = extern struct {
             .port_text = port_text,
             .branch_text = branch_text,
             .dir_text = dir_text,
+            .staged_count = staged_count,
+            .unstaged_count = unstaged_count,
             .has_unread = self.workspaceUnreadCount(active_idx) > 0,
         };
         const list = self.as(gtk.Application).getWindows();
@@ -8266,7 +8374,7 @@ pub const Application = extern struct {
                 const c: *Ctx = @ptrCast(@alignCast(userdata orelse return));
                 const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
                 const win = gobject.ext.cast(Window, ptr) orelse return;
-                win.getSidebar().updateWorkspace(c.active_idx, c.name, c.port_text, c.branch_text, c.dir_text, true, c.has_unread);
+                win.getSidebar().updateWorkspace(c.active_idx, c.name, c.port_text, c.branch_text, c.dir_text, true, c.has_unread, c.staged_count, c.unstaged_count);
             }
         }.cb, @ptrCast(&ctx));
     }
@@ -8298,10 +8406,18 @@ pub const Application = extern struct {
                 const label = std.fmt.bufPrintZ(
                     &branch_buf,
                     "{s}{s}",
-                    .{ b, if (dirty) "*" else "" },
+                    .{ b, if (dirty and i >= priv.workspace_git_staged_counts.items.len and i >= priv.workspace_git_unstaged_counts.items.len) "*" else "" },
                 ) catch break :blk null;
                 break :blk label;
             };
+            const staged_count: u32 = if (!is_orchestrator and i < priv.workspace_git_staged_counts.items.len)
+                priv.workspace_git_staged_counts.items[i]
+            else
+                0;
+            const unstaged_count: u32 = if (!is_orchestrator and i < priv.workspace_git_unstaged_counts.items.len)
+                priv.workspace_git_unstaged_counts.items[i]
+            else
+                0;
 
             // Dir text with ~ shorthand.
             var dir_buf: [512]u8 = undefined;
@@ -8318,6 +8434,8 @@ pub const Application = extern struct {
                 dir_val: ?[:0]const u8,
                 active: bool,
                 has_unread: bool,
+                staged_count: u32,
+                unstaged_count: u32,
             };
             var ctx = Ctx{
                 .idx = i,
@@ -8327,13 +8445,15 @@ pub const Application = extern struct {
                 .dir_val = dir_z,
                 .active = is_active,
                 .has_unread = self.workspaceUnreadCount(i) > 0,
+                .staged_count = staged_count,
+                .unstaged_count = unstaged_count,
             };
             list.foreach(struct {
                 fn cb(data: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
                     const c: *Ctx = @ptrCast(@alignCast(userdata orelse return));
                     const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
                     const win = gobject.ext.cast(Window, ptr) orelse return;
-                    win.getSidebar().updateWorkspace(c.idx, c.name_val, c.port_val, c.branch_val, c.dir_val, c.active, c.has_unread);
+                    win.getSidebar().updateWorkspace(c.idx, c.name_val, c.port_val, c.branch_val, c.dir_val, c.active, c.has_unread, c.staged_count, c.unstaged_count);
                 }
             }.cb, @ptrCast(&ctx));
         }

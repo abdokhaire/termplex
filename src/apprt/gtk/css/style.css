@@ -313,6 +313,25 @@ label.resize-overlay {
   font-weight: 700;
 }
 
+.termplex-git-count-badge {
+  border-radius: 2px;
+  padding: 0px 4px;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.termplex-git-staged-badge {
+  color: #4ade80;
+  background-color: rgba(74, 222, 128, 0.10);
+  border: 1px solid rgba(74, 222, 128, 0.24);
+}
+
+.termplex-git-unstaged-badge {
+  color: #facc15;
+  background-color: rgba(250, 204, 21, 0.10);
+  border: 1px solid rgba(250, 204, 21, 0.24);
+}
+
 .termplex-tab-dir {
   color: #7a8ba3;
   font-size: 10px;
@@ -337,6 +356,11 @@ label.resize-overlay {
 .termplex-tab-action:hover {
   color: #e2e8f0;
   background-color: rgba(148, 163, 184, 0.12);
+}
+
+.termplex-tab-action-source-control:hover {
+  color: #38bdf8;
+  background-color: rgba(56, 189, 248, 0.10);
 }
 
 .termplex-tab-action-delete:hover {

@@ -384,6 +384,8 @@ pub const Window = extern struct {
                         active_dir,
                         true,
                         false,
+                        0,
+                        0,
                     );
                 }
                 // Tell the sidebar which workspace is the orchestrator so it can
@@ -404,6 +406,7 @@ pub const Window = extern struct {
                 &termplexOnRenameWorkspace,
                 &termplexOnDeleteWorkspace,
                 &termplexOnChangeDirWorkspace,
+                &termplexOnSourceControlWorkspace,
             );
 
             // 2. Create a horizontal Gtk.Paned to hold sidebar + content.
@@ -1840,6 +1843,17 @@ pub const Window = extern struct {
         const child_widget = row.getChild() orelse return;
         const tab: *WorkspaceTab = @ptrCast(@alignCast(child_widget));
         tab.startChangeDir(index, &termplexOnChangeDirComplete, userdata);
+    }
+
+    fn termplexOnSourceControlWorkspace(index: u32, userdata: ?*anyopaque) void {
+        const win: *Self = @ptrCast(@alignCast(userdata orelse return));
+        const app = Application.default();
+
+        if (index != app.activeWorkspaceIndex()) {
+            win.performWorkspaceSwitch(index);
+        }
+
+        win.toggleSourceControl();
     }
 
     fn termplexOnChangeDirComplete(index: u32, new_dir: [:0]const u8, userdata: ?*anyopaque) void {
