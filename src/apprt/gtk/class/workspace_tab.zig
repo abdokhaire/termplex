@@ -7,6 +7,25 @@ const Common = @import("../class.zig").Common;
 
 const log = std.log.scoped(.gtk_termplex_workspace_tab);
 
+const BranchStatus = struct {
+    branch: []const u8,
+    dirty: bool,
+};
+
+fn parseBranchStatus(text: []const u8) BranchStatus {
+    if (text.len > 0 and text[text.len - 1] == '*') {
+        return .{
+            .branch = text[0 .. text.len - 1],
+            .dirty = true,
+        };
+    }
+
+    return .{
+        .branch = text,
+        .dirty = false,
+    };
+}
+
 /// A compact two-line widget displayed in the workspace sidebar's ListBox.
 ///
 /// Layout:
@@ -65,6 +84,9 @@ pub const WorkspaceTab = extern struct {
 
         /// Label showing "⎇ <branch>" (cyan, smaller font).
         branch_label: *gtk.Label = undefined,
+
+        /// Badge shown when the workspace has dirty git changes.
+        git_dirty_badge: *gtk.Label = undefined,
 
         /// Inline rename state.
         rename_entry: ?*gtk.Entry = null,
@@ -228,8 +250,15 @@ pub const WorkspaceTab = extern struct {
         const branch_label = gtk.Label.new(null);
         branch_label.setXalign(0.0);
         branch_label.as(gtk.Widget).addCssClass("termplex-tab-branch");
+        branch_label.as(gtk.Widget).setHexpand(1);
         priv.branch_label = branch_label;
         row3.append(branch_label.as(gtk.Widget));
+
+        const git_dirty_badge = gtk.Label.new("dirty");
+        git_dirty_badge.as(gtk.Widget).addCssClass("termplex-git-dirty-badge");
+        git_dirty_badge.as(gtk.Widget).setVisible(0);
+        priv.git_dirty_badge = git_dirty_badge;
+        row3.append(git_dirty_badge.as(gtk.Widget));
 
         // -- Port detail box (hidden by default, shown when "+N" badge clicked) --
         const port_detail_box = gtk.Box.new(.vertical, 1);
@@ -401,11 +430,22 @@ pub const WorkspaceTab = extern struct {
         }
 
         if (branch_text) |b| {
-            priv.branch_label.setLabel(b);
-            priv.branch_label.as(gtk.Widget).setVisible(1);
+            const status = parseBranchStatus(b);
+            if (status.branch.len > 0) {
+                var branch_buf: [256]u8 = undefined;
+                const branch_label = std.fmt.bufPrintZ(&branch_buf, "{s}", .{status.branch}) catch b;
+                priv.branch_label.setLabel(branch_label);
+                priv.branch_label.as(gtk.Widget).setVisible(1);
+                priv.git_dirty_badge.as(gtk.Widget).setVisible(@intFromBool(status.dirty));
+            } else {
+                priv.branch_label.setLabel("");
+                priv.branch_label.as(gtk.Widget).setVisible(0);
+                priv.git_dirty_badge.as(gtk.Widget).setVisible(0);
+            }
         } else {
             priv.branch_label.setLabel("");
             priv.branch_label.as(gtk.Widget).setVisible(0);
+            priv.git_dirty_badge.as(gtk.Widget).setVisible(0);
         }
 
         // Update directory label. Preserve existing text when null.
@@ -680,3 +720,17 @@ pub const WorkspaceTab = extern struct {
         pub const as = C.Class.as;
     };
 };
+
+test "workspace tab parses sidebar branch dirty marker" {
+    const clean = parseBranchStatus("main");
+    try std.testing.expectEqualStrings("main", clean.branch);
+    try std.testing.expectEqual(false, clean.dirty);
+
+    const dirty = parseBranchStatus("feature/sidebar*");
+    try std.testing.expectEqualStrings("feature/sidebar", dirty.branch);
+    try std.testing.expectEqual(true, dirty.dirty);
+
+    const empty = parseBranchStatus("");
+    try std.testing.expectEqualStrings("", empty.branch);
+    try std.testing.expectEqual(false, empty.dirty);
+}

@@ -303,6 +303,16 @@ label.resize-overlay {
   font-weight: 600;
 }
 
+.termplex-git-dirty-badge {
+  color: #facc15;
+  background-color: rgba(250, 204, 21, 0.10);
+  border: 1px solid rgba(250, 204, 21, 0.24);
+  border-radius: 2px;
+  padding: 0px 4px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
 .termplex-tab-dir {
   color: #7a8ba3;
   font-size: 10px;
