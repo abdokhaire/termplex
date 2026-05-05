@@ -1245,7 +1245,7 @@ pub const Application = extern struct {
                 alloc.destroy(ctx);
                 return;
             },
-            .attempts_left = 5,
+            .attempts_left = 20,
         };
         _ = glib.timeoutAdd(500, deferredTerminalHistoryProjectDelete, ctx);
     }
@@ -1298,7 +1298,7 @@ pub const Application = extern struct {
 
         return std.fmt.allocPrint(
             alloc,
-            "Total: {s}\nTranscripts: {s} ({d} files)\nSQLite: {s}\nProjects: {d}  Surfaces: {d}  Commands: {d}\nBase: {s}\nDatabase: {s}",
+            "Total: {s}\nTranscripts: {s} ({d} files)\nSQLite: {s}\nProjects: {d}  Surfaces: {d}  Commands: {d}  Tasks: {d}\nBase: {s}\nDatabase: {s}",
             .{
                 total,
                 transcripts,
@@ -1307,6 +1307,7 @@ pub const Application = extern struct {
                 counts.project_count,
                 counts.surface_count,
                 counts.command_count,
+                counts.task_count,
                 usage.base_path,
                 usage.db_path,
             },
@@ -1344,10 +1345,10 @@ pub const Application = extern struct {
         if (priv.terminal_history_db) |*db| {
             return db.rowCounts() catch |err| {
                 log.warn("failed to count terminal history rows: {}", .{err});
-                return .{ .project_count = 0, .surface_count = 0, .command_count = 0 };
+                return .{ .project_count = 0, .surface_count = 0, .command_count = 0, .task_count = 0 };
             };
         }
-        return .{ .project_count = 0, .surface_count = 0, .command_count = 0 };
+        return .{ .project_count = 0, .surface_count = 0, .command_count = 0, .task_count = 0 };
     }
 
     pub const DashboardWorkspace = struct {
@@ -1379,6 +1380,7 @@ pub const Application = extern struct {
         project_count: u64,
         surface_count: u64,
         command_count: u64,
+        task_count: u64,
 
         pub fn deinit(self: DashboardStorage, alloc: std.mem.Allocator) void {
             alloc.free(self.restore_mode);
@@ -1399,12 +1401,14 @@ pub const Application = extern struct {
     pub const DashboardStatus = struct {
         workspace: DashboardWorkspace,
         recent_commands: terminal_history_db.CommandList,
+        tasks: terminal_history_db.TaskList,
         git: DashboardGit,
         storage: DashboardStorage,
 
         pub fn deinit(self: DashboardStatus, alloc: std.mem.Allocator) void {
             self.workspace.deinit(alloc);
             self.recent_commands.deinit(std.heap.c_allocator);
+            self.tasks.deinit(std.heap.c_allocator);
             self.git.deinit(alloc);
             self.storage.deinit(alloc);
         }
@@ -1481,6 +1485,7 @@ pub const Application = extern struct {
             .project_count = counts.project_count,
             .surface_count = counts.surface_count,
             .command_count = counts.command_count,
+            .task_count = counts.task_count,
         };
     }
 
@@ -1512,6 +1517,10 @@ pub const Application = extern struct {
         });
         errdefer recent_commands.deinit(std.heap.c_allocator);
 
+        const db = if (self.private().terminal_history_db) |*database| database else return error.HistoryUnavailable;
+        const tasks = try db.listTasks(workspace.id, 25);
+        errdefer tasks.deinit(std.heap.c_allocator);
+
         var git = try self.dashboardGit(alloc, workspace_idx);
         errdefer git.deinit(alloc);
 
@@ -1521,6 +1530,7 @@ pub const Application = extern struct {
         return .{
             .workspace = workspace,
             .recent_commands = recent_commands,
+            .tasks = tasks,
             .git = git,
             .storage = storage,
         };
@@ -2071,7 +2081,14 @@ pub const Application = extern struct {
             if (index == orch_idx) return;
         }
 
-        self.deleteTerminalHistoryProject(index);
+        const workspace_id = self.workspaceIdString(alloc, index) catch null;
+        defer if (workspace_id) |id| alloc.free(id);
+        if (workspace_id) |id| {
+            self.deleteTerminalHistoryProjectById(id);
+            self.scheduleTerminalHistoryProjectDelete(id);
+        } else {
+            self.deleteTerminalHistoryProject(index);
+        }
 
         // Get the TabView before removing from the array.
         const tab_view = priv.workspace_tab_views.items[index];
@@ -2983,6 +3000,22 @@ pub const Application = extern struct {
 
         if (std.mem.eql(u8, method, "dashboard.show")) {
             return self.ipcDashboardShow(alloc, id);
+        }
+
+        if (std.mem.eql(u8, method, "task.list")) {
+            return self.ipcTaskList(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "task.add")) {
+            return self.ipcTaskAdd(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "task.delete")) {
+            return self.ipcTaskDelete(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "task.run")) {
+            return self.ipcTaskRun(alloc, id, root.object);
         }
 
         if (std.mem.eql(u8, method, "history.search")) {
@@ -3945,6 +3978,8 @@ pub const Application = extern struct {
         try appendJsonInt(buf, alloc, storage.surface_count);
         try buf.appendSlice(alloc, ",\"command_count\":");
         try appendJsonInt(buf, alloc, storage.command_count);
+        try buf.appendSlice(alloc, ",\"task_count\":");
+        try appendJsonInt(buf, alloc, storage.task_count);
         try buf.append(alloc, '}');
     }
 
@@ -3959,6 +3994,11 @@ pub const Application = extern struct {
         for (status.recent_commands.items, 0..) |item, index| {
             if (index > 0) try buf.append(alloc, ',');
             try appendCommandRecordJson(buf, alloc, item);
+        }
+        try buf.appendSlice(alloc, "],\"tasks\":[");
+        for (status.tasks.items, 0..) |item, index| {
+            if (index > 0) try buf.append(alloc, ',');
+            try appendTaskRecordJson(buf, alloc, item);
         }
         try buf.appendSlice(alloc, "],\"git\":");
         try appendDashboardGitJson(buf, alloc, status.git);
@@ -3993,6 +4033,32 @@ pub const Application = extern struct {
         try buf.appendSlice(alloc, ",\"source\":");
         try appendJsonString(buf, alloc, item.source);
         try buf.appendSlice(alloc, "}");
+    }
+
+    fn appendTaskRecordJson(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        item: terminal_history_db.TaskRecord,
+    ) !void {
+        try buf.appendSlice(alloc, "{\"id\":");
+        try appendJsonInt(buf, alloc, item.id);
+        try buf.appendSlice(alloc, ",\"workspace_id\":");
+        try appendJsonString(buf, alloc, item.workspace_id);
+        try buf.appendSlice(alloc, ",\"name\":");
+        try appendJsonString(buf, alloc, item.name);
+        try buf.appendSlice(alloc, ",\"command\":");
+        try appendJsonString(buf, alloc, item.command);
+        try buf.appendSlice(alloc, ",\"working_directory\":");
+        try appendOptionalJsonString(buf, alloc, item.working_directory);
+        try buf.appendSlice(alloc, ",\"created_at\":");
+        try appendJsonString(buf, alloc, item.created_at);
+        try buf.appendSlice(alloc, ",\"updated_at\":");
+        try appendJsonString(buf, alloc, item.updated_at);
+        try buf.appendSlice(alloc, ",\"last_run_at\":");
+        try appendOptionalJsonString(buf, alloc, item.last_run_at);
+        try buf.appendSlice(alloc, ",\"run_count\":");
+        try appendJsonInt(buf, alloc, item.run_count);
+        try buf.append(alloc, '}');
     }
 
     fn dashboardParams(obj: std.json.ObjectMap) std.json.ObjectMap {
@@ -4057,6 +4123,299 @@ pub const Application = extern struct {
             }
         }
         return ipcDashboardError(alloc, id, "no_window", "no active window");
+    }
+
+    fn taskParams(obj: std.json.ObjectMap) std.json.ObjectMap {
+        const params_val = obj.get("params") orelse .null;
+        return if (params_val == .object) params_val.object else obj;
+    }
+
+    fn ipcTaskError(alloc: std.mem.Allocator, id: i64, code: []const u8, message: []const u8) ?[]u8 {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"ok\":false,\"error\":{\"code\":") catch return null;
+        appendJsonString(&buf, alloc, code) catch return null;
+        buf.appendSlice(alloc, ",\"message\":") catch return null;
+        appendJsonString(&buf, alloc, message) catch return null;
+        buf.appendSlice(alloc, "},\"id\":") catch return null;
+        appendJsonInt(&buf, alloc, id) catch return null;
+        buf.append(alloc, '}') catch return null;
+        return buf.toOwnedSlice(alloc) catch null;
+    }
+
+    fn taskWorkspaceId(self: *Self, alloc: std.mem.Allocator, params: std.json.ObjectMap) !struct {
+        index: u32,
+        id: []u8,
+    } {
+        const workspace_idx = self.resolveWorkspaceIdx(params) orelse return error.NotFound;
+        return .{
+            .index = workspace_idx,
+            .id = try self.workspaceIdString(alloc, workspace_idx),
+        };
+    }
+
+    fn taskDatabase(self: *Self) !*terminal_history_db.Database {
+        const priv = self.private();
+        if (priv.terminal_history_db) |*db| return db;
+        return error.TaskUnavailable;
+    }
+
+    fn ipcTaskList(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = taskParams(obj);
+        const workspace = self.taskWorkspaceId(alloc, params) catch |err| switch (err) {
+            error.NotFound => return ipcTaskError(alloc, id, "not_found", "workspace not found"),
+            else => return ipcTaskError(alloc, id, "task_failed", "failed to resolve workspace"),
+        };
+        defer alloc.free(workspace.id);
+
+        const db = self.taskDatabase() catch {
+            return ipcTaskError(alloc, id, "task_unavailable", "task storage is unavailable");
+        };
+
+        const limit = jsonLimitParam(params, "limit", 50, 200);
+        const tasks = db.listTasks(workspace.id, limit) catch |err| {
+            log.warn("failed to list workspace tasks: {}", .{err});
+            return ipcTaskError(alloc, id, "task_list_failed", "failed to list tasks");
+        };
+        defer tasks.deinit(std.heap.c_allocator);
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"workspace\":") catch return null;
+        appendJsonInt(&buf, alloc, workspace.index) catch return null;
+        buf.appendSlice(alloc, ",\"workspace_id\":") catch return null;
+        appendJsonString(&buf, alloc, workspace.id) catch return null;
+        buf.appendSlice(alloc, ",\"items\":[") catch return null;
+        for (tasks.items, 0..) |item, index| {
+            if (index > 0) buf.append(alloc, ',') catch return null;
+            appendTaskRecordJson(&buf, alloc, item) catch return null;
+        }
+        buf.appendSlice(alloc, "]}") catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcTaskAdd(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = taskParams(obj);
+        const name = jsonStringParam(params, "name") orelse {
+            return ipcTaskError(alloc, id, "missing_param", "name is required");
+        };
+        const command = jsonStringParam(params, "command") orelse {
+            return ipcTaskError(alloc, id, "missing_param", "command is required");
+        };
+        const workspace = self.taskWorkspaceId(alloc, params) catch |err| switch (err) {
+            error.NotFound => return ipcTaskError(alloc, id, "not_found", "workspace not found"),
+            else => return ipcTaskError(alloc, id, "task_failed", "failed to resolve workspace"),
+        };
+        defer alloc.free(workspace.id);
+
+        const db = self.taskDatabase() catch {
+            return ipcTaskError(alloc, id, "task_unavailable", "task storage is unavailable");
+        };
+
+        self.upsertTerminalHistoryProject(workspace.index);
+
+        const timestamp = self.terminalHistoryTimestamp(alloc) orelse {
+            return ipcTaskError(alloc, id, "task_failed", "failed to create task timestamp");
+        };
+        defer alloc.free(timestamp);
+
+        db.upsertTask(.{
+            .workspace_id = workspace.id,
+            .name = name,
+            .command = command,
+            .working_directory = jsonStringParam(params, "dir") orelse jsonStringParam(params, "working_directory"),
+            .timestamp = timestamp,
+        }) catch |err| {
+            log.warn("failed to upsert workspace task: {}", .{err});
+            return ipcTaskError(alloc, id, "task_add_failed", "failed to save task");
+        };
+        db.commitIfNeeded() catch |err| {
+            log.warn("failed to commit workspace task: {}", .{err});
+        };
+
+        var task = db.getTask(workspace.id, name) catch |err| {
+            log.warn("failed to reload workspace task: {}", .{err});
+            return ipcTaskError(alloc, id, "task_add_failed", "failed to load saved task");
+        };
+        defer task.deinit(std.heap.c_allocator);
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        appendTaskRecordJson(&buf, alloc, task) catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcTaskDelete(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = taskParams(obj);
+        const name = jsonStringParam(params, "name") orelse {
+            return ipcTaskError(alloc, id, "missing_param", "name is required");
+        };
+        const workspace = self.taskWorkspaceId(alloc, params) catch |err| switch (err) {
+            error.NotFound => return ipcTaskError(alloc, id, "not_found", "workspace not found"),
+            else => return ipcTaskError(alloc, id, "task_failed", "failed to resolve workspace"),
+        };
+        defer alloc.free(workspace.id);
+
+        const db = self.taskDatabase() catch {
+            return ipcTaskError(alloc, id, "task_unavailable", "task storage is unavailable");
+        };
+
+        var task = db.getTask(workspace.id, name) catch |err| switch (err) {
+            error.NotFound => return ipcTaskError(alloc, id, "not_found", "task not found"),
+            else => {
+                log.warn("failed to load workspace task for deletion: {}", .{err});
+                return ipcTaskError(alloc, id, "task_delete_failed", "failed to load task");
+            },
+        };
+        task.deinit(std.heap.c_allocator);
+
+        db.deleteTask(workspace.id, name) catch |err| {
+            log.warn("failed to delete workspace task: {}", .{err});
+            return ipcTaskError(alloc, id, "task_delete_failed", "failed to delete task");
+        };
+        db.commitIfNeeded() catch |err| {
+            log.warn("failed to commit workspace task deletion: {}", .{err});
+        };
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"deleted\":true,\"workspace\":") catch return null;
+        appendJsonInt(&buf, alloc, workspace.index) catch return null;
+        buf.appendSlice(alloc, ",\"name\":") catch return null;
+        appendJsonString(&buf, alloc, name) catch return null;
+        buf.append(alloc, '}') catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn writeTaskCommandToSurface(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        surface_target: ResolvedSurfaceTarget,
+        command: []const u8,
+    ) !void {
+        _ = self;
+        const command_line = try std.fmt.allocPrint(alloc, "{s}\n", .{command});
+        defer alloc.free(command_line);
+
+        surface_target.surface.ensureInitializedFromAllocation("ipc-task-run");
+        const core_surface = surface_target.surface.core() orelse return error.NotFound;
+        const msg = try termio.Message.writeReq(core_surface.alloc, command_line);
+        core_surface.io.queueMessage(msg, .unlocked);
+    }
+
+    fn focusTaskSurface(self: *Self, surface_target: ResolvedSurfaceTarget) !void {
+        const active_win = self.as(gtk.Application).getActiveWindow() orelse return error.NoWindow;
+        const win = gobject.ext.cast(Window, active_win) orelse return error.NoWindow;
+
+        if (surface_target.workspace_idx != self.private().active_workspace_idx) {
+            self.setActiveWorkspaceIndex(surface_target.workspace_idx);
+            self.markWorkspaceNotificationsRead(surface_target.workspace_idx);
+            self.refreshAllWorkspaceSidebars();
+            self.syncActiveWorkspaceHeaders();
+            if (self.workspaceTabView(surface_target.workspace_idx)) |target_view| {
+                win.switchToTabView(target_view);
+            }
+        }
+
+        const tab_view = self.workspaceTabView(surface_target.workspace_idx) orelse return error.NotFound;
+        tab_view.setSelectedPage(surface_target.page);
+        surface_target.tab.getSplitTree().setLastFocusedSurface(surface_target.surface);
+        surface_target.surface.grabFocus();
+    }
+
+    fn ipcTaskRun(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = taskParams(obj);
+        const name = jsonStringParam(params, "name") orelse {
+            return ipcTaskError(alloc, id, "missing_param", "name is required");
+        };
+        const workspace = self.taskWorkspaceId(alloc, params) catch |err| switch (err) {
+            error.NotFound => return ipcTaskError(alloc, id, "not_found", "workspace not found"),
+            else => return ipcTaskError(alloc, id, "task_failed", "failed to resolve workspace"),
+        };
+        defer alloc.free(workspace.id);
+
+        const db = self.taskDatabase() catch {
+            return ipcTaskError(alloc, id, "task_unavailable", "task storage is unavailable");
+        };
+
+        var task = db.getTask(workspace.id, name) catch |err| switch (err) {
+            error.NotFound => return ipcTaskError(alloc, id, "not_found", "task not found"),
+            else => {
+                log.warn("failed to load workspace task for run: {}", .{err});
+                return ipcTaskError(alloc, id, "task_run_failed", "failed to load task");
+            },
+        };
+        defer task.deinit(std.heap.c_allocator);
+
+        const surface_ref = self.resolveSurfaceRef(params, true) orelse {
+            return ipcTaskError(alloc, id, "not_found", "surface not found");
+        };
+        if (surface_ref.workspace_idx != workspace.index) {
+            return ipcTaskError(alloc, id, "invalid_params", "surface workspace does not match task workspace");
+        }
+        const surface_target = self.resolveSurfaceTarget(surface_ref) orelse {
+            return ipcTaskError(alloc, id, "not_found", "surface not found");
+        };
+
+        self.focusTaskSurface(surface_target) catch |err| switch (err) {
+            error.NoWindow => return ipcTaskError(alloc, id, "no_window", "no active window"),
+            else => return ipcTaskError(alloc, id, "not_found", "surface not found"),
+        };
+
+        self.writeTaskCommandToSurface(alloc, surface_target, task.command) catch |err| {
+            log.warn("failed to write workspace task command: {}", .{err});
+            return ipcTaskError(alloc, id, "task_run_failed", "failed to send task command");
+        };
+
+        const timestamp = self.terminalHistoryTimestamp(alloc) orelse {
+            return ipcTaskError(alloc, id, "task_run_failed", "failed to create task timestamp");
+        };
+        defer alloc.free(timestamp);
+        db.markTaskRun(workspace.id, name, timestamp) catch |err| {
+            log.warn("failed to mark workspace task run: {}", .{err});
+        };
+        db.commitIfNeeded() catch |err| {
+            log.warn("failed to commit workspace task run: {}", .{err});
+        };
+
+        var updated_task = db.getTask(workspace.id, name) catch |err| {
+            log.warn("failed to reload workspace task after run: {}", .{err});
+            return ipcTaskError(alloc, id, "task_run_failed", "failed to load task after run");
+        };
+        defer updated_task.deinit(std.heap.c_allocator);
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"ran\":true,\"workspace\":") catch return null;
+        appendJsonInt(&buf, alloc, surface_target.workspace_idx) catch return null;
+        buf.appendSlice(alloc, ",\"tab\":") catch return null;
+        appendJsonInt(&buf, alloc, surface_target.tab_idx) catch return null;
+        buf.appendSlice(alloc, ",\"surface\":") catch return null;
+        appendJsonInt(&buf, alloc, surface_target.surface_idx) catch return null;
+        buf.appendSlice(alloc, ",\"task\":") catch return null;
+        appendTaskRecordJson(&buf, alloc, updated_task) catch return null;
+        buf.append(alloc, '}') catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
     }
 
     fn ipcHistorySearch(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
@@ -4437,6 +4796,8 @@ pub const Application = extern struct {
         try appendJsonInt(buf, alloc, counts.surface_count);
         try buf.appendSlice(alloc, ",\"command_count\":");
         try appendJsonInt(buf, alloc, counts.command_count);
+        try buf.appendSlice(alloc, ",\"task_count\":");
+        try appendJsonInt(buf, alloc, counts.task_count);
         try buf.append(alloc, '}');
     }
 

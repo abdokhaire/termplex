@@ -180,10 +180,50 @@ pub const CommandList = struct {
     }
 };
 
+pub const TaskUpsert = struct {
+    workspace_id: []const u8,
+    name: []const u8,
+    command: []const u8,
+    working_directory: ?[]const u8 = null,
+    timestamp: []const u8,
+};
+
+pub const TaskRecord = struct {
+    id: i64,
+    workspace_id: []const u8,
+    name: []const u8,
+    command: []const u8,
+    working_directory: ?[]const u8,
+    created_at: []const u8,
+    updated_at: []const u8,
+    last_run_at: ?[]const u8,
+    run_count: u64,
+
+    pub fn deinit(self: *TaskRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.workspace_id);
+        allocator.free(self.name);
+        allocator.free(self.command);
+        if (self.working_directory) |value| allocator.free(value);
+        allocator.free(self.created_at);
+        allocator.free(self.updated_at);
+        if (self.last_run_at) |value| allocator.free(value);
+    }
+};
+
+pub const TaskList = struct {
+    items: []TaskRecord,
+
+    pub fn deinit(self: TaskList, allocator: std.mem.Allocator) void {
+        for (self.items) |*item| item.deinit(allocator);
+        allocator.free(self.items);
+    }
+};
+
 pub const RowCounts = struct {
     project_count: u64,
     surface_count: u64,
     command_count: u64,
+    task_count: u64,
 };
 
 pub const RecentQuery = struct {
@@ -312,6 +352,19 @@ pub const Database = struct {
             \\  created_at TEXT NOT NULL,
             \\  updated_at TEXT NOT NULL
             \\);
+            \\CREATE TABLE IF NOT EXISTS workspace_tasks (
+            \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\  workspace_id TEXT NOT NULL,
+            \\  name TEXT NOT NULL,
+            \\  command TEXT NOT NULL,
+            \\  working_directory TEXT,
+            \\  created_at TEXT NOT NULL,
+            \\  updated_at TEXT NOT NULL,
+            \\  last_run_at TEXT,
+            \\  run_count INTEGER NOT NULL DEFAULT 0,
+            \\  UNIQUE(workspace_id, name),
+            \\  FOREIGN KEY(workspace_id) REFERENCES terminal_projects(workspace_id)
+            \\);
             \\CREATE INDEX IF NOT EXISTS idx_command_history_started_at
             \\  ON command_history(started_at DESC);
             \\CREATE INDEX IF NOT EXISTS idx_command_history_workspace_started
@@ -322,8 +375,12 @@ pub const Database = struct {
             \\  ON terminal_projects(workspace_dir);
             \\CREATE INDEX IF NOT EXISTS idx_terminal_surfaces_workspace
             \\  ON terminal_surfaces(workspace_id, updated_at DESC);
+            \\CREATE INDEX IF NOT EXISTS idx_workspace_tasks_workspace_updated
+            \\  ON workspace_tasks(workspace_id, updated_at DESC);
             \\INSERT OR IGNORE INTO schema_migrations(version, applied_at)
             \\VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+            \\INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+            \\VALUES (2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
         );
     }
 
@@ -572,6 +629,89 @@ pub const Database = struct {
         try stmt.stepDone();
     }
 
+    pub fn upsertTask(self: *Database, input: TaskUpsert) !void {
+        var stmt = try self.prepare(
+            \\INSERT INTO workspace_tasks (
+            \\  workspace_id, name, command, working_directory, created_at, updated_at
+            \\) VALUES (?, ?, ?, ?, ?, ?)
+            \\ON CONFLICT(workspace_id, name) DO UPDATE SET
+            \\  command = excluded.command,
+            \\  working_directory = excluded.working_directory,
+            \\  updated_at = excluded.updated_at
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, input.workspace_id);
+        try stmt.bindText(2, input.name);
+        try stmt.bindText(3, input.command);
+        try stmt.bindOptionalText(4, input.working_directory);
+        try stmt.bindText(5, input.timestamp);
+        try stmt.bindText(6, input.timestamp);
+        try stmt.stepDone();
+    }
+
+    pub fn listTasks(self: *Database, workspace_id: []const u8, limit: u32) !TaskList {
+        var stmt = try self.prepare(
+            \\SELECT id, workspace_id, name, command, working_directory,
+            \\       created_at, updated_at, last_run_at, run_count
+            \\FROM workspace_tasks
+            \\WHERE workspace_id = ?
+            \\ORDER BY updated_at DESC, id DESC
+            \\LIMIT ?2
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, workspace_id);
+        try stmt.bindInt64(2, @max(limit, 1));
+
+        var items: std.ArrayListUnmanaged(TaskRecord) = .empty;
+        errdefer {
+            for (items.items) |*item| item.deinit(self.allocator);
+            items.deinit(self.allocator);
+        }
+        while (try stmt.stepRow()) {
+            try items.append(self.allocator, try stmt.readTaskRecord());
+        }
+        return .{ .items = try items.toOwnedSlice(self.allocator) };
+    }
+
+    pub fn getTask(self: *Database, workspace_id: []const u8, name: []const u8) !TaskRecord {
+        var stmt = try self.prepare(
+            \\SELECT id, workspace_id, name, command, working_directory,
+            \\       created_at, updated_at, last_run_at, run_count
+            \\FROM workspace_tasks
+            \\WHERE workspace_id = ? AND name = ?
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, workspace_id);
+        try stmt.bindText(2, name);
+        if (!try stmt.stepRow()) return error.NotFound;
+        return try stmt.readTaskRecord();
+    }
+
+    pub fn markTaskRun(self: *Database, workspace_id: []const u8, name: []const u8, timestamp: []const u8) !void {
+        var stmt = try self.prepare(
+            \\UPDATE workspace_tasks
+            \\SET last_run_at = ?, run_count = run_count + 1, updated_at = ?
+            \\WHERE workspace_id = ? AND name = ?
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, timestamp);
+        try stmt.bindText(2, timestamp);
+        try stmt.bindText(3, workspace_id);
+        try stmt.bindText(4, name);
+        try stmt.stepDone();
+    }
+
+    pub fn deleteTask(self: *Database, workspace_id: []const u8, name: []const u8) !void {
+        var stmt = try self.prepare(
+            \\DELETE FROM workspace_tasks
+            \\WHERE workspace_id = ? AND name = ?
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, workspace_id);
+        try stmt.bindText(2, name);
+        try stmt.stepDone();
+    }
+
     pub fn deleteSurface(self: *Database, history_id: []const u8) !void {
         var delete_commands = try self.prepare(
             \\DELETE FROM command_history
@@ -607,6 +747,14 @@ pub const Database = struct {
         try delete_surfaces.bindText(1, workspace_id);
         try delete_surfaces.stepDone();
 
+        var delete_tasks = try self.prepare(
+            \\DELETE FROM workspace_tasks
+            \\WHERE workspace_id = ?
+        );
+        defer delete_tasks.deinit();
+        try delete_tasks.bindText(1, workspace_id);
+        try delete_tasks.stepDone();
+
         var mark_project = try self.prepare(
             \\UPDATE terminal_projects
             \\SET deleted_at = ?, updated_at = ?
@@ -638,6 +786,9 @@ pub const Database = struct {
             ),
             .command_count = try self.countScalar(
                 \\SELECT count(*) FROM command_history
+            ),
+            .task_count = try self.countScalar(
+                \\SELECT count(*) FROM workspace_tasks
             ),
         };
     }
@@ -749,6 +900,20 @@ const Statement = struct {
             .ended_at = try self.readOptionalTextAlloc(7),
             .exit_code = self.readOptionalInt(8),
             .source = try self.readTextAlloc(9),
+        };
+    }
+
+    fn readTaskRecord(self: *Statement) !TaskRecord {
+        return .{
+            .id = self.sqlite.column_int64(self.stmt, 0),
+            .workspace_id = try self.readTextAlloc(1),
+            .name = try self.readTextAlloc(2),
+            .command = try self.readTextAlloc(3),
+            .working_directory = try self.readOptionalTextAlloc(4),
+            .created_at = try self.readTextAlloc(5),
+            .updated_at = try self.readTextAlloc(6),
+            .last_run_at = try self.readOptionalTextAlloc(7),
+            .run_count = @intCast(self.sqlite.column_int64(self.stmt, 8)),
         };
     }
 };
@@ -1085,6 +1250,72 @@ test "terminal history db reports active project surface and command counts" {
     try std.testing.expectEqual(@as(u64, 1), counts.project_count);
     try std.testing.expectEqual(@as(u64, 1), counts.surface_count);
     try std.testing.expectEqual(@as(u64, 1), counts.command_count);
+    try std.testing.expectEqual(@as(u64, 0), counts.task_count);
+}
+
+test "terminal history db persists workspace task shortcuts" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    try db.upsertProject(.{
+        .workspace_id = "workspace-tasks",
+        .workspace_name = "tasks",
+        .workspace_dir = "/repo/tasks",
+        .timestamp = "2026-05-05T10:00:00Z",
+    });
+    try db.upsertTask(.{
+        .workspace_id = "workspace-tasks",
+        .name = "test",
+        .command = "zig build test",
+        .working_directory = "/repo/tasks",
+        .timestamp = "2026-05-05T10:00:01Z",
+    });
+    try db.upsertTask(.{
+        .workspace_id = "workspace-tasks",
+        .name = "lint",
+        .command = "zig fmt --check .",
+        .working_directory = null,
+        .timestamp = "2026-05-05T10:00:02Z",
+    });
+
+    const tasks = try db.listTasks("workspace-tasks", 10);
+    defer tasks.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), tasks.items.len);
+    try std.testing.expectEqualStrings("lint", tasks.items[0].name);
+    try std.testing.expectEqualStrings("test", tasks.items[1].name);
+
+    var task = try db.getTask("workspace-tasks", "test");
+    defer task.deinit(allocator);
+    try std.testing.expectEqualStrings("zig build test", task.command);
+    try std.testing.expectEqualStrings("/repo/tasks", task.working_directory.?);
+    try std.testing.expectEqual(@as(u64, 0), task.run_count);
+    try std.testing.expectEqual(@as(?[]const u8, null), task.last_run_at);
+
+    try db.markTaskRun("workspace-tasks", "test", "2026-05-05T10:00:03Z");
+
+    var run_task = try db.getTask("workspace-tasks", "test");
+    defer run_task.deinit(allocator);
+    try std.testing.expectEqual(@as(u64, 1), run_task.run_count);
+    try std.testing.expectEqualStrings("2026-05-05T10:00:03Z", run_task.last_run_at.?);
+
+    try db.deleteTask("workspace-tasks", "lint");
+    const remaining = try db.listTasks("workspace-tasks", 10);
+    defer remaining.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), remaining.items.len);
+    try std.testing.expectEqualStrings("test", remaining.items[0].name);
+
+    const counts = try db.rowCounts();
+    try std.testing.expectEqual(@as(u64, 1), counts.task_count);
 }
 
 test "terminal history db deletes project metadata surfaces and commands" {
@@ -1125,6 +1356,12 @@ test "terminal history db deletes project metadata surfaces and commands" {
         .started_at = "2026-05-04T11:00:02Z",
         .source = "osc_7337",
     });
+    try db.upsertTask(.{
+        .workspace_id = "workspace-delete",
+        .name = "ship",
+        .command = "zig build",
+        .timestamp = "2026-05-04T11:00:02Z",
+    });
 
     try db.deleteProject("workspace-delete", "2026-05-04T11:00:03Z");
 
@@ -1132,4 +1369,5 @@ test "terminal history db deletes project metadata surfaces and commands" {
     try std.testing.expectEqual(@as(u64, 0), counts.project_count);
     try std.testing.expectEqual(@as(u64, 0), counts.surface_count);
     try std.testing.expectEqual(@as(u64, 0), counts.command_count);
+    try std.testing.expectEqual(@as(u64, 0), counts.task_count);
 }

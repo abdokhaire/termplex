@@ -236,6 +236,26 @@ def main():
     dashboard_status.add_argument("--limit", type=int, default=8, help="Maximum recent commands to return")
     dashboard_sub.add_parser("show", help="Show the workspace dashboard dialog")
 
+    # --- task ---
+    task = subparsers.add_parser("task", help="Workspace task shortcut operations")
+    task_sub = task.add_subparsers(dest="action")
+    task_list = task_sub.add_parser("list", help="List workspace task shortcuts")
+    task_list.add_argument("--workspace", help="Workspace name or index")
+    task_list.add_argument("--limit", type=int, default=50, help="Maximum tasks to return")
+    task_add = task_sub.add_parser("add", help="Add or update a workspace task shortcut")
+    task_add.add_argument("--workspace", help="Workspace name or index")
+    task_add.add_argument("--name", required=True, help="Task shortcut name")
+    task_add.add_argument("--command", required=True, help="Command to send to the selected terminal")
+    task_add.add_argument("--dir", help="Working directory metadata for the task")
+    task_run = task_sub.add_parser("run", help="Run a task shortcut in a terminal")
+    task_run.add_argument("--workspace", help="Workspace name or index")
+    task_run.add_argument("--tab", type=int, help="Tab index; defaults to the selected tab")
+    task_run.add_argument("--surface", type=int, help="Surface index inside the tab")
+    task_run.add_argument("--name", required=True, help="Task shortcut name")
+    task_delete = task_sub.add_parser("delete", help="Delete a workspace task shortcut")
+    task_delete.add_argument("--workspace", help="Workspace name or index")
+    task_delete.add_argument("--name", required=True, help="Task shortcut name")
+
     args = parser.parse_args()
 
     if not args.resource:
@@ -384,6 +404,35 @@ def build_request(args):
             return "dashboard.status", p
         if action == "show":
             return "dashboard.show", {}
+        return None, None
+
+    if resource == "task":
+        if action == "list":
+            p = {"limit": args.limit}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "task.list", p
+        if action == "add":
+            p = {"name": args.name, "command": args.command}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            if args.dir:
+                p["dir"] = args.dir
+            return "task.add", p
+        if action == "run":
+            p = {"name": args.name}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            if args.tab is not None:
+                p["tab"] = args.tab
+            if args.surface is not None:
+                p["surface"] = args.surface
+            return "task.run", p
+        if action == "delete":
+            p = {"name": args.name}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "task.delete", p
         return None, None
 
     if resource == "workspace":

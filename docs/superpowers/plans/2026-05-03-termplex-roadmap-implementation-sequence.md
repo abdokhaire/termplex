@@ -312,6 +312,12 @@ Recommended first scope:
 - Store task metadata in SQLite.
 - Optionally detect basic commands from project files later.
 
+Status:
+
+- Phase 1 implemented.
+- Added SQLite-backed workspace task definitions, `termplex-ctl task` add/list/run/delete, dashboard/storage task metadata, run counters, and E2E coverage.
+- Plan: `docs/superpowers/plans/2026-05-05-per-workspace-task-shortcuts.md`.
+
 ### 10. Diagnostics And Support Bundle
 
 Value:

@@ -496,6 +496,77 @@ def assert_dashboard_status(args, env, workspace_name, command_marker, timeout):
     ctl(args, env, "dashboard", "show")
 
 
+def assert_task_shortcuts_flow(args, env, profile, workspace_name, workspace_dir, tab, timeout):
+    marker = "TPX_E2E_TASK_SHORTCUT_001"
+    task_name = "echo-task"
+    command = "printf '" + marker + "\\n'"
+
+    created = ctl(
+        args,
+        env,
+        "task",
+        "add",
+        "--workspace",
+        workspace_name,
+        "--name",
+        task_name,
+        "--command",
+        command,
+        "--dir",
+        workspace_dir,
+    )
+    if created.get("name") != task_name or created.get("command") != command:
+        raise E2EError("task add returned wrong task: {}".format(created))
+    if created.get("working_directory") != workspace_dir:
+        raise E2EError("task add did not persist working directory: {}".format(created))
+
+    tasks = ctl(args, env, "task", "list", "--workspace", workspace_name)
+    if not any(item.get("name") == task_name and item.get("command") == command for item in tasks.get("items", [])):
+        raise E2EError("task list missing created task: {}".format(tasks))
+
+    dashboard = ctl(args, env, "dashboard", "status", "--workspace", workspace_name)
+    if not any(item.get("name") == task_name for item in dashboard.get("tasks", [])):
+        raise E2EError("dashboard status missing task shortcut: {}".format(dashboard))
+
+    ran = ctl(args, env, "task", "run", "--workspace", workspace_name, "--tab", str(tab), "--name", task_name)
+    if not ran.get("ran"):
+        raise E2EError("task run did not report ran: {}".format(ran))
+    if ran.get("task", {}).get("run_count", 0) < 1:
+        raise E2EError("task run did not update run count: {}".format(ran))
+    wait_for_output(args, env, workspace_name, tab, marker, timeout)
+    wait_until(
+        "workspace task run persisted",
+        timeout,
+        lambda: query_one(
+            profile,
+            "SELECT run_count FROM workspace_tasks WHERE name = ?",
+            (task_name,),
+        )
+        == 1,
+    )
+    last_run_at = query_one(
+        profile,
+        "SELECT last_run_at FROM workspace_tasks WHERE name = ?",
+        (task_name,),
+    )
+    if not last_run_at:
+        raise E2EError("workspace task did not persist last_run_at")
+
+    deleted = ctl(args, env, "task", "delete", "--workspace", workspace_name, "--name", task_name)
+    if not deleted.get("deleted"):
+        raise E2EError("task delete did not report deleted: {}".format(deleted))
+    wait_until(
+        "workspace task deleted",
+        timeout,
+        lambda: query_one(
+            profile,
+            "SELECT count(*) FROM workspace_tasks WHERE name = ?",
+            (task_name,),
+        )
+        == 0,
+    )
+
+
 def change_paths(status, section):
     return {item.get("path") for item in status.get(section, [])}
 
@@ -649,6 +720,29 @@ def assert_storage_management_flow(args, env, profile, workspace_name, workspace
     assert_sqlite_rows(profile, workspace_name, command_three, timeout)
     transcript_three = assert_transcript_contains(profile, workspace_name, marker_three, timeout)
 
+    ctl(
+        args,
+        env,
+        "task",
+        "add",
+        "--workspace",
+        workspace_name,
+        "--name",
+        "cleanup-task",
+        "--command",
+        "printf cleanup\\n",
+    )
+    wait_until(
+        "storage task shortcut row exists before project delete",
+        timeout,
+        lambda: query_one(
+            profile,
+            "SELECT count(*) FROM workspace_tasks WHERE name = ?",
+            ("cleanup-task",),
+        )
+        == 1,
+    )
+
     ctl(args, env, "storage", "delete-project", "--workspace", workspace_name)
     wait_until(
         "storage delete-project removes workspace",
@@ -670,6 +764,16 @@ def assert_storage_management_flow(args, env, profile, workspace_name, workspace
         "storage delete-project removes transcript file",
         timeout,
         lambda: not transcript_three_path.exists(),
+    )
+    wait_until(
+        "storage delete-project removes task shortcuts",
+        timeout,
+        lambda: query_one(
+            profile,
+            "SELECT count(*) FROM workspace_tasks WHERE name = ?",
+            ("cleanup-task",),
+        )
+        == 0,
     )
 
 
@@ -820,6 +924,7 @@ def run_scenario(args, profile, env):
         ctl(args, env, "history", "show")
         transcript_path = assert_transcript_contains(profile, workspace_name, marker, args.timeout)
         assert_storage_status_has_history(args, env, args.timeout)
+        assert_task_shortcuts_flow(args, env, profile, workspace_name, workspace_dir, main_tab, args.timeout)
         assert_dashboard_status(args, env, workspace_name, command_name, args.timeout)
         assert_storage_management_flow(args, env, profile, storage_workspace_name, storage_workspace_dir, args.timeout)
 
