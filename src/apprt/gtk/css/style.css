@@ -27,11 +27,11 @@ label.url-overlay:hover {
 }
 
 label.url-overlay.left {
-  border-radius: 0px 6px 0px 0px;
+  border-radius: 0px 3px 0px 0px;
 }
 
 label.url-overlay.right {
-  border-radius: 6px 0px 0px 0px;
+  border-radius: 3px 0px 0px 0px;
 }
 
 /*
@@ -40,7 +40,7 @@ label.url-overlay.right {
 .search-overlay {
   padding: 6px 8px;
   margin: 8px;
-  border-radius: 8px;
+  border-radius: 3px;
   outline-style: solid;
   outline-color: #555555;
   outline-width: 1px;
@@ -52,7 +52,7 @@ label.url-overlay.right {
 .key-state-overlay {
   padding: 6px 10px;
   margin: 8px;
-  border-radius: 8px;
+  border-radius: 3px;
   outline-style: solid;
   outline-color: #555555;
   outline-width: 1px;
@@ -63,7 +63,7 @@ label.url-overlay.right {
  */
 label.resize-overlay {
   padding: 4px 8px 4px 8px;
-  border-radius: 6px 6px 6px 6px;
+  border-radius: 3px;
   outline-style: solid;
   outline-color: #555555;
   outline-width: 1px;
@@ -89,13 +89,13 @@ label.resize-overlay {
 }
 
 .clipboard-confirmation-dialog .clipboard-overlay {
-  border-radius: 10px;
+  border-radius: 3px;
 }
 
 .clipboard-confirmation-dialog .clipboard-contents {
   filter: blur(0px);
   transition: filter 0.3s ease;
-  border-radius: 10px;
+  border-radius: 3px;
 }
 
 .clipboard-confirmation-dialog .clipboard-contents.blurred {
@@ -140,7 +140,7 @@ label.resize-overlay {
   color: hsl(25, 50%, 75%);
   padding: 8px 8px 8px 8px;
   margin: 8px 8px 8px 8px;
-  border-radius: 6px 6px 6px 6px;
+  border-radius: 3px;
   outline-style: solid;
   outline-width: 1px;
 }
@@ -171,13 +171,13 @@ label.resize-overlay {
  */
 
 .termplex-sidebar {
-  background-color: #131d2b;
-  border-right: none;
+  background-color: #101722;
+  border-right: 1px solid #243447;
 }
 
 /* Hide the paned separator (drag handle) next to the sidebar */
 .termplex-sidebar-paned > separator {
-  background-color: #131d2b;
+  background-color: #243447;
   border: none;
   outline: none;
   box-shadow: none;
@@ -188,7 +188,7 @@ label.resize-overlay {
 
 /* Remove visible separators inside the sidebar */
 .termplex-sidebar > separator {
-  background-color: #131d2b;
+  background-color: #243447;
   min-height: 0px;
 }
 
@@ -197,30 +197,35 @@ label.resize-overlay {
   background-color: transparent;
 }
 
+.termplex-sidebar list row {
+  margin: 1px 4px;
+  border-radius: 2px;
+}
+
 .termplex-sidebar list row:selected {
-  background-color: rgba(0, 212, 255, 0.06);
+  background-color: rgba(0, 212, 255, 0.08);
 }
 
 .termplex-sidebar-active {
   background-color: #00d4ff;
-  min-width: 3px;
+  min-width: 2px;
 }
 
 .termplex-sidebar-unread {
-  background-color: rgba(0, 212, 255, 0.5);
-  min-width: 3px;
+  background-color: rgba(0, 212, 255, 0.65);
+  min-width: 2px;
 }
 
 .termplex-header {
-  font-weight: bold;
+  font-weight: 700;
   color: #00d4ff;
-  padding: 14px 16px;
-  letter-spacing: 3px;
-  border-bottom: none;
+  padding: 12px 14px;
+  letter-spacing: 0;
+  border-bottom: 1px solid #243447;
 }
 
 .termplex-workspace-tab {
-  padding: 4px 8px;
+  padding: 4px 6px;
 }
 
 .termplex-tab-name {
@@ -257,12 +262,12 @@ label.resize-overlay {
   padding: 0px 2px;
   font-size: 11px;
   color: #7a8ba3;
-  border-radius: 4px;
+  border-radius: 2px;
 }
 
 .termplex-tab-action:hover {
   color: #e2e8f0;
-  background-color: rgba(0, 212, 255, 0.1);
+  background-color: rgba(0, 212, 255, 0.12);
 }
 
 .termplex-tab-action-delete:hover {
@@ -271,16 +276,18 @@ label.resize-overlay {
 }
 
 .termplex-port-badge {
-  background-color: #1a3a2a;
+  background-color: rgba(74, 222, 128, 0.12);
   color: #4ade80;
-  border-radius: 3px;
+  border-radius: 2px;
   padding: 0px 3px;
   font-size: 9px;
+  border: 1px solid rgba(74, 222, 128, 0.22);
 }
 
 .termplex-port-detail {
-  background-color: #131d2b;
-  border-radius: 4px;
+  background-color: #0f1923;
+  border-radius: 2px;
+  border: 1px solid #243447;
   padding: 4px 6px;
   margin-top: 2px;
 }
@@ -292,10 +299,10 @@ label.resize-overlay {
   margin-left: 2px;
   opacity: 0.5;
   font-size: 14px;
-  border-radius: 0 6px 6px 0;
-  background-color: #131d2b;
+  border-radius: 0 3px 3px 0;
+  background-color: #101722;
   color: #00d4ff;
-  border: 1px solid #131d2b;
+  border: 1px solid #243447;
   border-left: none;
 }
 
@@ -307,8 +314,8 @@ label.resize-overlay {
 .termplex-new-workspace-button {
   color: #00d4ff;
   background-color: transparent;
-  border: 1px solid rgba(0, 212, 255, 0.15);
-  border-radius: 6px;
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  border-radius: 2px;
 }
 
 .termplex-new-workspace-button:hover {
@@ -327,7 +334,7 @@ label.resize-overlay {
 
 /* Orchestrator workspace row — visual separation below orchestrator */
 .termplex-orchestrator-row {
-  border-bottom: 1px solid #131d2b;
+  border-bottom: 1px solid #243447;
   margin-bottom: 4px;
   padding-bottom: 4px;
 }
@@ -337,7 +344,7 @@ label.resize-overlay {
   color: #00d4ff;
   font-weight: 800;
   font-size: 10px;
-  letter-spacing: 1.5px;
+  letter-spacing: 0;
 }
 
 /*
@@ -346,7 +353,7 @@ label.resize-overlay {
 
 .termplex-attention {
   border: 2px solid #00d4ff;
-  box-shadow: 0 0 12px rgba(0, 212, 255, 0.3);
+  box-shadow: none;
 }
 
 /*
@@ -371,8 +378,8 @@ headerbar {
   min-height: 32px;
   padding-top: 0;
   padding-bottom: 0;
-  background-color: #131d2b;
-  border-bottom: none;
+  background-color: #101722;
+  border-bottom: 1px solid #243447;
   box-shadow: none;
 }
 
@@ -381,7 +388,7 @@ headerbar {
  */
 
 .window .split paned > separator {
-  background-color: rgba(250, 250, 250, 1);
+  background-color: #243447;
   /* after GTK 4.16 is a requirement, switch to the following: */
   /* background-color: color-mix(in srgb, var(--window-bg-color), transparent 0%); */
   background-clip: content-box;
@@ -399,4 +406,74 @@ headerbar {
    */
   margin: 0;
   padding: 0;
+}
+
+/*
+ * Termplex Workbench Polish
+ *
+ * Keep operational UI crisp: low radii, visible boundaries, no decorative glow.
+ */
+
+button,
+entry,
+searchentry,
+menubutton > button,
+splitbutton > button,
+splitbutton > menubutton > button {
+  border-radius: 3px;
+}
+
+popover,
+popover > contents,
+dialog,
+window {
+  border-radius: 2px;
+}
+
+.termplex-workbench-dialog {
+  background-color: #0f1923;
+}
+
+.termplex-workbench-dialog toolbarview,
+.termplex-workbench-dialog headerbar {
+  background-color: #101722;
+}
+
+.termplex-workbench-dialog scrolledwindow {
+  border: 1px solid #243447;
+  border-radius: 2px;
+  background-color: #0f1923;
+}
+
+.termplex-workbench-dialog textview,
+.termplex-workbench-dialog textview text,
+.termplex-workbench-dialog listview,
+.termplex-workbench-dialog .rich-list {
+  background-color: #0f1923;
+  color: #e2e8f0;
+}
+
+.termplex-workbench-dialog listview row,
+.termplex-workbench-dialog .rich-list row {
+  border-radius: 0;
+  padding: 6px 8px;
+}
+
+.termplex-workbench-dialog listview row:selected,
+.termplex-workbench-dialog .rich-list row:selected {
+  background-color: rgba(0, 212, 255, 0.10);
+  border-left: 2px solid #00d4ff;
+}
+
+.termplex-workbench-dialog .title {
+  font-weight: 600;
+}
+
+.termplex-workbench-dialog .subtitle,
+.termplex-workbench-dialog .caption {
+  color: #94a3b8;
+}
+
+.termplex-workbench-dialog separator {
+  background-color: #243447;
 }

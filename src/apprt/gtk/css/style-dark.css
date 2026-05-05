@@ -14,8 +14,8 @@
  */
 
 .termplex-sidebar {
-  background-color: #131d2b;
-  border-right: none;
+  background-color: #101722;
+  border-right: 1px solid #243447;
 }
 
 .termplex-sidebar list,
@@ -24,25 +24,25 @@
 }
 
 .termplex-sidebar list row:selected {
-  background-color: rgba(0, 212, 255, 0.06);
+  background-color: rgba(0, 212, 255, 0.08);
 }
 
 .termplex-sidebar-active {
   background-color: #00d4ff;
-  min-width: 3px;
+  min-width: 2px;
 }
 
 .termplex-sidebar-unread {
-  background-color: rgba(0, 212, 255, 0.5);
-  min-width: 3px;
+  background-color: rgba(0, 212, 255, 0.65);
+  min-width: 2px;
 }
 
 .termplex-header {
-  font-weight: bold;
+  font-weight: 700;
   color: #00d4ff;
-  padding: 14px 16px;
-  letter-spacing: 3px;
-  border-bottom: none;
+  padding: 12px 14px;
+  letter-spacing: 0;
+  border-bottom: 1px solid #243447;
 }
 
 .termplex-tab-port {
@@ -54,7 +54,7 @@
 }
 
 .termplex-sidebar-toggle {
-  background-color: #131d2b;
+  background-color: #101722;
   color: #00d4ff;
   border-color: #243447;
 }
@@ -79,5 +79,5 @@
 
 .termplex-attention {
   border: 2px solid #00d4ff;
-  box-shadow: 0 0 12px rgba(0, 212, 255, 0.3);
+  box-shadow: none;
 }
