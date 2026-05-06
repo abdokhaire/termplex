@@ -97,6 +97,12 @@ pub const WorkspaceTab = extern struct {
         /// Badge shown when the workspace is pinned.
         pinned_badge: *gtk.Label = undefined,
 
+        /// Stable application workspace index represented by this row.
+        workspace_index: u32 = 0,
+
+        /// Cached pinned state used by GtkListBox sorting.
+        is_pinned: bool = false,
+
         /// Inline rename state.
         rename_entry: ?*gtk.Entry = null,
         is_renaming: bool = false,
@@ -356,44 +362,31 @@ pub const WorkspaceTab = extern struct {
     fn onActionRename(_: *gtk.Button, self: *Self) callconv(.c) void {
         const priv = self.private();
         const cb = priv.on_action_rename orelse return;
-        const index = self.getRowIndex() orelse return;
-        cb(index, priv.action_userdata);
+        cb(priv.workspace_index, priv.action_userdata);
     }
 
     fn onActionDelete(_: *gtk.Button, self: *Self) callconv(.c) void {
         const priv = self.private();
         const cb = priv.on_action_delete orelse return;
-        const index = self.getRowIndex() orelse return;
-        cb(index, priv.action_userdata);
+        cb(priv.workspace_index, priv.action_userdata);
     }
 
     fn onActionChangeDir(_: *gtk.Button, self: *Self) callconv(.c) void {
         const priv = self.private();
         const cb = priv.on_action_change_dir orelse return;
-        const index = self.getRowIndex() orelse return;
-        cb(index, priv.action_userdata);
+        cb(priv.workspace_index, priv.action_userdata);
     }
 
     fn onActionSourceControl(_: *gtk.Button, self: *Self) callconv(.c) void {
         const priv = self.private();
         const cb = priv.on_action_source_control orelse return;
-        const index = self.getRowIndex() orelse return;
-        cb(index, priv.action_userdata);
+        cb(priv.workspace_index, priv.action_userdata);
     }
 
     fn onActionPin(_: *gtk.Button, self: *Self) callconv(.c) void {
         const priv = self.private();
         const cb = priv.on_action_pin orelse return;
-        const index = self.getRowIndex() orelse return;
-        cb(index, priv.action_userdata);
-    }
-
-    fn getRowIndex(self: *Self) ?u32 {
-        const parent = self.as(gtk.Widget).getParent() orelse return null;
-        const row: *gtk.ListBoxRow = @ptrCast(@alignCast(parent));
-        const idx = row.getIndex();
-        if (idx < 0) return null;
-        return @intCast(idx);
+        cb(priv.workspace_index, priv.action_userdata);
     }
 
     // ---------------------------------------------------------------
@@ -402,6 +395,31 @@ pub const WorkspaceTab = extern struct {
     /// Create a new WorkspaceTab widget.
     pub fn new() *Self {
         return gobject.ext.newInstance(Self, .{});
+    }
+
+    pub fn setWorkspaceIndex(self: *Self, index: u32) void {
+        self.private().workspace_index = index;
+    }
+
+    pub fn workspaceIndex(self: *Self) u32 {
+        return self.private().workspace_index;
+    }
+
+    pub fn isPinned(self: *Self) bool {
+        return self.private().is_pinned;
+    }
+
+    pub fn shiftWorkspaceIndexAfterRemoval(self: *Self, removed_index: u32) void {
+        const priv = self.private();
+        if (priv.workspace_index > removed_index) {
+            priv.workspace_index -= 1;
+        }
+        if (priv.rename_index > removed_index) {
+            priv.rename_index -= 1;
+        }
+        if (priv.chdir_index > removed_index) {
+            priv.chdir_index -= 1;
+        }
     }
 
     /// Set callback functions for hover action icons (rename, delete, change-dir).
@@ -543,6 +561,7 @@ pub const WorkspaceTab = extern struct {
             name_widget.removeCssClass("termplex-tab-name-active");
         }
 
+        priv.is_pinned = is_pinned;
         priv.pinned_badge.as(gtk.Widget).setVisible(@intFromBool(is_pinned));
         if (is_pinned) {
             tab_widget.addCssClass("termplex-workspace-pinned");

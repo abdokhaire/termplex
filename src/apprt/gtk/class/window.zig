@@ -369,7 +369,7 @@ pub const Window = extern struct {
                     const name = app.workspaceName(i);
                     var dir_buf: [512]u8 = undefined;
                     const dir_text = app.formatDirDisplay(i, &dir_buf);
-                    sidebar.addWorkspace(name, null, null, dir_text);
+                    sidebar.addWorkspace(i, name, null, null, dir_text, app.workspacePinned(i));
                 }
                 if (count > 0) {
                     sidebar.setActiveIndex(app.activeWorkspaceIndex());

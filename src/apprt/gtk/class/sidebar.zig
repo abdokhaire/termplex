@@ -7,6 +7,20 @@ const WorkspaceTab = @import("workspace_tab.zig").WorkspaceTab;
 
 const log = std.log.scoped(.gtk_termplex_sidebar);
 
+const WorkspaceSortKey = struct {
+    index: u32,
+    pinned: bool,
+};
+
+fn workspaceSortCompare(lhs: WorkspaceSortKey, rhs: WorkspaceSortKey) c_int {
+    if (lhs.pinned != rhs.pinned) {
+        return if (lhs.pinned) -1 else 1;
+    }
+    if (lhs.index < rhs.index) return -1;
+    if (lhs.index > rhs.index) return 1;
+    return 0;
+}
+
 /// The sidebar widget displayed on the left edge of the Termplex window.
 ///
 /// It provides workspace navigation: a list of workspace tabs, a header
@@ -141,6 +155,7 @@ pub const Sidebar = extern struct {
         const workspace_list = gtk.ListBox.new();
         workspace_list.setSelectionMode(.single);
         workspace_list.setActivateOnSingleClick(1);
+        workspace_list.setSortFunc(&compareWorkspaceRows, null, null);
         workspace_list.as(gtk.Widget).addCssClass("termplex-workspace-list");
         priv.workspace_list = workspace_list;
 
@@ -185,11 +200,24 @@ pub const Sidebar = extern struct {
 
     fn onRowActivated(_: *gtk.ListBox, row: *gtk.ListBoxRow, self: *Self) callconv(.c) void {
         const priv = self.private();
-        const idx = row.getIndex();
-        if (idx < 0) return;
+        const tab = workspaceTabFromRow(row) orelse return;
         if (priv.on_workspace_selected) |cb| {
-            cb(@intCast(idx), priv.userdata);
+            cb(tab.workspaceIndex(), priv.userdata);
         }
+    }
+
+    fn compareWorkspaceRows(row1: *gtk.ListBoxRow, row2: *gtk.ListBoxRow, _: ?*anyopaque) callconv(.c) c_int {
+        const tab1 = workspaceTabFromRow(row1) orelse return 0;
+        const tab2 = workspaceTabFromRow(row2) orelse return 0;
+        return workspaceSortCompare(
+            .{ .index = tab1.workspaceIndex(), .pinned = tab1.isPinned() },
+            .{ .index = tab2.workspaceIndex(), .pinned = tab2.isPinned() },
+        );
+    }
+
+    fn workspaceTabFromRow(row: *gtk.ListBoxRow) ?*WorkspaceTab {
+        const child_widget = row.getChild() orelse return null;
+        return @ptrCast(@alignCast(child_widget));
     }
 
     fn onNewWorkspaceClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
@@ -247,30 +275,29 @@ pub const Sidebar = extern struct {
         priv.on_change_dir = on_change_dir;
         priv.on_source_control = on_source_control;
         priv.on_pin = on_pin;
+        self.refreshWorkspaceActionCallbacks();
     }
 
     /// Add a new workspace tab at the end of the list.
     pub fn addWorkspace(
         self: *Self,
+        index: u32,
         name: ?[:0]const u8,
         port_text: ?[:0]const u8,
         branch_text: ?[:0]const u8,
         dir_text: ?[:0]const u8,
+        is_pinned: bool,
     ) void {
         const priv = self.private();
 
         const tab = WorkspaceTab.new();
-        tab.update(name, port_text, branch_text, dir_text, false, false, 0, 0, false);
+        tab.setWorkspaceIndex(index);
+        tab.update(name, port_text, branch_text, dir_text, false, false, 0, 0, is_pinned);
 
         // Wire hover action callbacks (rename/delete/change-dir).
         // Skip for orchestrator workspace — callbacks stay null so icons won't appear.
         const is_orchestrator = if (priv.orchestration_idx) |orch_idx| blk: {
-            // The new row will be appended at the end; compute its index.
-            var last_idx: c_int = 0;
-            while (priv.workspace_list.getRowAtIndex(last_idx) != null) {
-                last_idx += 1;
-            }
-            break :blk @as(u32, @intCast(last_idx)) == orch_idx;
+            break :blk index == orch_idx;
         } else false;
 
         if (!is_orchestrator) {
@@ -289,16 +316,8 @@ pub const Sidebar = extern struct {
         // If this is the orchestration workspace, add a special CSS class to
         // the ListBoxRow that GTK created for it.
         if (priv.orchestration_idx) |orch_idx| {
-            // The new row's index is the last row in the list.
-            var last_idx: c_int = 0;
-            while (priv.workspace_list.getRowAtIndex(last_idx + 1) != null) {
-                last_idx += 1;
-            }
-            const new_idx: u32 = @intCast(last_idx);
-            if (new_idx == orch_idx) {
-                if (priv.workspace_list.getRowAtIndex(last_idx)) |new_row| {
-                    new_row.as(gtk.Widget).addCssClass("termplex-orchestrator-row");
-                }
+            if (index == orch_idx) {
+                if (self.getWorkspaceRow(index)) |new_row| new_row.as(gtk.Widget).addCssClass("termplex-orchestrator-row");
             }
         }
     }
@@ -306,7 +325,13 @@ pub const Sidebar = extern struct {
     /// Return the ListBoxRow for the workspace at the given index, or null
     /// if the index is out of range.
     pub fn getWorkspaceRow(self: *Self, index: u32) ?*gtk.ListBoxRow {
-        return self.private().workspace_list.getRowAtIndex(@intCast(index));
+        const priv = self.private();
+        var visual_idx: c_int = 0;
+        while (priv.workspace_list.getRowAtIndex(visual_idx)) |row| : (visual_idx += 1) {
+            const tab = workspaceTabFromRow(row) orelse continue;
+            if (tab.workspaceIndex() == index) return row;
+        }
+        return null;
     }
 
     /// Remove the workspace tab at the given index.
@@ -314,7 +339,7 @@ pub const Sidebar = extern struct {
     /// Does nothing if the index is out of range.
     pub fn removeWorkspace(self: *Self, index: u32) void {
         const priv = self.private();
-        const row = priv.workspace_list.getRowAtIndex(@intCast(index)) orelse return;
+        const row = self.getWorkspaceRow(index) orelse return;
         priv.workspace_list.remove(row.as(gtk.Widget));
 
         // If we removed the active workspace, reset active_index.
@@ -334,6 +359,9 @@ pub const Sidebar = extern struct {
                 priv.orchestration_idx = orch_idx - 1;
             }
         }
+
+        self.shiftWorkspaceIndicesAfterRemoval(index);
+        priv.workspace_list.invalidateSort();
     }
 
     /// Update an existing workspace tab at the given index.
@@ -353,13 +381,10 @@ pub const Sidebar = extern struct {
         is_pinned: bool,
     ) void {
         const priv = self.private();
-        const row = priv.workspace_list.getRowAtIndex(@intCast(index)) orelse return;
-        const child_widget = row.getChild() orelse return;
-
-        // The child of the ListBoxRow is the WorkspaceTab (a Gtk.Box).
-        // We need to cast the generic Widget pointer to a WorkspaceTab pointer.
-        const tab: *WorkspaceTab = @ptrCast(@alignCast(child_widget));
+        const row = self.getWorkspaceRow(index) orelse return;
+        const tab = workspaceTabFromRow(row) orelse return;
         tab.update(name, port_text, branch_text, dir_text, is_active, has_unread, staged_count, unstaged_count, is_pinned);
+        row.changed();
 
         // Apply or remove orchestrator styling so the CSS descendant
         // selector `.termplex-orchestrator-label .termplex-tab-name` can reach
@@ -387,7 +412,7 @@ pub const Sidebar = extern struct {
         const new_index: i32 = @intCast(index);
 
         // Select the new row in the ListBox.
-        if (priv.workspace_list.getRowAtIndex(new_index)) |new_row| {
+        if (self.getWorkspaceRow(index)) |new_row| {
             priv.workspace_list.selectRow(new_row);
         }
 
@@ -401,6 +426,7 @@ pub const Sidebar = extern struct {
     /// workspace so the sidebar can apply visual separation.
     pub fn setOrchestrationIndex(self: *Self, idx: ?u32) void {
         self.private().orchestration_idx = idx;
+        self.refreshWorkspaceActionCallbacks();
     }
 
     /// Return the number of workspace tabs currently in the list.
@@ -413,6 +439,42 @@ pub const Sidebar = extern struct {
             idx += 1;
         }
         return count;
+    }
+
+    fn shiftWorkspaceIndicesAfterRemoval(self: *Self, removed_index: u32) void {
+        const priv = self.private();
+        var visual_idx: c_int = 0;
+        while (priv.workspace_list.getRowAtIndex(visual_idx)) |row| : (visual_idx += 1) {
+            const tab = workspaceTabFromRow(row) orelse continue;
+            tab.shiftWorkspaceIndexAfterRemoval(removed_index);
+            row.changed();
+        }
+    }
+
+    fn refreshWorkspaceActionCallbacks(self: *Self) void {
+        const priv = self.private();
+        var visual_idx: c_int = 0;
+        while (priv.workspace_list.getRowAtIndex(visual_idx)) |row| : (visual_idx += 1) {
+            const tab = workspaceTabFromRow(row) orelse continue;
+            const is_orchestrator = if (priv.orchestration_idx) |orch_idx| tab.workspaceIndex() == orch_idx else false;
+
+            if (is_orchestrator) {
+                row.as(gtk.Widget).addCssClass("termplex-orchestrator-row");
+                tab.as(gtk.Widget).addCssClass("termplex-orchestrator-label");
+                tab.setActionCallbacks(null, null, null, null, null, priv.userdata);
+            } else {
+                row.as(gtk.Widget).removeCssClass("termplex-orchestrator-row");
+                tab.as(gtk.Widget).removeCssClass("termplex-orchestrator-label");
+                tab.setActionCallbacks(
+                    priv.on_rename,
+                    priv.on_delete,
+                    priv.on_change_dir,
+                    priv.on_source_control,
+                    priv.on_pin,
+                    priv.userdata,
+                );
+            }
+        }
     }
 
     // ---------------------------------------------------------------
@@ -455,3 +517,11 @@ pub const Sidebar = extern struct {
         pub const as = C.Class.as;
     };
 };
+
+test "workspace sidebar sort puts pinned rows first and preserves workspace order" {
+    try std.testing.expect(workspaceSortCompare(.{ .index = 2, .pinned = true }, .{ .index = 0, .pinned = false }) < 0);
+    try std.testing.expect(workspaceSortCompare(.{ .index = 0, .pinned = false }, .{ .index = 2, .pinned = true }) > 0);
+    try std.testing.expect(workspaceSortCompare(.{ .index = 1, .pinned = true }, .{ .index = 3, .pinned = true }) < 0);
+    try std.testing.expect(workspaceSortCompare(.{ .index = 4, .pinned = false }, .{ .index = 2, .pinned = false }) > 0);
+    try std.testing.expectEqual(@as(c_int, 0), workspaceSortCompare(.{ .index = 5, .pinned = true }, .{ .index = 5, .pinned = true }));
+}

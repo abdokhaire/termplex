@@ -2291,10 +2291,12 @@ pub const Application = extern struct {
                 const app = Application.default();
                 var dir_buf: [512]u8 = undefined;
                 win.getSidebar().addWorkspace(
+                    idx_ptr.*,
                     app.workspaceName(idx_ptr.*),
                     null,
                     null,
                     app.formatDirDisplay(idx_ptr.*, &dir_buf),
+                    app.workspacePinned(idx_ptr.*),
                 );
             }
         }.cb, @ptrCast(@constCast(&index)));
