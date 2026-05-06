@@ -240,6 +240,12 @@ def main():
     dashboard_status.add_argument("--limit", type=int, default=8, help="Maximum recent commands to return")
     dashboard_sub.add_parser("show", help="Show the workspace dashboard dialog")
 
+    # --- diagnostics ---
+    diagnostics = subparsers.add_parser("diagnostics", help="Diagnostics and support bundle operations")
+    diagnostics_sub = diagnostics.add_subparsers(dest="action")
+    diagnostics_export = diagnostics_sub.add_parser("export", help="Export a local diagnostics bundle")
+    diagnostics_export.add_argument("--output", help="Output JSON file path; defaults to XDG state diagnostics dir")
+
     # --- task ---
     task = subparsers.add_parser("task", help="Workspace task shortcut operations")
     task_sub = task.add_subparsers(dest="action")
@@ -418,6 +424,14 @@ def build_request(args):
             return "dashboard.status", p
         if action == "show":
             return "dashboard.show", {}
+        return None, None
+
+    if resource == "diagnostics":
+        if action == "export":
+            p = {}
+            if args.output:
+                p["output"] = args.output
+            return "diagnostics.export", p
         return None, None
 
     if resource == "task":

@@ -787,6 +787,46 @@ def assert_storage_management_flow(args, env, profile, workspace_name, workspace
     )
 
 
+def assert_diagnostics_export(args, env, profile, workspace_name, command_marker, command_name):
+    result = ctl(args, env, "diagnostics", "export")
+    bundle_path = pathlib.Path(result.get("path", ""))
+    if not bundle_path.exists():
+        raise E2EError("diagnostics export did not create bundle file: {}".format(result))
+    if not str(bundle_path).startswith(str(profile / "state" / "termplex" / "diagnostics")):
+        raise E2EError("diagnostics export wrote outside diagnostics state dir: {}".format(bundle_path))
+
+    text = bundle_path.read_text(errors="replace")
+    try:
+        bundle = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise E2EError("diagnostics bundle is not valid JSON: {}\n{}".format(exc, text))
+
+    if bundle.get("schema_version") != 1:
+        raise E2EError("diagnostics bundle missing schema_version=1: {}".format(bundle))
+    if bundle.get("bundle_kind") != "termplex_diagnostics":
+        raise E2EError("diagnostics bundle has wrong kind: {}".format(bundle))
+
+    required_sections = ["app", "paths", "privacy", "workspaces", "storage", "update", "session"]
+    for section in required_sections:
+        if section not in bundle:
+            raise E2EError("diagnostics bundle missing section {}: {}".format(section, bundle))
+
+    privacy = bundle["privacy"]
+    if privacy.get("includes_transcript_bodies") or privacy.get("includes_command_bodies"):
+        raise E2EError("diagnostics bundle privacy defaults include bodies: {}".format(privacy))
+
+    workspaces = bundle["workspaces"]
+    if not any(item.get("name") == workspace_name for item in workspaces):
+        raise E2EError("diagnostics bundle missing E2E workspace: {}".format(workspaces))
+    if bundle["storage"].get("command_count", 0) <= 0:
+        raise E2EError("diagnostics bundle missing command count: {}".format(bundle["storage"]))
+    if bundle["session"].get("workspace_count", 0) <= 0:
+        raise E2EError("diagnostics bundle missing session workspace count: {}".format(bundle["session"]))
+
+    if command_marker in text or command_name in text:
+        raise E2EError("diagnostics bundle leaked command/transcript body text")
+
+
 def assert_transcript_contains(profile, workspace_name, marker, timeout):
     def probe():
         rows = query_all(
@@ -936,6 +976,7 @@ def run_scenario(args, profile, env):
         assert_storage_status_has_history(args, env, args.timeout)
         assert_task_shortcuts_flow(args, env, profile, workspace_name, workspace_dir, main_tab, args.timeout)
         assert_dashboard_status(args, env, workspace_name, command_name, args.timeout)
+        assert_diagnostics_export(args, env, profile, workspace_name, marker, command_name)
         assert_storage_management_flow(args, env, profile, storage_workspace_name, storage_workspace_dir, args.timeout)
 
         ctl(args, env, "workspace", "create", "--name", delete_workspace_name, "--dir", delete_workspace_dir)

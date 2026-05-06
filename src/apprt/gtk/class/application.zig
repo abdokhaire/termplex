@@ -3101,6 +3101,10 @@ pub const Application = extern struct {
             return self.ipcDashboardShow(alloc, id);
         }
 
+        if (std.mem.eql(u8, method, "diagnostics.export")) {
+            return self.ipcDiagnosticsExport(alloc, id, root.object);
+        }
+
         if (std.mem.eql(u8, method, "task.list")) {
             return self.ipcTaskList(alloc, id, root.object);
         }
@@ -4920,6 +4924,283 @@ pub const Application = extern struct {
             "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
             .{ buf.items, id },
         ) catch null;
+    }
+
+    fn diagnosticsParams(obj: std.json.ObjectMap) std.json.ObjectMap {
+        const params_val = obj.get("params") orelse .null;
+        return if (params_val == .object) params_val.object else obj;
+    }
+
+    fn diagnosticsStateDir(alloc: std.mem.Allocator) ![]u8 {
+        if (std.process.getEnvVarOwned(alloc, "XDG_STATE_HOME")) |state_home| {
+            defer alloc.free(state_home);
+            return std.fs.path.join(alloc, &.{ state_home, "termplex", "diagnostics" });
+        } else |_| {}
+
+        if (std.process.getEnvVarOwned(alloc, "HOME")) |home| {
+            defer alloc.free(home);
+            return std.fs.path.join(alloc, &.{ home, ".local", "state", "termplex", "diagnostics" });
+        } else |_| {}
+
+        return error.NoHomeDir;
+    }
+
+    fn diagnosticsOutputPath(alloc: std.mem.Allocator, output: ?[]const u8) ![]u8 {
+        if (output) |raw| {
+            if (std.fs.path.isAbsolute(raw)) return try alloc.dupe(u8, raw);
+            const cwd = try std.fs.cwd().realpathAlloc(alloc, ".");
+            defer alloc.free(cwd);
+            return try std.fs.path.join(alloc, &.{ cwd, raw });
+        }
+
+        const dir = try diagnosticsStateDir(alloc);
+        defer alloc.free(dir);
+        try std.fs.cwd().makePath(dir);
+        const filename = try std.fmt.allocPrint(
+            alloc,
+            "termplex-diagnostics-{d}.json",
+            .{std.time.milliTimestamp()},
+        );
+        defer alloc.free(filename);
+        return try std.fs.path.join(alloc, &.{ dir, filename });
+    }
+
+    fn appendDiagnosticsAppJson(buf: *std.ArrayListUnmanaged(u8), alloc: std.mem.Allocator) !void {
+        try buf.appendSlice(alloc, "{\"version\":");
+        try appendJsonString(buf, alloc, build_config.version_string);
+        try buf.appendSlice(alloc, ",\"channel\":");
+        try appendJsonString(buf, alloc, @tagName(build_config.release_channel));
+        try buf.appendSlice(alloc, ",\"build_mode\":");
+        try appendJsonString(buf, alloc, build_config.mode_string);
+        try buf.appendSlice(alloc, ",\"app_runtime\":");
+        try appendJsonString(buf, alloc, @tagName(build_config.app_runtime));
+        try buf.appendSlice(alloc, ",\"font_backend\":");
+        try appendJsonString(buf, alloc, @tagName(build_config.font_backend));
+        try buf.appendSlice(alloc, ",\"renderer\":");
+        try appendJsonString(buf, alloc, @tagName(build_config.renderer));
+        try buf.appendSlice(alloc, ",\"bundle_id\":");
+        try appendJsonString(buf, alloc, build_config.bundle_id);
+        try buf.append(alloc, '}');
+    }
+
+    fn appendEnvJsonField(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        field: []const u8,
+        env_name: []const u8,
+    ) !void {
+        try buf.append(alloc, '"');
+        try appendJsonEscaped(buf, alloc, field);
+        try buf.appendSlice(alloc, "\":");
+        try appendOptionalJsonString(buf, alloc, std.posix.getenv(env_name));
+    }
+
+    fn appendDiagnosticsPathsJson(buf: *std.ArrayListUnmanaged(u8), alloc: std.mem.Allocator) !void {
+        const history_base = terminal_history.getBaseDir(alloc) catch null;
+        defer if (history_base) |value| alloc.free(value);
+        const history_db = terminal_history.databasePath(alloc) catch null;
+        defer if (history_db) |value| alloc.free(value);
+        const diagnostics_dir = diagnosticsStateDir(alloc) catch null;
+        defer if (diagnostics_dir) |value| alloc.free(value);
+
+        try buf.append(alloc, '{');
+        try appendEnvJsonField(buf, alloc, "xdg_config_home", "XDG_CONFIG_HOME");
+        try buf.append(alloc, ',');
+        try appendEnvJsonField(buf, alloc, "xdg_state_home", "XDG_STATE_HOME");
+        try buf.append(alloc, ',');
+        try appendEnvJsonField(buf, alloc, "xdg_cache_home", "XDG_CACHE_HOME");
+        try buf.append(alloc, ',');
+        try appendEnvJsonField(buf, alloc, "xdg_runtime_dir", "XDG_RUNTIME_DIR");
+        try buf.appendSlice(alloc, ",\"terminal_history_base\":");
+        try appendOptionalJsonString(buf, alloc, history_base);
+        try buf.appendSlice(alloc, ",\"terminal_history_db\":");
+        try appendOptionalJsonString(buf, alloc, history_db);
+        try buf.appendSlice(alloc, ",\"diagnostics_dir\":");
+        try appendOptionalJsonString(buf, alloc, diagnostics_dir);
+        try buf.append(alloc, '}');
+    }
+
+    fn appendDiagnosticsPrivacyJson(buf: *std.ArrayListUnmanaged(u8), alloc: std.mem.Allocator) !void {
+        try buf.appendSlice(
+            alloc,
+            "{\"includes_transcript_bodies\":false,\"includes_command_bodies\":false,\"includes_environment\":false,\"includes_git_diffs\":false}",
+        );
+    }
+
+    fn appendDiagnosticsWorkspacesJson(
+        self: *Self,
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+    ) !void {
+        const priv = self.private();
+        try buf.append(alloc, '[');
+        for (priv.workspace_names.items, 0..) |name, i| {
+            if (i > 0) try buf.append(alloc, ',');
+            const idx: u32 = @intCast(i);
+            const dir = self.workspaceDir(idx) orelse "";
+            const id_text = self.workspaceIdString(alloc, idx) catch null;
+            defer if (id_text) |value| alloc.free(value);
+            const tab_count: u32 = if (self.workspaceTabView(idx)) |view|
+                @intCast(@max(view.getNPages(), 0))
+            else
+                0;
+
+            var git = git_status.query(alloc, dir) catch null;
+            defer if (git) |*status| status.deinit(alloc);
+
+            try buf.appendSlice(alloc, "{\"index\":");
+            try appendJsonInt(buf, alloc, i);
+            try buf.appendSlice(alloc, ",\"id\":");
+            try appendOptionalJsonString(buf, alloc, id_text);
+            try buf.appendSlice(alloc, ",\"name\":");
+            try appendJsonString(buf, alloc, name);
+            try buf.appendSlice(alloc, ",\"dir\":");
+            try appendJsonString(buf, alloc, dir);
+            try buf.appendSlice(alloc, ",\"active\":");
+            try buf.appendSlice(alloc, if (idx == priv.active_workspace_idx) "true" else "false");
+            try buf.appendSlice(alloc, ",\"pinned\":");
+            try buf.appendSlice(alloc, if (idx < priv.workspace_pinned.items.len and priv.workspace_pinned.items[idx]) "true" else "false");
+            try buf.appendSlice(alloc, ",\"tab_count\":");
+            try appendJsonInt(buf, alloc, tab_count);
+            try buf.appendSlice(alloc, ",\"git\":");
+            if (git) |status| {
+                try buf.appendSlice(alloc, "{\"is_repo\":");
+                try buf.appendSlice(alloc, if (status.is_repo) "true" else "false");
+                try buf.appendSlice(alloc, ",\"root\":");
+                try appendOptionalJsonString(buf, alloc, status.root);
+                try buf.appendSlice(alloc, ",\"branch\":");
+                try appendOptionalJsonString(buf, alloc, status.branch);
+                try buf.appendSlice(alloc, ",\"remote_url\":");
+                try appendOptionalJsonString(buf, alloc, status.remote_url);
+                try buf.appendSlice(alloc, ",\"dirty\":");
+                try buf.appendSlice(alloc, if (status.dirty) "true" else "false");
+                try buf.appendSlice(alloc, ",\"staged_count\":");
+                try appendJsonInt(buf, alloc, status.staged.len);
+                try buf.appendSlice(alloc, ",\"unstaged_count\":");
+                try appendJsonInt(buf, alloc, status.unstaged.len);
+                try buf.append(alloc, '}');
+            } else {
+                try buf.appendSlice(alloc, "{\"is_repo\":false,\"root\":null,\"branch\":null,\"remote_url\":null,\"dirty\":false,\"staged_count\":0,\"unstaged_count\":0}");
+            }
+            try buf.append(alloc, '}');
+        }
+        try buf.append(alloc, ']');
+    }
+
+    fn appendDiagnosticsUpdateJson(self: *Self, buf: *std.ArrayListUnmanaged(u8), alloc: std.mem.Allocator) !void {
+        const update_state = self.private().update_state;
+        try buf.appendSlice(alloc, "{\"available_version\":");
+        try appendOptionalJsonString(buf, alloc, update_state.last_available_version);
+        try buf.appendSlice(alloc, ",\"downloaded_version\":");
+        try appendOptionalJsonString(buf, alloc, update_state.downloaded_version);
+        try buf.appendSlice(alloc, ",\"download_path\":");
+        try appendOptionalJsonString(buf, alloc, update_state.download_path);
+        try buf.appendSlice(alloc, ",\"progress\":");
+        try appendOptionalJsonString(buf, alloc, update_state.progress);
+        try buf.appendSlice(alloc, ",\"install_kind\":");
+        try appendJsonString(buf, alloc, @tagName(update_state.install_kind));
+        try buf.appendSlice(alloc, ",\"checksum_status\":");
+        try appendJsonString(buf, alloc, @tagName(update_state.checksum_status));
+        try buf.appendSlice(alloc, ",\"last_error\":");
+        try appendOptionalJsonString(buf, alloc, update_state.last_error);
+        try buf.append(alloc, '}');
+    }
+
+    fn appendDiagnosticsSessionJson(self: *Self, buf: *std.ArrayListUnmanaged(u8), alloc: std.mem.Allocator) !void {
+        const priv = self.private();
+        var tab_count: u32 = 0;
+        for (priv.workspace_tab_views.items) |view| {
+            tab_count += @intCast(@max(view.getNPages(), 0));
+        }
+        try buf.appendSlice(alloc, "{\"workspace_count\":");
+        try appendJsonInt(buf, alloc, priv.workspace_names.items.len);
+        try buf.appendSlice(alloc, ",\"active_workspace\":");
+        try appendJsonInt(buf, alloc, priv.active_workspace_idx);
+        try buf.appendSlice(alloc, ",\"tab_count\":");
+        try appendJsonInt(buf, alloc, tab_count);
+        try buf.appendSlice(alloc, ",\"session_format_version\":7}");
+    }
+
+    fn appendDiagnosticsBundleJson(
+        self: *Self,
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+    ) !void {
+        try buf.appendSlice(alloc, "{\"schema_version\":1,\"bundle_kind\":\"termplex_diagnostics\",\"created_at_unix_ms\":");
+        try appendJsonInt(buf, alloc, std.time.milliTimestamp());
+        try buf.appendSlice(alloc, ",\"app\":");
+        try appendDiagnosticsAppJson(buf, alloc);
+        try buf.appendSlice(alloc, ",\"paths\":");
+        try appendDiagnosticsPathsJson(buf, alloc);
+        try buf.appendSlice(alloc, ",\"privacy\":");
+        try appendDiagnosticsPrivacyJson(buf, alloc);
+        try buf.appendSlice(alloc, ",\"workspaces\":");
+        try self.appendDiagnosticsWorkspacesJson(buf, alloc);
+        try buf.appendSlice(alloc, ",\"storage\":");
+        try self.appendStorageStatusJson(buf, alloc);
+        try buf.appendSlice(alloc, ",\"update\":");
+        try self.appendDiagnosticsUpdateJson(buf, alloc);
+        try buf.appendSlice(alloc, ",\"session\":");
+        try self.appendDiagnosticsSessionJson(buf, alloc);
+        try buf.append(alloc, '}');
+    }
+
+    fn ipcDiagnosticsError(alloc: std.mem.Allocator, id: i64, code: []const u8, message: []const u8) ?[]u8 {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"ok\":false,\"error\":{\"code\":") catch return null;
+        appendJsonString(&buf, alloc, code) catch return null;
+        buf.appendSlice(alloc, ",\"message\":") catch return null;
+        appendJsonString(&buf, alloc, message) catch return null;
+        buf.appendSlice(alloc, "},\"id\":") catch return null;
+        appendJsonInt(&buf, alloc, id) catch return null;
+        buf.appendSlice(alloc, "}") catch return null;
+        return buf.toOwnedSlice(alloc) catch null;
+    }
+
+    fn ipcDiagnosticsExport(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = diagnosticsParams(obj);
+        const output = jsonStringParam(params, "output");
+        const path = diagnosticsOutputPath(alloc, output) catch |err| {
+            log.warn("failed to resolve diagnostics output path: {}", .{err});
+            return ipcDiagnosticsError(alloc, id, "diagnostics_path_failed", "failed to resolve diagnostics output path");
+        };
+        defer alloc.free(path);
+
+        if (std.fs.path.dirname(path)) |parent| {
+            std.fs.cwd().makePath(parent) catch |err| {
+                log.warn("failed to create diagnostics output dir {s}: {}", .{ parent, err });
+                return ipcDiagnosticsError(alloc, id, "diagnostics_write_failed", "failed to create diagnostics output directory");
+            };
+        }
+
+        var bundle: std.ArrayListUnmanaged(u8) = .empty;
+        defer bundle.deinit(alloc);
+        self.appendDiagnosticsBundleJson(&bundle, alloc) catch |err| {
+            log.warn("failed to build diagnostics bundle: {}", .{err});
+            return ipcDiagnosticsError(alloc, id, "diagnostics_build_failed", "failed to build diagnostics bundle");
+        };
+
+        const file = std.fs.createFileAbsolute(path, .{ .truncate = true }) catch |err| {
+            log.warn("failed to create diagnostics bundle {s}: {}", .{ path, err });
+            return ipcDiagnosticsError(alloc, id, "diagnostics_write_failed", "failed to write diagnostics bundle");
+        };
+        defer file.close();
+        file.writeAll(bundle.items) catch |err| {
+            log.warn("failed to write diagnostics bundle {s}: {}", .{ path, err });
+            return ipcDiagnosticsError(alloc, id, "diagnostics_write_failed", "failed to write diagnostics bundle");
+        };
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"ok\":true,\"result\":{\"path\":") catch return null;
+        appendJsonString(&buf, alloc, path) catch return null;
+        buf.appendSlice(alloc, ",\"bytes\":") catch return null;
+        appendJsonInt(&buf, alloc, bundle.items.len) catch return null;
+        buf.appendSlice(alloc, "},\"id\":") catch return null;
+        appendJsonInt(&buf, alloc, id) catch return null;
+        buf.appendSlice(alloc, "}") catch return null;
+        return buf.toOwnedSlice(alloc) catch null;
     }
 
     fn ipcStorageClearTerminal(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
