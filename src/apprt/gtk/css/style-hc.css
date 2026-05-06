@@ -29,7 +29,8 @@
 }
 
 .termplex-header-subtitle,
-.termplex-sidebar-section-label {
+.termplex-sidebar-section-label,
+.termplex-workspace-group-header {
   color: #e0e0e0;
 }
 

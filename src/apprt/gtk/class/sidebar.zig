@@ -12,6 +12,12 @@ const WorkspaceSortKey = struct {
     pinned: bool,
 };
 
+const WorkspaceHeaderKind = enum {
+    none,
+    pinned,
+    workspaces,
+};
+
 fn workspaceSortCompare(lhs: WorkspaceSortKey, rhs: WorkspaceSortKey) c_int {
     if (lhs.pinned != rhs.pinned) {
         return if (lhs.pinned) -1 else 1;
@@ -19,6 +25,13 @@ fn workspaceSortCompare(lhs: WorkspaceSortKey, rhs: WorkspaceSortKey) c_int {
     if (lhs.index < rhs.index) return -1;
     if (lhs.index > rhs.index) return 1;
     return 0;
+}
+
+fn workspaceHeaderKind(row_pinned: bool, before_pinned: ?bool) WorkspaceHeaderKind {
+    if (row_pinned) {
+        return if (before_pinned == null or before_pinned.? == false) .pinned else .none;
+    }
+    return if (before_pinned != null and before_pinned.? == true) .workspaces else .none;
 }
 
 /// The sidebar widget displayed on the left edge of the Termplex window.
@@ -156,6 +169,7 @@ pub const Sidebar = extern struct {
         workspace_list.setSelectionMode(.single);
         workspace_list.setActivateOnSingleClick(1);
         workspace_list.setSortFunc(&compareWorkspaceRows, null, null);
+        workspace_list.setHeaderFunc(&updateWorkspaceHeader, null, null);
         workspace_list.as(gtk.Widget).addCssClass("termplex-workspace-list");
         priv.workspace_list = workspace_list;
 
@@ -218,6 +232,39 @@ pub const Sidebar = extern struct {
     fn workspaceTabFromRow(row: *gtk.ListBoxRow) ?*WorkspaceTab {
         const child_widget = row.getChild() orelse return null;
         return @ptrCast(@alignCast(child_widget));
+    }
+
+    fn updateWorkspaceHeader(row: *gtk.ListBoxRow, before: ?*gtk.ListBoxRow, _: ?*anyopaque) callconv(.c) void {
+        const tab = workspaceTabFromRow(row) orelse {
+            row.setHeader(null);
+            return;
+        };
+        const before_pinned = if (before) |before_row|
+            if (workspaceTabFromRow(before_row)) |before_tab| before_tab.isPinned() else null
+        else
+            null;
+
+        const kind = workspaceHeaderKind(tab.isPinned(), before_pinned);
+        switch (kind) {
+            .none => row.setHeader(null),
+            .pinned => setWorkspaceHeader(row, "PINNED"),
+            .workspaces => setWorkspaceHeader(row, "WORKSPACES"),
+        }
+    }
+
+    fn setWorkspaceHeader(row: *gtk.ListBoxRow, text: [:0]const u8) void {
+        if (row.getHeader()) |header_widget| {
+            if (gobject.ext.cast(gtk.Label, header_widget)) |label| {
+                if (std.mem.eql(u8, std.mem.span(label.getLabel()), text)) return;
+                label.setLabel(text);
+                return;
+            }
+        }
+
+        const label = gtk.Label.new(text);
+        label.as(gtk.Widget).addCssClass("termplex-workspace-group-header");
+        label.setXalign(0.0);
+        row.setHeader(label.as(gtk.Widget));
     }
 
     fn onNewWorkspaceClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
@@ -312,6 +359,7 @@ pub const Sidebar = extern struct {
         }
 
         priv.workspace_list.append(tab.as(gtk.Widget));
+        priv.workspace_list.invalidateHeaders();
 
         // If this is the orchestration workspace, add a special CSS class to
         // the ListBoxRow that GTK created for it.
@@ -362,6 +410,7 @@ pub const Sidebar = extern struct {
 
         self.shiftWorkspaceIndicesAfterRemoval(index);
         priv.workspace_list.invalidateSort();
+        priv.workspace_list.invalidateHeaders();
     }
 
     /// Update an existing workspace tab at the given index.
@@ -385,6 +434,7 @@ pub const Sidebar = extern struct {
         const tab = workspaceTabFromRow(row) orelse return;
         tab.update(name, port_text, branch_text, dir_text, is_active, has_unread, staged_count, unstaged_count, is_pinned);
         row.changed();
+        priv.workspace_list.invalidateHeaders();
 
         // Apply or remove orchestrator styling so the CSS descendant
         // selector `.termplex-orchestrator-label .termplex-tab-name` can reach
@@ -524,4 +574,13 @@ test "workspace sidebar sort puts pinned rows first and preserves workspace orde
     try std.testing.expect(workspaceSortCompare(.{ .index = 1, .pinned = true }, .{ .index = 3, .pinned = true }) < 0);
     try std.testing.expect(workspaceSortCompare(.{ .index = 4, .pinned = false }, .{ .index = 2, .pinned = false }) > 0);
     try std.testing.expectEqual(@as(c_int, 0), workspaceSortCompare(.{ .index = 5, .pinned = true }, .{ .index = 5, .pinned = true }));
+}
+
+test "workspace sidebar headers only label pinned group and pinned-to-workspaces transition" {
+    try std.testing.expectEqual(WorkspaceHeaderKind.none, workspaceHeaderKind(false, null));
+    try std.testing.expectEqual(WorkspaceHeaderKind.pinned, workspaceHeaderKind(true, null));
+    try std.testing.expectEqual(WorkspaceHeaderKind.none, workspaceHeaderKind(true, true));
+    try std.testing.expectEqual(WorkspaceHeaderKind.workspaces, workspaceHeaderKind(false, true));
+    try std.testing.expectEqual(WorkspaceHeaderKind.none, workspaceHeaderKind(false, false));
+    try std.testing.expectEqual(WorkspaceHeaderKind.pinned, workspaceHeaderKind(true, false));
 }

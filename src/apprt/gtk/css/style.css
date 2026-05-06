@@ -263,6 +263,14 @@ label.resize-overlay {
   letter-spacing: 0;
 }
 
+.termplex-workspace-group-header {
+  margin: 8px 10px 4px 10px;
+  color: #526177;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
 .termplex-workspace-tab {
   padding: 0;
   background-color: rgba(16, 23, 34, 0.62);
