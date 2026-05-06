@@ -458,6 +458,42 @@ def assert_history_transcript_cli(args, env, history_item, marker, timeout):
         raise E2EError("history transcript viewer returned wrong history_id: {}".format(shown))
 
 
+def assert_history_promote_to_task(args, env, profile, workspace_name, history_item, timeout):
+    command_id = history_item.get("id")
+    command = history_item.get("command")
+    if command_id is None or not command:
+        raise E2EError("history search result missing command id or command: {}".format(history_item))
+
+    task_name = "promoted-history-task"
+    promoted = ctl(
+        args,
+        env,
+        "task",
+        "promote",
+        "--workspace",
+        workspace_name,
+        "--command-id",
+        str(command_id),
+        "--name",
+        task_name,
+    )
+    if promoted.get("name") != task_name or promoted.get("command") != command:
+        raise E2EError("task promote returned wrong task: {}".format(promoted))
+    if not promoted.get("working_directory"):
+        raise E2EError("task promote did not persist working directory metadata: {}".format(promoted))
+
+    wait_until(
+        "promoted command history task persisted",
+        timeout,
+        lambda: query_one(
+            profile,
+            "SELECT command FROM workspace_tasks WHERE name = ?",
+            (task_name,),
+        )
+        == command,
+    )
+
+
 def assert_dashboard_status(args, env, workspace_name, command_marker, timeout):
     def dashboard_has_context():
         status = ctl(args, env, "dashboard", "status", "--workspace", workspace_name)
@@ -971,6 +1007,7 @@ def run_scenario(args, profile, env):
         assert_sqlite_rows(profile, workspace_name, command_name, args.timeout)
         history_item = assert_history_search(args, env, workspace_name, command_name, args.timeout)
         assert_history_transcript_cli(args, env, history_item, marker, args.timeout)
+        assert_history_promote_to_task(args, env, profile, workspace_name, history_item, args.timeout)
         ctl(args, env, "history", "show")
         transcript_path = assert_transcript_contains(profile, workspace_name, marker, args.timeout)
         assert_storage_status_has_history(args, env, args.timeout)

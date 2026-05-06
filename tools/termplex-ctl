@@ -257,6 +257,10 @@ def main():
     task_add.add_argument("--name", required=True, help="Task shortcut name")
     task_add.add_argument("--command", required=True, help="Command to send to the selected terminal")
     task_add.add_argument("--dir", help="Working directory metadata for the task")
+    task_promote = task_sub.add_parser("promote", help="Promote a command-history row into a workspace task shortcut")
+    task_promote.add_argument("--workspace", help="Workspace name or index; validates the command belongs to this workspace")
+    task_promote.add_argument("--command-id", required=True, type=int, help="Command history row ID from history search")
+    task_promote.add_argument("--name", required=True, help="Task shortcut name")
     task_run = task_sub.add_parser("run", help="Run a task shortcut in a terminal")
     task_run.add_argument("--workspace", help="Workspace name or index")
     task_run.add_argument("--tab", type=int, help="Tab index; defaults to the selected tab")
@@ -447,6 +451,11 @@ def build_request(args):
             if args.dir:
                 p["dir"] = args.dir
             return "task.add", p
+        if action == "promote":
+            p = {"name": args.name, "command_id": args.command_id}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "task.promote", p
         if action == "run":
             p = {"name": args.name}
             if args.workspace:

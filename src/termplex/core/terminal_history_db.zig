@@ -579,6 +579,19 @@ pub const Database = struct {
         return .{ .items = try items.toOwnedSlice(self.allocator) };
     }
 
+    pub fn getCommand(self: *Database, command_id: i64) !CommandRecord {
+        var stmt = try self.prepare(
+            \\SELECT id, history_id, workspace_id, workspace_name, workspace_dir,
+            \\       command, started_at, ended_at, exit_code, source
+            \\FROM command_history
+            \\WHERE id = ?
+        );
+        defer stmt.deinit();
+        try stmt.bindInt64(1, command_id);
+        if (!try stmt.stepRow()) return error.NotFound;
+        return try stmt.readCommandRecord();
+    }
+
     pub fn searchCommands(self: *Database, query: SearchQuery) !CommandList {
         var stmt = try self.prepare(
             \\SELECT id, history_id, workspace_id, workspace_name, workspace_dir,
