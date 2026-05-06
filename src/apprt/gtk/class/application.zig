@@ -4926,6 +4926,16 @@ pub const Application = extern struct {
         ) catch null;
     }
 
+    pub const DiagnosticsExportResult = struct {
+        path: []u8,
+        bytes: usize,
+
+        pub fn deinit(self: *DiagnosticsExportResult, alloc: std.mem.Allocator) void {
+            alloc.free(self.path);
+            self.* = undefined;
+        }
+    };
+
     fn diagnosticsParams(obj: std.json.ObjectMap) std.json.ObjectMap {
         const params_val = obj.get("params") orelse .null;
         return if (params_val == .object) params_val.object else obj;
@@ -5145,6 +5155,32 @@ pub const Application = extern struct {
         try buf.append(alloc, '}');
     }
 
+    pub fn exportDiagnosticsBundle(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        output: ?[]const u8,
+    ) !DiagnosticsExportResult {
+        const path = try diagnosticsOutputPath(alloc, output);
+        errdefer alloc.free(path);
+
+        if (std.fs.path.dirname(path)) |parent| {
+            try std.fs.cwd().makePath(parent);
+        }
+
+        var bundle: std.ArrayListUnmanaged(u8) = .empty;
+        defer bundle.deinit(alloc);
+        try self.appendDiagnosticsBundleJson(&bundle, alloc);
+
+        const file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+        defer file.close();
+        try file.writeAll(bundle.items);
+
+        return .{
+            .path = path,
+            .bytes = bundle.items.len,
+        };
+    }
+
     fn ipcDiagnosticsError(alloc: std.mem.Allocator, id: i64, code: []const u8, message: []const u8) ?[]u8 {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(alloc);
@@ -5161,42 +5197,18 @@ pub const Application = extern struct {
     fn ipcDiagnosticsExport(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
         const params = diagnosticsParams(obj);
         const output = jsonStringParam(params, "output");
-        const path = diagnosticsOutputPath(alloc, output) catch |err| {
-            log.warn("failed to resolve diagnostics output path: {}", .{err});
-            return ipcDiagnosticsError(alloc, id, "diagnostics_path_failed", "failed to resolve diagnostics output path");
-        };
-        defer alloc.free(path);
-
-        if (std.fs.path.dirname(path)) |parent| {
-            std.fs.cwd().makePath(parent) catch |err| {
-                log.warn("failed to create diagnostics output dir {s}: {}", .{ parent, err });
-                return ipcDiagnosticsError(alloc, id, "diagnostics_write_failed", "failed to create diagnostics output directory");
-            };
-        }
-
-        var bundle: std.ArrayListUnmanaged(u8) = .empty;
-        defer bundle.deinit(alloc);
-        self.appendDiagnosticsBundleJson(&bundle, alloc) catch |err| {
-            log.warn("failed to build diagnostics bundle: {}", .{err});
-            return ipcDiagnosticsError(alloc, id, "diagnostics_build_failed", "failed to build diagnostics bundle");
-        };
-
-        const file = std.fs.createFileAbsolute(path, .{ .truncate = true }) catch |err| {
-            log.warn("failed to create diagnostics bundle {s}: {}", .{ path, err });
+        var result = self.exportDiagnosticsBundle(alloc, output) catch |err| {
+            log.warn("failed to export diagnostics bundle: {}", .{err});
             return ipcDiagnosticsError(alloc, id, "diagnostics_write_failed", "failed to write diagnostics bundle");
         };
-        defer file.close();
-        file.writeAll(bundle.items) catch |err| {
-            log.warn("failed to write diagnostics bundle {s}: {}", .{ path, err });
-            return ipcDiagnosticsError(alloc, id, "diagnostics_write_failed", "failed to write diagnostics bundle");
-        };
+        defer result.deinit(alloc);
 
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(alloc);
         buf.appendSlice(alloc, "{\"ok\":true,\"result\":{\"path\":") catch return null;
-        appendJsonString(&buf, alloc, path) catch return null;
+        appendJsonString(&buf, alloc, result.path) catch return null;
         buf.appendSlice(alloc, ",\"bytes\":") catch return null;
-        appendJsonInt(&buf, alloc, bundle.items.len) catch return null;
+        appendJsonInt(&buf, alloc, result.bytes) catch return null;
         buf.appendSlice(alloc, "},\"id\":") catch return null;
         appendJsonInt(&buf, alloc, id) catch return null;
         buf.appendSlice(alloc, "}") catch return null;

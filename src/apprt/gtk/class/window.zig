@@ -3055,6 +3055,13 @@ pub const Window = extern struct {
                 self,
                 .{},
             );
+            _ = WorkspaceDashboardDialog.signals.@"export-diagnostics".connect(
+                dialog,
+                *Window,
+                signalDashboardExportDiagnostics,
+                self,
+                .{},
+            );
             _ = WorkspaceDashboardDialog.signals.@"open-transcript".connect(
                 dialog,
                 *Window,
@@ -3117,6 +3124,33 @@ pub const Window = extern struct {
 
     fn signalDashboardOpenStorage(_: *WorkspaceDashboardDialog, self: *Self) callconv(.c) void {
         self.toggleStorageManagement();
+    }
+
+    fn signalDashboardExportDiagnostics(_: *WorkspaceDashboardDialog, self: *Self) callconv(.c) void {
+        const alloc = std.heap.c_allocator;
+        var result = Application.default().exportDiagnosticsBundle(alloc, null) catch |err| {
+            log.warn("failed to export diagnostics bundle from dashboard: {}", .{err});
+            self.addToast(i18n._("Unable to export diagnostics"));
+            return;
+        };
+        defer result.deinit(alloc);
+
+        const message = std.fmt.allocPrint(
+            alloc,
+            "Diagnostics exported: {s}",
+            .{result.path},
+        ) catch {
+            self.addToast(i18n._("Diagnostics exported"));
+            return;
+        };
+        defer alloc.free(message);
+
+        const message_z = alloc.dupeZ(u8, message) catch {
+            self.addToast(i18n._("Diagnostics exported"));
+            return;
+        };
+        defer alloc.free(message_z);
+        self.addToast(message_z.ptr);
     }
 
     fn signalDashboardOpenTranscript(_: *WorkspaceDashboardDialog, history_id: [*:0]const u8, self: *Self) callconv(.c) void {

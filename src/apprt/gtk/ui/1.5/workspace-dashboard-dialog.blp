@@ -61,6 +61,11 @@ Adw.Dialog dialog {
           label: _("Storage And History");
           clicked => $storage_clicked();
         }
+
+        Gtk.Button {
+          label: _("Diagnostics");
+          clicked => $diagnostics_clicked();
+        }
       }
 
       Gtk.Label workspace_label {
