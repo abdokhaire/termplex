@@ -75,6 +75,13 @@
   color: #000000;
 }
 
+.termplex-pinned-badge {
+  background-color: #00ffff;
+  border: 1px solid #ffffff;
+  color: #000000;
+  font-weight: 700;
+}
+
 .termplex-tab-port {
   color: #00ff00;
 }

@@ -70,6 +70,9 @@ pub const Sidebar = extern struct {
         /// Callback invoked when the user opens Source Control for a workspace.
         on_source_control: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
 
+        /// Callback invoked when the user toggles pinned state for a workspace.
+        on_pin: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
         /// Index of the orchestration workspace (null if none). Set by Application.
         orchestration_idx: ?u32 = null,
 
@@ -236,12 +239,14 @@ pub const Sidebar = extern struct {
         on_delete: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_change_dir: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_source_control: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        on_pin: ?*const fn (index: u32, userdata: ?*anyopaque) void,
     ) void {
         const priv = self.private();
         priv.on_rename = on_rename;
         priv.on_delete = on_delete;
         priv.on_change_dir = on_change_dir;
         priv.on_source_control = on_source_control;
+        priv.on_pin = on_pin;
     }
 
     /// Add a new workspace tab at the end of the list.
@@ -255,7 +260,7 @@ pub const Sidebar = extern struct {
         const priv = self.private();
 
         const tab = WorkspaceTab.new();
-        tab.update(name, port_text, branch_text, dir_text, false, false, 0, 0);
+        tab.update(name, port_text, branch_text, dir_text, false, false, 0, 0, false);
 
         // Wire hover action callbacks (rename/delete/change-dir).
         // Skip for orchestrator workspace — callbacks stay null so icons won't appear.
@@ -274,6 +279,7 @@ pub const Sidebar = extern struct {
                 priv.on_delete,
                 priv.on_change_dir,
                 priv.on_source_control,
+                priv.on_pin,
                 priv.userdata,
             );
         }
@@ -344,6 +350,7 @@ pub const Sidebar = extern struct {
         has_unread: bool,
         staged_count: u32,
         unstaged_count: u32,
+        is_pinned: bool,
     ) void {
         const priv = self.private();
         const row = priv.workspace_list.getRowAtIndex(@intCast(index)) orelse return;
@@ -352,7 +359,7 @@ pub const Sidebar = extern struct {
         // The child of the ListBoxRow is the WorkspaceTab (a Gtk.Box).
         // We need to cast the generic Widget pointer to a WorkspaceTab pointer.
         const tab: *WorkspaceTab = @ptrCast(@alignCast(child_widget));
-        tab.update(name, port_text, branch_text, dir_text, is_active, has_unread, staged_count, unstaged_count);
+        tab.update(name, port_text, branch_text, dir_text, is_active, has_unread, staged_count, unstaged_count, is_pinned);
 
         // Apply or remove orchestrator styling so the CSS descendant
         // selector `.termplex-orchestrator-label .termplex-tab-name` can reach

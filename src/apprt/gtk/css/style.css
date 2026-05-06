@@ -268,6 +268,10 @@ label.resize-overlay {
   background-color: rgba(16, 23, 34, 0.62);
 }
 
+.termplex-workspace-pinned {
+  background-color: rgba(0, 212, 255, 0.05);
+}
+
 .termplex-workspace-content {
   padding: 1px 0;
 }
@@ -332,6 +336,16 @@ label.resize-overlay {
   border: 1px solid rgba(250, 204, 21, 0.24);
 }
 
+.termplex-pinned-badge {
+  color: #38bdf8;
+  background-color: rgba(56, 189, 248, 0.10);
+  border: 1px solid rgba(56, 189, 248, 0.24);
+  border-radius: 2px;
+  padding: 0px 4px;
+  font-size: 9px;
+  font-weight: 800;
+}
+
 .termplex-tab-dir {
   color: #7a8ba3;
   font-size: 10px;
@@ -359,6 +373,11 @@ label.resize-overlay {
 }
 
 .termplex-tab-action-source-control:hover {
+  color: #38bdf8;
+  background-color: rgba(56, 189, 248, 0.10);
+}
+
+.termplex-tab-action-pin:hover {
   color: #38bdf8;
   background-color: rgba(56, 189, 248, 0.10);
 }

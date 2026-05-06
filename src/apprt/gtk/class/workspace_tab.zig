@@ -94,6 +94,9 @@ pub const WorkspaceTab = extern struct {
         /// Badge showing unstaged git change count.
         git_unstaged_badge: *gtk.Label = undefined,
 
+        /// Badge shown when the workspace is pinned.
+        pinned_badge: *gtk.Label = undefined,
+
         /// Inline rename state.
         rename_entry: ?*gtk.Entry = null,
         is_renaming: bool = false,
@@ -128,6 +131,9 @@ pub const WorkspaceTab = extern struct {
 
         /// Callback invoked when the source-control action icon is clicked.
         on_action_source_control: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
+        /// Callback invoked when the pin action icon is clicked.
+        on_action_pin: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
 
         /// Opaque pointer passed to action callbacks.
         action_userdata: ?*anyopaque = null,
@@ -202,7 +208,7 @@ pub const WorkspaceTab = extern struct {
         // -- Action icons box: shown on hover, hidden by default --
         const action_box = gtk.Box.new(.horizontal, 2);
         action_box.as(gtk.Widget).addCssClass("termplex-tab-actions");
-        action_box.as(gtk.Widget).setSizeRequest(92, -1);
+        action_box.as(gtk.Widget).setSizeRequest(116, -1);
         action_box.as(gtk.Widget).setOpacity(0.0);
         action_box.as(gtk.Widget).setSensitive(0);
         priv.action_box = action_box;
@@ -215,6 +221,14 @@ pub const WorkspaceTab = extern struct {
         source_control_btn.as(gtk.Widget).setTooltipText("Open Source Control");
         _ = gtk.Button.signals.clicked.connect(source_control_btn, *Self, &onActionSourceControl, self, .{});
         action_box.append(source_control_btn.as(gtk.Widget));
+
+        const pin_btn = gtk.Button.newFromIconName("emblem-favorite-symbolic");
+        pin_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
+        pin_btn.as(gtk.Widget).addCssClass("termplex-tab-action-pin");
+        pin_btn.as(gtk.Widget).addCssClass("flat");
+        pin_btn.as(gtk.Widget).setTooltipText("Pin or unpin workspace");
+        _ = gtk.Button.signals.clicked.connect(pin_btn, *Self, &onActionPin, self, .{});
+        action_box.append(pin_btn.as(gtk.Widget));
 
         const rename_btn = gtk.Button.newFromIconName("document-edit-symbolic");
         rename_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
@@ -291,6 +305,12 @@ pub const WorkspaceTab = extern struct {
         priv.git_unstaged_badge = git_unstaged_badge;
         row3.append(git_unstaged_badge.as(gtk.Widget));
 
+        const pinned_badge = gtk.Label.new("pinned");
+        pinned_badge.as(gtk.Widget).addCssClass("termplex-pinned-badge");
+        pinned_badge.as(gtk.Widget).setVisible(0);
+        priv.pinned_badge = pinned_badge;
+        row3.append(pinned_badge.as(gtk.Widget));
+
         // -- Port detail box (hidden by default, shown when "+N" badge clicked) --
         const port_detail_box = gtk.Box.new(.vertical, 1);
         port_detail_box.as(gtk.Widget).addCssClass("termplex-port-detail");
@@ -317,7 +337,8 @@ pub const WorkspaceTab = extern struct {
         if (priv.on_action_rename == null and
             priv.on_action_delete == null and
             priv.on_action_change_dir == null and
-            priv.on_action_source_control == null) return;
+            priv.on_action_source_control == null and
+            priv.on_action_pin == null) return;
         priv.is_hovered = true;
         priv.action_box.as(gtk.Widget).setOpacity(1.0);
         priv.action_box.as(gtk.Widget).setSensitive(1);
@@ -360,6 +381,13 @@ pub const WorkspaceTab = extern struct {
         cb(index, priv.action_userdata);
     }
 
+    fn onActionPin(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        const cb = priv.on_action_pin orelse return;
+        const index = self.getRowIndex() orelse return;
+        cb(index, priv.action_userdata);
+    }
+
     fn getRowIndex(self: *Self) ?u32 {
         const parent = self.as(gtk.Widget).getParent() orelse return null;
         const row: *gtk.ListBoxRow = @ptrCast(@alignCast(parent));
@@ -383,6 +411,7 @@ pub const WorkspaceTab = extern struct {
         on_delete: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_change_dir: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_source_control: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        on_pin: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         userdata: ?*anyopaque,
     ) void {
         const priv = self.private();
@@ -390,6 +419,7 @@ pub const WorkspaceTab = extern struct {
         priv.on_action_delete = on_delete;
         priv.on_action_change_dir = on_change_dir;
         priv.on_action_source_control = on_source_control;
+        priv.on_action_pin = on_pin;
         priv.action_userdata = userdata;
     }
 
@@ -405,6 +435,7 @@ pub const WorkspaceTab = extern struct {
         has_unread: bool,
         staged_count: u32,
         unstaged_count: u32,
+        is_pinned: bool,
     ) void {
         const priv = self.private();
 
@@ -505,10 +536,18 @@ pub const WorkspaceTab = extern struct {
 
         // Update name label CSS class for active state.
         const name_widget = priv.name_label.as(gtk.Widget);
+        const tab_widget = self.as(gtk.Widget);
         if (is_active) {
             name_widget.addCssClass("termplex-tab-name-active");
         } else {
             name_widget.removeCssClass("termplex-tab-name-active");
+        }
+
+        priv.pinned_badge.as(gtk.Widget).setVisible(@intFromBool(is_pinned));
+        if (is_pinned) {
+            tab_widget.addCssClass("termplex-workspace-pinned");
+        } else {
+            tab_widget.removeCssClass("termplex-workspace-pinned");
         }
 
         // Update left border CSS classes for active / unread state.

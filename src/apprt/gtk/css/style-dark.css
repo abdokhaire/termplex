@@ -92,6 +92,16 @@
   border-color: rgba(250, 204, 21, 0.24);
 }
 
+.termplex-workspace-pinned {
+  background-color: rgba(0, 212, 255, 0.05);
+}
+
+.termplex-pinned-badge {
+  color: #38bdf8;
+  background-color: rgba(56, 189, 248, 0.10);
+  border-color: rgba(56, 189, 248, 0.24);
+}
+
 .termplex-sidebar-toggle {
   background-color: #0d141d;
   color: #00d4ff;

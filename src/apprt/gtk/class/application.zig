@@ -274,6 +274,9 @@ pub const Application = extern struct {
         /// Per-workspace unstaged git change count. Parallel to workspace_names.
         workspace_git_unstaged_counts: std.ArrayListUnmanaged(u32) = .empty,
 
+        /// Per-workspace pinned state. Parallel to workspace_names.
+        workspace_pinned: std.ArrayListUnmanaged(bool) = .empty,
+
         /// Index of the currently active workspace (0-based). Only
         /// meaningful when workspace_names is non-empty.
         active_workspace_idx: u32 = 0,
@@ -757,6 +760,7 @@ pub const Application = extern struct {
         priv.workspace_git_dirty.deinit(alloc);
         priv.workspace_git_staged_counts.deinit(alloc);
         priv.workspace_git_unstaged_counts.deinit(alloc);
+        priv.workspace_pinned.deinit(alloc);
 
         // Termplex: free any unconsumed restore tab counts.
         if (priv.restore_tab_counts) |counts| {
@@ -1967,6 +1971,20 @@ pub const Application = extern struct {
             tab_view.as(gobject.Object).unref();
             return null;
         };
+        priv.workspace_pinned.append(alloc, false) catch {
+            _ = priv.workspace_git_unstaged_counts.pop();
+            _ = priv.workspace_git_staged_counts.pop();
+            _ = priv.workspace_git_dirty.pop();
+            _ = priv.workspace_git_branches.pop();
+            _ = priv.workspace_tab_views.pop();
+            _ = priv.workspace_ids.pop();
+            _ = priv.workspace_dirs.pop();
+            _ = priv.workspace_names.pop();
+            alloc.free(name);
+            alloc.free(resolved_dir);
+            tab_view.as(gobject.Object).unref();
+            return null;
+        };
 
         priv.next_workspace_number += 1;
         const index: u32 = @intCast(priv.workspace_names.items.len - 1);
@@ -2159,6 +2177,7 @@ pub const Application = extern struct {
         _ = priv.workspace_git_dirty.orderedRemove(index);
         _ = priv.workspace_git_staged_counts.orderedRemove(index);
         _ = priv.workspace_git_unstaged_counts.orderedRemove(index);
+        _ = priv.workspace_pinned.orderedRemove(index);
 
         // Adjust active_workspace_idx: shift down if removed index was before active,
         // clamp if it was the active (or last).
@@ -2190,6 +2209,21 @@ pub const Application = extern struct {
         alloc.free(priv.workspace_names.items[index]);
         priv.workspace_names.items[index] = alloc.dupeZ(u8, new_name) catch return;
         self.upsertTerminalHistoryProject(index);
+    }
+
+    pub fn workspacePinned(self: *Self, index: u32) bool {
+        const priv = self.private();
+        if (index >= priv.workspace_pinned.items.len) return false;
+        return priv.workspace_pinned.items[index];
+    }
+
+    pub fn toggleWorkspacePinned(self: *Self, index: u32) bool {
+        const priv = self.private();
+        if (index >= priv.workspace_pinned.items.len) return false;
+        priv.workspace_pinned.items[index] = !priv.workspace_pinned.items[index];
+        self.refreshAllWorkspaceSidebars();
+        autosaveSession(self);
+        return priv.workspace_pinned.items[index];
     }
 
     /// Change the working directory for a workspace.
@@ -6910,6 +6944,12 @@ pub const Application = extern struct {
         return @min(idx, last_idx);
     }
 
+    fn sessionWorkspacePinned(value: std.json.Value) bool {
+        if (value != .object) return false;
+        const pinned = value.object.get("pinned") orelse return false;
+        return pinned == .bool and pinned.bool;
+    }
+
     /// Collect current state and atomically write it to the session JSON file.
     fn autosaveSession(self: *Self) void {
         const alloc = self.allocator();
@@ -6952,6 +6992,8 @@ pub const Application = extern struct {
             appendJsonString(&ws_buf, alloc, name) catch return;
             ws_buf.appendSlice(alloc, ",\"dir\":") catch return;
             appendJsonString(&ws_buf, alloc, dir) catch return;
+            ws_buf.appendSlice(alloc, ",\"pinned\":") catch return;
+            ws_buf.appendSlice(alloc, if (i < priv.workspace_pinned.items.len and priv.workspace_pinned.items[i]) "true" else "false") catch return;
             ws_buf.appendSlice(alloc, ",\"active_tab_index\":") catch return;
             const active_tab_index: u32 = self.activeTabIndexForWorkspace(@intCast(i)) orelse 0;
             var active_tab_buf: [16]u8 = undefined;
@@ -7001,7 +7043,7 @@ pub const Application = extern struct {
 
         const json = std.fmt.allocPrint(alloc,
             \\{{
-            \\  "version": 6,
+            \\  "version": 7,
             \\  "window_width": {d},
             \\  "window_height": {d},
             \\  "sidebar_width": {d},
@@ -7180,7 +7222,8 @@ pub const Application = extern struct {
         // Explicit 4 → v4 (v3 + workspace active_tab_index + per-tab dir).
         // Explicit 5 → v5 (full split/session snapshots per tab).
         // Explicit 6 → v6 (v5 + stable workspace/history IDs).
-        const max_supported_version: i64 = 6;
+        // Explicit 7 → v7 (v6 + pinned workspace state).
+        const max_supported_version: i64 = 7;
         const format_version: u32 = if (root.object.get("version")) |vv|
             switch (vv) {
                 .integer => |n| if (n < 1 or n > max_supported_version) {
@@ -7207,6 +7250,7 @@ pub const Application = extern struct {
         priv.workspace_git_dirty.clearRetainingCapacity();
         priv.workspace_git_staged_counts.clearRetainingCapacity();
         priv.workspace_git_unstaged_counts.clearRetainingCapacity();
+        priv.workspace_pinned.clearRetainingCapacity();
         priv.notifications.clearAll();
         // Reset counter so addWorkspaceWithDir assigns correct numbers below.
         priv.next_workspace_number = 1;
@@ -7388,6 +7432,7 @@ pub const Application = extern struct {
             // v2: extract tab_count from "tab_count" field.
             // v1: default to 1 tab.
             var tab_count: u32 = 1;
+            const is_pinned = sessionWorkspacePinned(item);
             var active_tab_index: u32 = 0;
             var tab_title_list = std.ArrayListUnmanaged([:0]const u8){};
             var tab_snapshot_list = std.ArrayListUnmanaged(session_mod.TabData){};
@@ -7610,6 +7655,21 @@ pub const Application = extern struct {
                 alloc.free(dir);
                 tab_view.as(gobject.Object).unref();
                 log.warn("session restore: OOM appending git unstaged count", .{});
+                continue;
+            };
+            priv.workspace_pinned.append(alloc, is_pinned) catch {
+                _ = priv.workspace_git_unstaged_counts.pop();
+                _ = priv.workspace_git_staged_counts.pop();
+                _ = priv.workspace_git_dirty.pop();
+                _ = priv.workspace_git_branches.pop();
+                _ = priv.workspace_tab_views.pop();
+                _ = priv.workspace_ids.pop();
+                _ = priv.workspace_dirs.pop();
+                _ = priv.workspace_names.pop();
+                alloc.free(name);
+                alloc.free(dir);
+                tab_view.as(gobject.Object).unref();
+                log.warn("session restore: OOM appending workspace pinned state", .{});
                 continue;
             };
             // Non-fatal if tab_count/title tracking fails; window will fall back to defaults.
@@ -8348,6 +8408,7 @@ pub const Application = extern struct {
         staged_count: u32,
         unstaged_count: u32,
     ) void {
+        const is_pinned = self.workspacePinned(active_idx);
         const Ctx = struct {
             active_idx: u32,
             name: ?[:0]const u8,
@@ -8356,6 +8417,7 @@ pub const Application = extern struct {
             dir_text: ?[:0]const u8,
             staged_count: u32,
             unstaged_count: u32,
+            is_pinned: bool,
             has_unread: bool,
         };
         var ctx = Ctx{
@@ -8366,6 +8428,7 @@ pub const Application = extern struct {
             .dir_text = dir_text,
             .staged_count = staged_count,
             .unstaged_count = unstaged_count,
+            .is_pinned = is_pinned,
             .has_unread = self.workspaceUnreadCount(active_idx) > 0,
         };
         const list = self.as(gtk.Application).getWindows();
@@ -8374,7 +8437,7 @@ pub const Application = extern struct {
                 const c: *Ctx = @ptrCast(@alignCast(userdata orelse return));
                 const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
                 const win = gobject.ext.cast(Window, ptr) orelse return;
-                win.getSidebar().updateWorkspace(c.active_idx, c.name, c.port_text, c.branch_text, c.dir_text, true, c.has_unread, c.staged_count, c.unstaged_count);
+                win.getSidebar().updateWorkspace(c.active_idx, c.name, c.port_text, c.branch_text, c.dir_text, true, c.has_unread, c.staged_count, c.unstaged_count, c.is_pinned);
             }
         }.cb, @ptrCast(&ctx));
     }
@@ -8418,6 +8481,7 @@ pub const Application = extern struct {
                 priv.workspace_git_unstaged_counts.items[i]
             else
                 0;
+            const is_pinned = self.workspacePinned(i);
 
             // Dir text with ~ shorthand.
             var dir_buf: [512]u8 = undefined;
@@ -8436,6 +8500,7 @@ pub const Application = extern struct {
                 has_unread: bool,
                 staged_count: u32,
                 unstaged_count: u32,
+                is_pinned: bool,
             };
             var ctx = Ctx{
                 .idx = i,
@@ -8447,13 +8512,14 @@ pub const Application = extern struct {
                 .has_unread = self.workspaceUnreadCount(i) > 0,
                 .staged_count = staged_count,
                 .unstaged_count = unstaged_count,
+                .is_pinned = is_pinned,
             };
             list.foreach(struct {
                 fn cb(data: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) void {
                     const c: *Ctx = @ptrCast(@alignCast(userdata orelse return));
                     const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
                     const win = gobject.ext.cast(Window, ptr) orelse return;
-                    win.getSidebar().updateWorkspace(c.idx, c.name_val, c.port_val, c.branch_val, c.dir_val, c.active, c.has_unread, c.staged_count, c.unstaged_count);
+                    win.getSidebar().updateWorkspace(c.idx, c.name_val, c.port_val, c.branch_val, c.dir_val, c.active, c.has_unread, c.staged_count, c.unstaged_count, c.is_pinned);
                 }
             }.cb, @ptrCast(&ctx));
         }
@@ -11355,4 +11421,16 @@ test "ipc transcript fallback strips terminal control sequences" {
     defer std.testing.allocator.free(out);
 
     try std.testing.expectEqualStrings("one\ntwo red\nthreefour", out);
+}
+
+test "session workspace pinned parser defaults false and reads true" {
+    const alloc = std.testing.allocator;
+
+    const pinned = try std.json.parseFromSlice(std.json.Value, alloc, "{\"pinned\":true}", .{});
+    defer pinned.deinit();
+    try std.testing.expectEqual(true, Application.sessionWorkspacePinned(pinned.value));
+
+    const missing = try std.json.parseFromSlice(std.json.Value, alloc, "{\"name\":\"api\"}", .{});
+    defer missing.deinit();
+    try std.testing.expectEqual(false, Application.sessionWorkspacePinned(missing.value));
 }

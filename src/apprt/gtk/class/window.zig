@@ -386,6 +386,7 @@ pub const Window = extern struct {
                         false,
                         0,
                         0,
+                        app.workspacePinned(app.activeWorkspaceIndex()),
                     );
                 }
                 // Tell the sidebar which workspace is the orchestrator so it can
@@ -407,6 +408,7 @@ pub const Window = extern struct {
                 &termplexOnDeleteWorkspace,
                 &termplexOnChangeDirWorkspace,
                 &termplexOnSourceControlWorkspace,
+                &termplexOnPinWorkspace,
             );
 
             // 2. Create a horizontal Gtk.Paned to hold sidebar + content.
@@ -1854,6 +1856,14 @@ pub const Window = extern struct {
         }
 
         win.toggleSourceControl();
+    }
+
+    fn termplexOnPinWorkspace(index: u32, userdata: ?*anyopaque) void {
+        const win: *Self = @ptrCast(@alignCast(userdata orelse return));
+        const app = Application.default();
+        const pinned = app.toggleWorkspacePinned(index);
+        const toast = adw.Toast.new(if (pinned) "Workspace pinned" else "Workspace unpinned");
+        win.private().toast_overlay.addToast(toast);
     }
 
     fn termplexOnChangeDirComplete(index: u32, new_dir: [:0]const u8, userdata: ?*anyopaque) void {
