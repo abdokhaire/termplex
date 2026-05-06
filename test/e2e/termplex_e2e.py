@@ -604,9 +604,19 @@ def assert_source_control_flow(args, env, workspace_name, timeout):
     if "staged.txt" not in change_paths(status, "staged"):
         raise E2EError("source control stage did not stage new file: {}".format(status))
 
-    status = ctl(args, env, "git", "stage", "--workspace", workspace_name, "--path", "tracked.txt")
-    if "tracked.txt" not in change_paths(status, "staged"):
-        raise E2EError("source control stage did not stage tracked change: {}".format(status))
+    status = ctl(args, env, "git", "unstage-all", "--workspace", workspace_name)
+    if change_paths(status, "staged"):
+        raise E2EError("source control unstage-all left staged files: {}".format(status))
+    unstaged = change_paths(status, "unstaged")
+    if not {"staged.txt", "tracked.txt"}.issubset(unstaged):
+        raise E2EError("source control unstage-all did not move all files to changes: {}".format(status))
+
+    status = ctl(args, env, "git", "stage-all", "--workspace", workspace_name)
+    staged = change_paths(status, "staged")
+    if not {"staged.txt", "tracked.txt"}.issubset(staged):
+        raise E2EError("source control stage-all did not stage all changes: {}".format(status))
+    if change_paths(status, "unstaged"):
+        raise E2EError("source control stage-all left unstaged files: {}".format(status))
 
     commit = ctl(args, env, "git", "commit", "--workspace", workspace_name, "--message", "e2e source control commit")
     if not commit.get("committed") or not commit.get("commit"):

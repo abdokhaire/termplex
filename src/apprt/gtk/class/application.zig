@@ -1730,11 +1730,31 @@ pub const Application = extern struct {
         return status;
     }
 
+    pub fn stageAllActiveGitFiles(self: *Self) !git_status.Status {
+        const alloc = std.heap.c_allocator;
+        const priv = self.private();
+        const dir = priv.current_pwd orelse self.workspaceDir(priv.active_workspace_idx) orelse ".";
+        var status = try git_status.stageAll(alloc, dir);
+        errdefer status.deinit(alloc);
+        self.syncGitStatusToWorkspace(priv.active_workspace_idx, &status);
+        return status;
+    }
+
     pub fn unstageActiveGitFile(self: *Self, path: []const u8) !git_status.Status {
         const alloc = std.heap.c_allocator;
         const priv = self.private();
         const dir = priv.current_pwd orelse self.workspaceDir(priv.active_workspace_idx) orelse ".";
         var status = try git_status.unstage(alloc, dir, path);
+        errdefer status.deinit(alloc);
+        self.syncGitStatusToWorkspace(priv.active_workspace_idx, &status);
+        return status;
+    }
+
+    pub fn unstageAllActiveGitFiles(self: *Self) !git_status.Status {
+        const alloc = std.heap.c_allocator;
+        const priv = self.private();
+        const dir = priv.current_pwd orelse self.workspaceDir(priv.active_workspace_idx) orelse ".";
+        var status = try git_status.unstageAll(alloc, dir);
         errdefer status.deinit(alloc);
         self.syncGitStatusToWorkspace(priv.active_workspace_idx, &status);
         return status;
@@ -3149,8 +3169,16 @@ pub const Application = extern struct {
             return self.ipcGitStage(alloc, id, root.object);
         }
 
+        if (std.mem.eql(u8, method, "git.stage_all")) {
+            return self.ipcGitStageAll(alloc, id, root.object);
+        }
+
         if (std.mem.eql(u8, method, "git.unstage")) {
             return self.ipcGitUnstage(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "git.unstage_all")) {
+            return self.ipcGitUnstageAll(alloc, id, root.object);
         }
 
         if (std.mem.eql(u8, method, "git.commit")) {
@@ -5149,6 +5177,32 @@ pub const Application = extern struct {
         ) catch null;
     }
 
+    fn ipcGitStageAll(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = gitParams(obj);
+        const ws_idx = self.gitWorkspaceIndex(params) orelse {
+            return ipcGitError(alloc, id, "not_found", "workspace not found");
+        };
+        const dir = self.gitDirectoryForParams(params) orelse {
+            return ipcGitError(alloc, id, "not_found", "workspace directory not found");
+        };
+
+        var status = git_status.stageAll(alloc, dir) catch |err| {
+            log.warn("failed to stage all git files: {}", .{err});
+            return ipcGitError(alloc, id, "git_stage_failed", "failed to stage all files");
+        };
+        defer status.deinit(alloc);
+        self.syncGitStatusToWorkspace(ws_idx, &status);
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        appendGitStatusJson(&buf, alloc, status) catch return null;
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
     fn ipcGitUnstage(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
         const params = gitParams(obj);
         const ws_idx = self.gitWorkspaceIndex(params) orelse {
@@ -5164,6 +5218,32 @@ pub const Application = extern struct {
         var status = git_status.unstage(alloc, dir, path) catch |err| {
             log.warn("failed to unstage git file: {}", .{err});
             return ipcGitError(alloc, id, "git_unstage_failed", "failed to unstage file");
+        };
+        defer status.deinit(alloc);
+        self.syncGitStatusToWorkspace(ws_idx, &status);
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        appendGitStatusJson(&buf, alloc, status) catch return null;
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
+    }
+
+    fn ipcGitUnstageAll(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
+        const params = gitParams(obj);
+        const ws_idx = self.gitWorkspaceIndex(params) orelse {
+            return ipcGitError(alloc, id, "not_found", "workspace not found");
+        };
+        const dir = self.gitDirectoryForParams(params) orelse {
+            return ipcGitError(alloc, id, "not_found", "workspace directory not found");
+        };
+
+        var status = git_status.unstageAll(alloc, dir) catch |err| {
+            log.warn("failed to unstage all git files: {}", .{err});
+            return ipcGitError(alloc, id, "git_unstage_failed", "failed to unstage all files");
         };
         defer status.deinit(alloc);
         self.syncGitStatusToWorkspace(ws_idx, &status);

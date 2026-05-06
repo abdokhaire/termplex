@@ -124,9 +124,21 @@ Adw.Dialog dialog {
             }
           }
 
-          Gtk.Button unstage_button {
-            label: _("Unstage File");
-            clicked => $unstage_clicked();
+          Gtk.Box {
+            orientation: horizontal;
+            spacing: 8;
+
+            Gtk.Button unstage_button {
+              label: _("Unstage File");
+              hexpand: true;
+              clicked => $unstage_clicked();
+            }
+
+            Gtk.Button {
+              label: _("Unstage All");
+              hexpand: true;
+              clicked => $unstage_all_clicked();
+            }
           }
 
           Gtk.Separator {}
@@ -196,9 +208,21 @@ Adw.Dialog dialog {
             }
           }
 
-          Gtk.Button stage_button {
-            label: _("Stage File");
-            clicked => $stage_clicked();
+          Gtk.Box {
+            orientation: horizontal;
+            spacing: 8;
+
+            Gtk.Button stage_button {
+              label: _("Stage File");
+              hexpand: true;
+              clicked => $stage_clicked();
+            }
+
+            Gtk.Button {
+              label: _("Stage All");
+              hexpand: true;
+              clicked => $stage_all_clicked();
+            }
           }
         }
 

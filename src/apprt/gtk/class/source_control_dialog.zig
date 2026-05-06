@@ -201,6 +201,16 @@ pub const SourceControlDialog = extern struct {
         self.refresh();
     }
 
+    fn stageAllClicked(_: *gtk.Button, self: *SourceControlDialog) callconv(.c) void {
+        var status = Application.default().stageAllActiveGitFiles() catch |err| {
+            log.warn("failed to stage all files: {}", .{err});
+            self.setStatus("Unable to stage all files");
+            return;
+        };
+        status.deinit(std.heap.c_allocator);
+        self.refresh();
+    }
+
     fn unstageClicked(_: *gtk.Button, self: *SourceControlDialog) callconv(.c) void {
         const item = selectedChange(self.private().staged_model) orelse return;
         defer item.unref();
@@ -209,6 +219,16 @@ pub const SourceControlDialog = extern struct {
         var status = Application.default().unstageActiveGitFile(path) catch |err| {
             log.warn("failed to unstage {s}: {}", .{ path, err });
             self.setStatus("Unable to unstage file");
+            return;
+        };
+        status.deinit(std.heap.c_allocator);
+        self.refresh();
+    }
+
+    fn unstageAllClicked(_: *gtk.Button, self: *SourceControlDialog) callconv(.c) void {
+        var status = Application.default().unstageAllActiveGitFiles() catch |err| {
+            log.warn("failed to unstage all files: {}", .{err});
+            self.setStatus("Unable to unstage all files");
             return;
         };
         status.deinit(std.heap.c_allocator);
@@ -280,6 +300,8 @@ pub const SourceControlDialog = extern struct {
             class.bindTemplateCallback("unstaged_row_activated", &unstagedRowActivated);
             class.bindTemplateCallback("stage_clicked", &stageClicked);
             class.bindTemplateCallback("unstage_clicked", &unstageClicked);
+            class.bindTemplateCallback("stage_all_clicked", &stageAllClicked);
+            class.bindTemplateCallback("unstage_all_clicked", &unstageAllClicked);
             class.bindTemplateCallback("commit_clicked", &commitClicked);
 
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);

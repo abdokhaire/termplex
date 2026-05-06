@@ -207,9 +207,13 @@ def main():
     git_stage = git_sub.add_parser("stage", help="Stage a file")
     git_stage.add_argument("--workspace", help="Workspace name or index")
     git_stage.add_argument("--path", required=True, help="File path relative to the repository root")
+    git_stage_all = git_sub.add_parser("stage-all", help="Stage all source-control changes")
+    git_stage_all.add_argument("--workspace", help="Workspace name or index")
     git_unstage = git_sub.add_parser("unstage", help="Unstage a file")
     git_unstage.add_argument("--workspace", help="Workspace name or index")
     git_unstage.add_argument("--path", required=True, help="File path relative to the repository root")
+    git_unstage_all = git_sub.add_parser("unstage-all", help="Unstage all source-control changes")
+    git_unstage_all.add_argument("--workspace", help="Workspace name or index")
     git_commit = git_sub.add_parser("commit", help="Commit staged files")
     git_commit.add_argument("--workspace", help="Workspace name or index")
     git_commit.add_argument("--message", required=True, help="Commit message")
@@ -360,11 +364,21 @@ def build_request(args):
             if args.workspace:
                 p["workspace"] = parse_workspace_ref(args.workspace)
             return "git.stage", p
+        if action == "stage-all":
+            p = {}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "git.stage_all", p
         if action == "unstage":
             p = {"path": args.path}
             if args.workspace:
                 p["workspace"] = parse_workspace_ref(args.workspace)
             return "git.unstage", p
+        if action == "unstage-all":
+            p = {}
+            if args.workspace:
+                p["workspace"] = parse_workspace_ref(args.workspace)
+            return "git.unstage_all", p
         if action == "commit":
             p = {"message": args.message}
             if args.workspace:

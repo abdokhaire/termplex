@@ -96,6 +96,20 @@ pub const FileArgv = struct {
     }
 };
 
+pub const BulkAction = enum {
+    stage_all,
+    unstage_all,
+};
+
+pub const BulkArgv = struct {
+    argv: [3][]const u8,
+    len: usize,
+
+    pub fn slice(self: *const BulkArgv) []const []const u8 {
+        return self.argv[0..self.len];
+    }
+};
+
 pub fn query(allocator: std.mem.Allocator, directory: []const u8) !Status {
     const root = try repoRoot(allocator, directory) orelse {
         return .{ .is_repo = false };
@@ -182,6 +196,18 @@ pub fn stage(allocator: std.mem.Allocator, directory: []const u8, path: []const 
     return try query(allocator, root);
 }
 
+pub fn stageAll(allocator: std.mem.Allocator, directory: []const u8) !Status {
+    const root = try repoRoot(allocator, directory) orelse return error.NotRepository;
+    defer allocator.free(root);
+
+    const argv = buildBulkArgvForTest(.stage_all);
+    const result = try runGit(allocator, root, argv.slice(), small_output_limit);
+    defer result.deinit(allocator);
+    if (!exited(result.term, 0)) return error.GitCommandFailed;
+
+    return try query(allocator, root);
+}
+
 pub fn unstage(allocator: std.mem.Allocator, directory: []const u8, path: []const u8) !Status {
     try validatePath(path);
     const root = try repoRoot(allocator, directory) orelse return error.NotRepository;
@@ -193,6 +219,18 @@ pub fn unstage(allocator: std.mem.Allocator, directory: []const u8, path: []cons
         &.{ "git", "reset", "--", path },
         small_output_limit,
     );
+    defer result.deinit(allocator);
+    if (!exited(result.term, 0)) return error.GitCommandFailed;
+
+    return try query(allocator, root);
+}
+
+pub fn unstageAll(allocator: std.mem.Allocator, directory: []const u8) !Status {
+    const root = try repoRoot(allocator, directory) orelse return error.NotRepository;
+    defer allocator.free(root);
+
+    const argv = buildBulkArgvForTest(.unstage_all);
+    const result = try runGit(allocator, root, argv.slice(), small_output_limit);
     defer result.deinit(allocator);
     if (!exited(result.term, 0)) return error.GitCommandFailed;
 
@@ -281,6 +319,13 @@ pub fn parseStatusZ(allocator: std.mem.Allocator, data: []const u8) !ParsedStatu
 
 pub fn buildFileArgvForTest(verb: []const u8, path: []const u8) FileArgv {
     return .{ .argv = .{ "git", verb, "--", path } };
+}
+
+pub fn buildBulkArgvForTest(action: BulkAction) BulkArgv {
+    return switch (action) {
+        .stage_all => .{ .argv = .{ "git", "add", "--all" }, .len = 3 },
+        .unstage_all => .{ .argv = .{ "git", "reset", "" }, .len = 2 },
+    };
 }
 
 fn appendChange(
@@ -446,4 +491,21 @@ test "file scoped git argv places paths after separator" {
     try std.testing.expectEqualStrings("add", args[1]);
     try std.testing.expectEqualStrings("--", args[2]);
     try std.testing.expectEqualStrings("-looks-like-option", args[3]);
+}
+
+test "bulk git argv stages all tracked and untracked changes" {
+    const argv = buildBulkArgvForTest(.stage_all);
+    const args = argv.slice();
+    try std.testing.expectEqual(@as(usize, 3), args.len);
+    try std.testing.expectEqualStrings("git", args[0]);
+    try std.testing.expectEqualStrings("add", args[1]);
+    try std.testing.expectEqualStrings("--all", args[2]);
+}
+
+test "bulk git argv unstages without a path argument" {
+    const argv = buildBulkArgvForTest(.unstage_all);
+    const args = argv.slice();
+    try std.testing.expectEqual(@as(usize, 2), args.len);
+    try std.testing.expectEqualStrings("git", args[0]);
+    try std.testing.expectEqualStrings("reset", args[1]);
 }
