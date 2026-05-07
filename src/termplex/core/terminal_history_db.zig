@@ -714,6 +714,29 @@ pub const Database = struct {
         try stmt.stepDone();
     }
 
+    pub fn renameTask(
+        self: *Database,
+        workspace_id: []const u8,
+        old_name: []const u8,
+        new_name: []const u8,
+        timestamp: []const u8,
+    ) !void {
+        var existing = try self.getTask(workspace_id, old_name);
+        existing.deinit(self.allocator);
+
+        var stmt = try self.prepare(
+            \\UPDATE workspace_tasks
+            \\SET name = ?, updated_at = ?
+            \\WHERE workspace_id = ? AND name = ?
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, new_name);
+        try stmt.bindText(2, timestamp);
+        try stmt.bindText(3, workspace_id);
+        try stmt.bindText(4, old_name);
+        try stmt.stepDone();
+    }
+
     pub fn deleteTask(self: *Database, workspace_id: []const u8, name: []const u8) !void {
         var stmt = try self.prepare(
             \\DELETE FROM workspace_tasks
@@ -743,14 +766,8 @@ pub const Database = struct {
         try delete_surface.stepDone();
     }
 
-    pub fn deleteProject(self: *Database, workspace_id: []const u8, timestamp: []const u8) !void {
-        var delete_commands = try self.prepare(
-            \\DELETE FROM command_history
-            \\WHERE workspace_id = ?
-        );
-        defer delete_commands.deinit();
-        try delete_commands.bindText(1, workspace_id);
-        try delete_commands.stepDone();
+    pub fn clearWorkspaceHistoryRows(self: *Database, workspace_id: []const u8) !void {
+        try self.clearWorkspaceCommandRows(workspace_id);
 
         var delete_surfaces = try self.prepare(
             \\DELETE FROM terminal_surfaces
@@ -767,7 +784,20 @@ pub const Database = struct {
         defer delete_tasks.deinit();
         try delete_tasks.bindText(1, workspace_id);
         try delete_tasks.stepDone();
+    }
 
+    pub fn clearWorkspaceCommandRows(self: *Database, workspace_id: []const u8) !void {
+        var delete_commands = try self.prepare(
+            \\DELETE FROM command_history
+            \\WHERE workspace_id = ?
+        );
+        defer delete_commands.deinit();
+        try delete_commands.bindText(1, workspace_id);
+        try delete_commands.stepDone();
+    }
+
+    pub fn deleteProject(self: *Database, workspace_id: []const u8, timestamp: []const u8) !void {
+        try self.clearWorkspaceHistoryRows(workspace_id);
         var mark_project = try self.prepare(
             \\UPDATE terminal_projects
             \\SET deleted_at = ?, updated_at = ?
@@ -1321,11 +1351,22 @@ test "terminal history db persists workspace task shortcuts" {
     try std.testing.expectEqual(@as(u64, 1), run_task.run_count);
     try std.testing.expectEqualStrings("2026-05-05T10:00:03Z", run_task.last_run_at.?);
 
+    try db.renameTask("workspace-tasks", "test", "unit tests", "2026-05-05T10:00:04Z");
+    try std.testing.expectError(error.NotFound, db.getTask("workspace-tasks", "test"));
+
+    var renamed_task = try db.getTask("workspace-tasks", "unit tests");
+    defer renamed_task.deinit(allocator);
+    try std.testing.expectEqualStrings("zig build test", renamed_task.command);
+    try std.testing.expectEqualStrings("/repo/tasks", renamed_task.working_directory.?);
+    try std.testing.expectEqual(@as(u64, 1), renamed_task.run_count);
+    try std.testing.expectEqualStrings("2026-05-05T10:00:03Z", renamed_task.last_run_at.?);
+    try std.testing.expectEqualStrings("2026-05-05T10:00:04Z", renamed_task.updated_at);
+
     try db.deleteTask("workspace-tasks", "lint");
     const remaining = try db.listTasks("workspace-tasks", 10);
     defer remaining.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), remaining.items.len);
-    try std.testing.expectEqualStrings("test", remaining.items[0].name);
+    try std.testing.expectEqualStrings("unit tests", remaining.items[0].name);
 
     const counts = try db.rowCounts();
     try std.testing.expectEqual(@as(u64, 1), counts.task_count);
@@ -1383,4 +1424,62 @@ test "terminal history db deletes project metadata surfaces and commands" {
     try std.testing.expectEqual(@as(u64, 0), counts.surface_count);
     try std.testing.expectEqual(@as(u64, 0), counts.command_count);
     try std.testing.expectEqual(@as(u64, 0), counts.task_count);
+}
+
+test "terminal history db clears workspace history while preserving project metadata" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    try db.upsertProject(.{
+        .workspace_id = "workspace-clear",
+        .workspace_name = "clear",
+        .workspace_dir = "/repo/clear",
+        .timestamp = "2026-05-07T10:00:00Z",
+    });
+    try db.upsertSurface(.{
+        .history_id = "hist-clear",
+        .workspace_id = "workspace-clear",
+        .workspace_name = "clear",
+        .workspace_dir = "/repo/clear",
+        .working_directory = "/repo/clear",
+        .transcript_path = "/tmp/hist-clear.ansi",
+        .timestamp = "2026-05-07T10:00:00Z",
+    });
+    _ = try db.startCommand(.{
+        .history_id = "hist-clear",
+        .workspace_id = "workspace-clear",
+        .workspace_name = "clear",
+        .workspace_dir = "/repo/clear",
+        .command = "zig build test",
+        .started_at = "2026-05-07T10:00:01Z",
+        .source = "osc_7337",
+    });
+    try db.upsertTask(.{
+        .workspace_id = "workspace-clear",
+        .name = "test",
+        .command = "zig build test",
+        .timestamp = "2026-05-07T10:00:02Z",
+    });
+
+    try db.clearWorkspaceHistoryRows("workspace-clear");
+
+    const counts = try db.rowCounts();
+    try std.testing.expectEqual(@as(u64, 1), counts.project_count);
+    try std.testing.expectEqual(@as(u64, 0), counts.surface_count);
+    try std.testing.expectEqual(@as(u64, 0), counts.command_count);
+    try std.testing.expectEqual(@as(u64, 0), counts.task_count);
+
+    var project = try db.getProject("workspace-clear");
+    defer project.deinit(allocator);
+    try std.testing.expectEqual(@as(?[]const u8, null), project.git_remote_url);
 }

@@ -116,13 +116,29 @@ Adw.Dialog dialog {
             }
 
             Gtk.Button {
+              icon-name: "document-edit-symbolic";
+              tooltip-text: _("Rename Task");
+              clicked => $edit_task_clicked();
+            }
+
+            Gtk.Button {
               icon-name: "user-trash-symbolic";
               tooltip-text: _("Delete Task");
               clicked => $delete_task_clicked();
             }
           }
 
-          Gtk.ScrolledWindow {
+          Gtk.Label task_empty_label {
+            label: _("No saved tasks yet");
+            xalign: 0;
+            wrap: true;
+
+            styles [
+              "dim-label",
+            ]
+          }
+
+          Gtk.ScrolledWindow task_list_scroll {
             min-content-height: 160;
             vexpand: false;
 
@@ -188,7 +204,17 @@ Adw.Dialog dialog {
             ]
           }
 
-          Gtk.ScrolledWindow {
+          Gtk.Label command_empty_label {
+            label: _("No recent commands yet");
+            xalign: 0;
+            wrap: true;
+
+            styles [
+              "dim-label",
+            ]
+          }
+
+          Gtk.ScrolledWindow command_list_scroll {
             min-content-height: 240;
             vexpand: true;
 

@@ -222,12 +222,14 @@ pub const Target = enum(c_int) {
     surface,
     tab,
     task,
+    rename_task,
 
     pub fn title(self: Target) [*:0]const u8 {
         return switch (self) {
             .surface => i18n._("Change Terminal Title"),
             .tab => i18n._("Change Tab Title"),
             .task => i18n._("Save Command As Task"),
+            .rename_task => i18n._("Rename Task"),
         };
     }
 
@@ -235,6 +237,7 @@ pub const Target = enum(c_int) {
         return switch (self) {
             .surface, .tab => i18n._("Leave blank to restore the default title."),
             .task => i18n._("Choose the task name to save for this workspace."),
+            .rename_task => i18n._("Choose a new name for this workspace task."),
         };
     }
 

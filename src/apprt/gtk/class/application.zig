@@ -1248,6 +1248,12 @@ pub const Application = extern struct {
         attempts_left: u8,
     };
 
+    const DeferredProjectHistoryClear = struct {
+        app: *Self,
+        workspace_id: []u8,
+        attempts_left: u8,
+    };
+
     fn scheduleTerminalHistoryProjectDelete(self: *Self, workspace_id: []const u8) void {
         const alloc = std.heap.c_allocator;
         const ctx = alloc.create(DeferredProjectHistoryDelete) catch return;
@@ -1275,6 +1281,44 @@ pub const Application = extern struct {
             std.heap.c_allocator.free(ctx.workspace_id);
             std.heap.c_allocator.destroy(ctx);
         }
+        return @intFromBool(glib.SOURCE_REMOVE);
+    }
+
+    fn scheduleTerminalHistoryProjectClear(self: *Self, workspace_id: []const u8) void {
+        const alloc = std.heap.c_allocator;
+        const ctx = alloc.create(DeferredProjectHistoryClear) catch return;
+        ctx.* = .{
+            .app = self,
+            .workspace_id = alloc.dupe(u8, workspace_id) catch {
+                alloc.destroy(ctx);
+                return;
+            },
+            .attempts_left = 1,
+        };
+        _ = glib.timeoutAdd(100, deferredTerminalHistoryProjectClear, ctx);
+    }
+
+    fn deferredTerminalHistoryProjectClear(ud: ?*anyopaque) callconv(.c) c_int {
+        const ctx: *DeferredProjectHistoryClear = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        const priv = ctx.app.private();
+
+        if (priv.terminal_history_db) |*db| {
+            db.clearWorkspaceCommandRows(ctx.workspace_id) catch |err| {
+                log.warn("failed to clear deferred workspace command rows: {}", .{err});
+            };
+            db.commitIfNeeded() catch |err| {
+                log.warn("failed to commit deferred workspace history clear: {}", .{err});
+            };
+            ctx.app.refreshTerminalHistoryDatabaseLink();
+        }
+
+        if (ctx.attempts_left > 1) {
+            ctx.attempts_left -= 1;
+            return @intFromBool(glib.SOURCE_CONTINUE);
+        }
+
+        std.heap.c_allocator.free(ctx.workspace_id);
+        std.heap.c_allocator.destroy(ctx);
         return @intFromBool(glib.SOURCE_REMOVE);
     }
 
@@ -1598,9 +1642,7 @@ pub const Application = extern struct {
         try terminal_history.clearWorkspaceHistory(alloc, workspace_id);
 
         if (self.private().terminal_history_db) |*db| {
-            const timestamp = self.terminalHistoryTimestamp(alloc) orelse return error.TimestampUnavailable;
-            defer alloc.free(timestamp);
-            try db.deleteProject(workspace_id, timestamp);
+            try db.clearWorkspaceHistoryRows(workspace_id);
             db.commitIfNeeded() catch |err| {
                 log.warn("failed to commit workspace history clear: {}", .{err});
             };
@@ -1608,6 +1650,7 @@ pub const Application = extern struct {
 
         self.reopenTerminalHistoryDatabase();
         self.upsertTerminalHistoryProject(workspace_idx);
+        self.scheduleTerminalHistoryProjectClear(workspace_id);
         self.refreshTerminalHistoryDatabaseLink();
     }
 
@@ -4389,6 +4432,29 @@ pub const Application = extern struct {
         try db.markTaskRun(workspace_id, name, timestamp);
         try db.commitIfNeeded();
         return try db.getTask(workspace_id, name);
+    }
+
+    pub fn renameWorkspaceTask(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        workspace_idx: u32,
+        old_name: []const u8,
+        new_name: []const u8,
+    ) !terminal_history_db.TaskRecord {
+        if (old_name.len == 0 or new_name.len == 0) return error.InvalidTaskName;
+
+        const workspace_id = try self.workspaceIdString(alloc, workspace_idx);
+        defer alloc.free(workspace_id);
+
+        const db = try self.taskDatabase();
+        if (!std.mem.eql(u8, old_name, new_name)) {
+            const timestamp = self.terminalHistoryTimestamp(alloc) orelse return error.TimestampFailed;
+            defer alloc.free(timestamp);
+            try db.renameTask(workspace_id, old_name, new_name, timestamp);
+            try db.commitIfNeeded();
+        }
+
+        return try db.getTask(workspace_id, new_name);
     }
 
     pub fn deleteWorkspaceTask(

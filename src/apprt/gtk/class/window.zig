@@ -2940,11 +2940,41 @@ pub const Window = extern struct {
         command_id: i64,
     };
 
+    const RenameTaskContext = struct {
+        window: *Window,
+        dashboard: *WorkspaceDashboardDialog,
+        workspace_idx: u32,
+        old_name: []u8,
+    };
+
+    const DeleteTaskContext = struct {
+        window: *Window,
+        dashboard: *WorkspaceDashboardDialog,
+        workspace_idx: u32,
+        name: []u8,
+    };
+
     fn promoteTaskContextWeakNotify(
         ud: ?*anyopaque,
         _: *gobject.Object,
     ) callconv(.c) void {
         const ctx: *PromoteTaskContext = @ptrCast(@alignCast(ud orelse return));
+        std.heap.c_allocator.destroy(ctx);
+    }
+
+    fn renameTaskContextWeakNotify(
+        ud: ?*anyopaque,
+        _: *gobject.Object,
+    ) callconv(.c) void {
+        const ctx: *RenameTaskContext = @ptrCast(@alignCast(ud orelse return));
+        ctx.dashboard.unref();
+        std.heap.c_allocator.free(ctx.old_name);
+        std.heap.c_allocator.destroy(ctx);
+    }
+
+    fn deleteTaskContextDestroy(ctx: *DeleteTaskContext) void {
+        ctx.dashboard.unref();
+        std.heap.c_allocator.free(ctx.name);
         std.heap.c_allocator.destroy(ctx);
     }
 
@@ -2993,6 +3023,51 @@ pub const Window = extern struct {
             defer dialog.unref();
             dialog.refreshVisible();
         }
+    }
+
+    fn signalRenameTaskDialogSet(
+        _: *TitleDialog,
+        name_ptr: [*:0]const u8,
+        ctx: *RenameTaskContext,
+    ) callconv(.c) void {
+        const self = ctx.window;
+        const new_name = std.mem.span(name_ptr);
+        if (new_name.len == 0) {
+            self.addToast(i18n._("Task name is required"));
+            return;
+        }
+
+        var task = Application.default().renameWorkspaceTask(
+            std.heap.c_allocator,
+            ctx.workspace_idx,
+            ctx.old_name,
+            new_name,
+        ) catch |err| {
+            log.warn("failed to rename workspace task: {}", .{err});
+            self.addToast(i18n._("Unable to rename task"));
+            return;
+        };
+        defer task.deinit(std.heap.c_allocator);
+
+        const message = std.fmt.allocPrint(
+            std.heap.c_allocator,
+            "Renamed task: {s}",
+            .{task.name},
+        ) catch {
+            self.addToast(i18n._("Task renamed"));
+            ctx.dashboard.refreshVisible();
+            return;
+        };
+        defer std.heap.c_allocator.free(message);
+
+        const message_z = std.heap.c_allocator.dupeZ(u8, message) catch {
+            self.addToast(i18n._("Task renamed"));
+            ctx.dashboard.refreshVisible();
+            return;
+        };
+        defer std.heap.c_allocator.free(message_z);
+        self.addToast(message_z.ptr);
+        ctx.dashboard.refreshVisible();
     }
 
     fn promptSaveCommandAsTask(
@@ -3209,6 +3284,13 @@ pub const Window = extern struct {
                 self,
                 .{},
             );
+            _ = WorkspaceDashboardDialog.signals.@"edit-task".connect(
+                dialog,
+                *Window,
+                signalDashboardEditTask,
+                self,
+                .{},
+            );
             _ = WorkspaceDashboardDialog.signals.@"delete-task".connect(
                 dialog,
                 *Window,
@@ -3362,20 +3444,113 @@ pub const Window = extern struct {
         dialog.refreshVisible();
     }
 
-    fn signalDashboardDeleteTask(dialog: *WorkspaceDashboardDialog, name_z: [*:0]const u8, self: *Self) callconv(.c) void {
+    fn promptRenameDashboardTask(self: *Self, dashboard: *WorkspaceDashboardDialog, name_z: [*:0]const u8) void {
         const alloc = std.heap.c_allocator;
-        const app = Application.default();
-        const workspace_idx = app.activeWorkspaceIndex();
         const name = std.mem.span(name_z);
+        if (name.len == 0) {
+            self.addToast(i18n._("Unable to rename task"));
+            return;
+        }
 
-        app.deleteWorkspaceTask(alloc, workspace_idx, name) catch |err| {
+        const initial_name = alloc.dupeZ(u8, name) catch {
+            self.addToast(i18n._("Unable to rename task"));
+            return;
+        };
+        defer alloc.free(initial_name);
+
+        const ctx = alloc.create(RenameTaskContext) catch {
+            self.addToast(i18n._("Unable to rename task"));
+            return;
+        };
+        const old_name = alloc.dupe(u8, name) catch {
+            alloc.destroy(ctx);
+            self.addToast(i18n._("Unable to rename task"));
+            return;
+        };
+        ctx.* = .{
+            .window = self,
+            .dashboard = dashboard.ref(),
+            .workspace_idx = Application.default().activeWorkspaceIndex(),
+            .old_name = old_name,
+        };
+
+        const dialog = TitleDialog.new(.rename_task, initial_name);
+        dialog.as(gobject.Object).weakRef(renameTaskContextWeakNotify, ctx);
+        _ = TitleDialog.signals.set.connect(
+            dialog,
+            *RenameTaskContext,
+            signalRenameTaskDialogSet,
+            ctx,
+            .{},
+        );
+        dialog.present(self.as(gtk.Widget));
+    }
+
+    fn signalDashboardEditTask(dialog: *WorkspaceDashboardDialog, name_z: [*:0]const u8, self: *Self) callconv(.c) void {
+        self.promptRenameDashboardTask(dialog, name_z);
+    }
+
+    fn deleteTaskDialogReady(
+        source: ?*gobject.Object,
+        result: *gio.AsyncResult,
+        ud: ?*anyopaque,
+    ) callconv(.c) void {
+        const alert: *adw.AlertDialog = @ptrCast(@alignCast(source orelse return));
+        const ctx: *DeleteTaskContext = @ptrCast(@alignCast(ud orelse return));
+        defer deleteTaskContextDestroy(ctx);
+
+        const response = alert.chooseFinish(result);
+        if (std.mem.orderZ(u8, response, "delete") != .eq) return;
+
+        Application.default().deleteWorkspaceTask(
+            std.heap.c_allocator,
+            ctx.workspace_idx,
+            ctx.name,
+        ) catch |err| {
             log.warn("failed to delete dashboard task: {}", .{err});
-            self.addToast(i18n._("Unable to delete task"));
+            ctx.window.addToast(i18n._("Unable to delete task"));
             return;
         };
 
-        self.addToast(i18n._("Task deleted"));
-        dialog.refreshVisible();
+        ctx.window.addToast(i18n._("Task deleted"));
+        ctx.dashboard.refreshVisible();
+    }
+
+    fn signalDashboardDeleteTask(dialog: *WorkspaceDashboardDialog, name_z: [*:0]const u8, self: *Self) callconv(.c) void {
+        const alloc = std.heap.c_allocator;
+        const name = std.mem.span(name_z);
+        if (name.len == 0) return;
+
+        const ctx = alloc.create(DeleteTaskContext) catch {
+            self.addToast(i18n._("Unable to delete task"));
+            return;
+        };
+        const task_name = alloc.dupe(u8, name) catch {
+            alloc.destroy(ctx);
+            self.addToast(i18n._("Unable to delete task"));
+            return;
+        };
+        ctx.* = .{
+            .window = self,
+            .dashboard = dialog.ref(),
+            .workspace_idx = Application.default().activeWorkspaceIndex(),
+            .name = task_name,
+        };
+
+        const alert = adw.AlertDialog.new(
+            i18n._("Delete Task?"),
+            i18n._("This removes the task shortcut from this workspace."),
+        );
+        alert.addResponse("cancel", i18n._("Cancel"));
+        alert.addResponse("delete", i18n._("Delete"));
+        alert.setResponseAppearance("delete", .destructive);
+        alert.setDefaultResponse("cancel");
+        alert.choose(
+            self.as(gtk.Widget),
+            null,
+            deleteTaskDialogReady,
+            ctx,
+        );
     }
 
     /// React to a GTK action requesting that the command palette be toggled.

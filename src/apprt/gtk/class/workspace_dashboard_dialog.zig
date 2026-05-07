@@ -87,6 +87,12 @@ pub const WorkspaceDashboardDialog = extern struct {
             const impl = gobject.ext.defineSignal(name, Self, &.{[*:0]const u8}, void);
         };
 
+        pub const @"edit-task" = struct {
+            pub const name = "edit-task";
+            pub const connect = impl.connect;
+            const impl = gobject.ext.defineSignal(name, Self, &.{[*:0]const u8}, void);
+        };
+
         pub const @"delete-task" = struct {
             pub const name = "delete-task";
             pub const connect = impl.connect;
@@ -101,9 +107,13 @@ pub const WorkspaceDashboardDialog = extern struct {
         task_view: *gtk.ListView,
         task_model: *gtk.SingleSelection,
         task_source: *gio.ListStore,
+        task_list_scroll: *gtk.ScrolledWindow,
+        task_empty_label: *gtk.Label,
         command_view: *gtk.ListView,
         command_model: *gtk.SingleSelection,
         command_source: *gio.ListStore,
+        command_list_scroll: *gtk.ScrolledWindow,
+        command_empty_label: *gtk.Label,
         details_view: *gtk.TextView,
         details_buffer: *gtk.TextBuffer = undefined,
         active_history_id: ?[:0]u8 = null,
@@ -257,6 +267,9 @@ pub const WorkspaceDashboardDialog = extern struct {
         defer alloc.free(summary_text);
         setLabel(priv.summary_label, summary_text);
 
+        const has_tasks = status.tasks.items.len > 0;
+        priv.task_list_scroll.as(gtk.Widget).setVisible(@intFromBool(has_tasks));
+        priv.task_empty_label.as(gtk.Widget).setVisible(@intFromBool(!has_tasks));
         for (status.tasks.items) |record| {
             const item = DashboardTask.new(record) catch |err| {
                 log.warn("failed to create dashboard task row: {}", .{err});
@@ -266,6 +279,9 @@ pub const WorkspaceDashboardDialog = extern struct {
             item.unref();
         }
 
+        const has_commands = status.recent_commands.items.len > 0;
+        priv.command_list_scroll.as(gtk.Widget).setVisible(@intFromBool(has_commands));
+        priv.command_empty_label.as(gtk.Widget).setVisible(@intFromBool(!has_commands));
         for (status.recent_commands.items) |record| {
             const item = DashboardCommand.new(record) catch |err| {
                 log.warn("failed to create dashboard command row: {}", .{err});
@@ -381,6 +397,13 @@ pub const WorkspaceDashboardDialog = extern struct {
         signals.@"run-task".impl.emit(self, null, .{name.ptr}, null);
     }
 
+    fn editTaskClicked(_: *gtk.Button, self: *WorkspaceDashboardDialog) callconv(.c) void {
+        const item = self.selectedTask() orelse return;
+        defer item.unref();
+        const name = item.taskName() orelse return;
+        signals.@"edit-task".impl.emit(self, null, .{name.ptr}, null);
+    }
+
     fn deleteTaskClicked(_: *gtk.Button, self: *WorkspaceDashboardDialog) callconv(.c) void {
         const item = self.selectedTask() orelse return;
         defer item.unref();
@@ -436,9 +459,13 @@ pub const WorkspaceDashboardDialog = extern struct {
             class.bindTemplateChildPrivate("task_view", .{});
             class.bindTemplateChildPrivate("task_model", .{});
             class.bindTemplateChildPrivate("task_source", .{});
+            class.bindTemplateChildPrivate("task_list_scroll", .{});
+            class.bindTemplateChildPrivate("task_empty_label", .{});
             class.bindTemplateChildPrivate("command_view", .{});
             class.bindTemplateChildPrivate("command_model", .{});
             class.bindTemplateChildPrivate("command_source", .{});
+            class.bindTemplateChildPrivate("command_list_scroll", .{});
+            class.bindTemplateChildPrivate("command_empty_label", .{});
             class.bindTemplateChildPrivate("details_view", .{});
 
             class.bindTemplateCallback("closed", &dialogClosed);
@@ -453,6 +480,7 @@ pub const WorkspaceDashboardDialog = extern struct {
             class.bindTemplateCallback("command_transcript_clicked", &commandTranscriptClicked);
             class.bindTemplateCallback("save_task_clicked", &saveTaskClicked);
             class.bindTemplateCallback("run_task_clicked", &runTaskClicked);
+            class.bindTemplateCallback("edit_task_clicked", &editTaskClicked);
             class.bindTemplateCallback("delete_task_clicked", &deleteTaskClicked);
             class.bindTemplateCallback("task_activated", &taskActivated);
             class.bindTemplateCallback("command_activated", &commandActivated);
@@ -466,6 +494,7 @@ pub const WorkspaceDashboardDialog = extern struct {
             signals.rerun.impl.register(.{});
             signals.@"save-task".impl.register(.{});
             signals.@"run-task".impl.register(.{});
+            signals.@"edit-task".impl.register(.{});
             signals.@"delete-task".impl.register(.{});
 
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);
