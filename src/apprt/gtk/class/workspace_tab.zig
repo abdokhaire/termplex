@@ -2,6 +2,7 @@ const std = @import("std");
 const gobject = @import("gobject");
 const gtk = @import("gtk");
 const gdk = @import("gdk");
+const glib = @import("glib");
 
 const Common = @import("../class.zig").Common;
 
@@ -157,6 +158,9 @@ pub const WorkspaceTab = extern struct {
 
         /// Whether the pointer is currently hovering over this tab.
         is_hovered: bool = false,
+
+        /// Delayed hide timer for hover actions to avoid enter/leave churn.
+        hover_hide_timer: ?c_uint = null,
 
         /// Callback invoked when the rename action icon is clicked.
         on_action_rename: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
@@ -409,14 +413,37 @@ pub const WorkspaceTab = extern struct {
 
     fn onHoverEnter(_: *gtk.EventControllerMotion, _: f64, _: f64, self: *Self) callconv(.c) void {
         const priv = self.private();
+        self.cancelHoverHideTimer();
         priv.is_hovered = true;
         self.updateActionStripVisibility();
     }
 
     fn onHoverLeave(_: *gtk.EventControllerMotion, self: *Self) callconv(.c) void {
         const priv = self.private();
+        self.cancelHoverHideTimer();
+        if (priv.is_renaming or priv.is_changing_dir) {
+            priv.is_hovered = false;
+            self.updateActionStripVisibility();
+            return;
+        }
+        priv.hover_hide_timer = glib.timeoutAdd(90, hoverHideCallback, self);
+    }
+
+    fn cancelHoverHideTimer(self: *Self) void {
+        const priv = self.private();
+        if (priv.hover_hide_timer) |timer| {
+            _ = glib.Source.remove(timer);
+            priv.hover_hide_timer = null;
+        }
+    }
+
+    fn hoverHideCallback(ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        const priv = self.private();
+        priv.hover_hide_timer = null;
         priv.is_hovered = false;
         self.updateActionStripVisibility();
+        return @intFromBool(glib.SOURCE_REMOVE);
     }
 
     fn updateActionStripVisibility(self: *Self) void {
@@ -905,6 +932,8 @@ pub const WorkspaceTab = extern struct {
     // Virtual methods
 
     fn dispose(self: *Self) callconv(.c) void {
+        self.cancelHoverHideTimer();
+
         // Unparent the direct child created in init so GTK can finalize them.
         // gtk.Box stores children internally; iterating first-child / next-sibling
         // is the canonical way to remove programmatic children.
