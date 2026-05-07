@@ -54,6 +54,10 @@ const WorkspaceActionCallbacks = struct {
     }
 };
 
+fn workspaceActionStripVisible(callbacks: WorkspaceActionCallbacks, hovered: bool, editing: bool) bool {
+    return hovered and !editing and callbacks.hasVisibleActions();
+}
+
 /// A compact two-line widget displayed in the workspace sidebar's ListBox.
 ///
 /// Layout:
@@ -264,6 +268,7 @@ pub const WorkspaceTab = extern struct {
         action_box.as(gtk.Widget).addCssClass("termplex-tab-actions");
         action_box.as(gtk.Widget).setOpacity(0.0);
         action_box.as(gtk.Widget).setSensitive(0);
+        action_box.as(gtk.Widget).setVisible(0);
         priv.action_box = action_box;
         row1.append(action_box.as(gtk.Widget));
 
@@ -404,20 +409,28 @@ pub const WorkspaceTab = extern struct {
 
     fn onHoverEnter(_: *gtk.EventControllerMotion, _: f64, _: f64, self: *Self) callconv(.c) void {
         const priv = self.private();
-        // Only show actions if callbacks are wired (not orchestrator).
-        if (!priv.workspaceActionCallbacks().hasVisibleActions()) return;
         priv.is_hovered = true;
-        priv.action_box.as(gtk.Widget).setOpacity(1.0);
-        priv.action_box.as(gtk.Widget).setSensitive(1);
-        priv.port_box.as(gtk.Widget).setVisible(0);
+        self.updateActionStripVisibility();
     }
 
     fn onHoverLeave(_: *gtk.EventControllerMotion, self: *Self) callconv(.c) void {
         const priv = self.private();
         priv.is_hovered = false;
-        priv.action_box.as(gtk.Widget).setOpacity(0.0);
-        priv.action_box.as(gtk.Widget).setSensitive(0);
-        priv.port_box.as(gtk.Widget).setVisible(@intFromBool(priv.has_ports));
+        self.updateActionStripVisibility();
+    }
+
+    fn updateActionStripVisibility(self: *Self) void {
+        const priv = self.private();
+        const show_actions = workspaceActionStripVisible(
+            priv.workspaceActionCallbacks(),
+            priv.is_hovered,
+            priv.is_renaming or priv.is_changing_dir,
+        );
+        const action_widget = priv.action_box.as(gtk.Widget);
+        action_widget.setVisible(@intFromBool(show_actions));
+        action_widget.setOpacity(if (show_actions) 1.0 else 0.0);
+        action_widget.setSensitive(@intFromBool(show_actions));
+        priv.port_box.as(gtk.Widget).setVisible(@intFromBool(priv.has_ports and !show_actions and !priv.is_renaming));
     }
 
     fn onActionRename(_: *gtk.Button, self: *Self) callconv(.c) void {
@@ -705,9 +718,13 @@ pub const WorkspaceTab = extern struct {
         const entry = gtk.Entry.new();
         const current_name = priv.name_label.getLabel();
         entry.as(gtk.Editable).setText(current_name);
+        entry.as(gtk.Widget).setHexpand(1);
+        priv.rename_entry = entry;
+        priv.is_renaming = true;
 
         // Hide label, show entry in same position.
         priv.name_label.as(gtk.Widget).setVisible(0);
+        self.updateActionStripVisibility();
 
         // Insert entry into row1 (parent of name_label).
         const parent = priv.name_label.as(gtk.Widget).getParent();
@@ -718,8 +735,6 @@ pub const WorkspaceTab = extern struct {
         }
 
         _ = entry.as(gtk.Widget).grabFocus();
-        priv.rename_entry = entry;
-        priv.is_renaming = true;
 
         // Connect Enter (activate).
         _ = gtk.Entry.signals.activate.connect(entry, *Self, &onRenameActivate, self, .{});
@@ -782,6 +797,7 @@ pub const WorkspaceTab = extern struct {
         priv.name_label.as(gtk.Widget).setVisible(1);
         priv.rename_entry = null;
         priv.is_renaming = false;
+        self.updateActionStripVisibility();
     }
 
     // ---------------------------------------------------------------
@@ -804,9 +820,13 @@ pub const WorkspaceTab = extern struct {
         const entry = gtk.Entry.new();
         const current_dir = priv.dir_label.getLabel();
         entry.as(gtk.Editable).setText(current_dir);
+        entry.as(gtk.Widget).setHexpand(1);
+        priv.chdir_entry = entry;
+        priv.is_changing_dir = true;
 
         // Hide dir label, show entry in same position.
         priv.dir_label.as(gtk.Widget).setVisible(0);
+        self.updateActionStripVisibility();
 
         // Insert entry into row2 (parent of dir_label).
         const parent = priv.dir_label.as(gtk.Widget).getParent();
@@ -816,8 +836,6 @@ pub const WorkspaceTab = extern struct {
         }
 
         _ = entry.as(gtk.Widget).grabFocus();
-        priv.chdir_entry = entry;
-        priv.is_changing_dir = true;
 
         // Connect Enter (activate).
         _ = gtk.Entry.signals.activate.connect(entry, *Self, &onChdirActivate, self, .{});
@@ -880,6 +898,7 @@ pub const WorkspaceTab = extern struct {
         priv.dir_label.as(gtk.Widget).setVisible(1);
         priv.chdir_entry = null;
         priv.is_changing_dir = false;
+        self.updateActionStripVisibility();
     }
 
     // ---------------------------------------------------------------
@@ -949,4 +968,15 @@ test "workspace tab action callbacks include external open actions" {
 
     try std.testing.expect(callbacks.hasVisibleActions());
     try std.testing.expectEqual(@as(u8, 2), callbacks.visibleActionCount());
+}
+
+test "workspace tab hides action strip while inline editing" {
+    const callbacks = WorkspaceActionCallbacks{
+        .on_rename = dummyWorkspaceAction,
+        .on_open_folder = dummyWorkspaceAction,
+    };
+
+    try std.testing.expect(workspaceActionStripVisible(callbacks, true, false));
+    try std.testing.expect(!workspaceActionStripVisible(callbacks, true, true));
+    try std.testing.expect(!workspaceActionStripVisible(callbacks, false, false));
 }
