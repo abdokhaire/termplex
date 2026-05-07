@@ -409,6 +409,8 @@ pub const Window = extern struct {
                 &termplexOnDeleteWorkspace,
                 &termplexOnChangeDirWorkspace,
                 &termplexOnSourceControlWorkspace,
+                &termplexOnOpenFolderWorkspace,
+                &termplexOnOpenVSCodeWorkspace,
                 &termplexOnPinWorkspace,
             );
 
@@ -1857,6 +1859,26 @@ pub const Window = extern struct {
         }
 
         win.toggleSourceControl();
+    }
+
+    fn termplexOnOpenFolderWorkspace(index: u32, userdata: ?*anyopaque) void {
+        const win: *Self = @ptrCast(@alignCast(userdata orelse return));
+        Application.default().openWorkspaceFolder(index) catch |err| {
+            log.warn("failed to open workspace folder from sidebar: {}", .{err});
+            win.addToast(i18n._("Unable to open workspace folder"));
+            return;
+        };
+        win.addToast(i18n._("Opening workspace folder"));
+    }
+
+    fn termplexOnOpenVSCodeWorkspace(index: u32, userdata: ?*anyopaque) void {
+        const win: *Self = @ptrCast(@alignCast(userdata orelse return));
+        Application.default().openWorkspaceVSCode(index) catch |err| {
+            log.warn("failed to open workspace in VS Code from sidebar: {}", .{err});
+            win.addToast(i18n._("Unable to open VS Code"));
+            return;
+        };
+        win.addToast(i18n._("Opening workspace in VS Code"));
     }
 
     fn termplexOnPinWorkspace(index: u32, userdata: ?*anyopaque) void {

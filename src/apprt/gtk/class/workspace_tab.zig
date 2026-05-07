@@ -26,6 +26,34 @@ fn parseBranchStatus(text: []const u8) BranchStatus {
     };
 }
 
+const WorkspaceActionCallback = *const fn (index: u32, userdata: ?*anyopaque) void;
+
+const WorkspaceActionCallbacks = struct {
+    on_rename: ?WorkspaceActionCallback = null,
+    on_delete: ?WorkspaceActionCallback = null,
+    on_change_dir: ?WorkspaceActionCallback = null,
+    on_source_control: ?WorkspaceActionCallback = null,
+    on_open_folder: ?WorkspaceActionCallback = null,
+    on_open_vscode: ?WorkspaceActionCallback = null,
+    on_pin: ?WorkspaceActionCallback = null,
+
+    fn hasVisibleActions(self: WorkspaceActionCallbacks) bool {
+        return self.visibleActionCount() > 0;
+    }
+
+    fn visibleActionCount(self: WorkspaceActionCallbacks) u8 {
+        var count: u8 = 0;
+        if (self.on_rename != null) count += 1;
+        if (self.on_delete != null) count += 1;
+        if (self.on_change_dir != null) count += 1;
+        if (self.on_source_control != null) count += 1;
+        if (self.on_open_folder != null) count += 1;
+        if (self.on_open_vscode != null) count += 1;
+        if (self.on_pin != null) count += 1;
+        return count;
+    }
+};
+
 /// A compact two-line widget displayed in the workspace sidebar's ListBox.
 ///
 /// Layout:
@@ -138,6 +166,12 @@ pub const WorkspaceTab = extern struct {
         /// Callback invoked when the source-control action icon is clicked.
         on_action_source_control: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
 
+        /// Callback invoked when the open-folder action icon is clicked.
+        on_action_open_folder: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
+        /// Callback invoked when the open-in-VS-Code action icon is clicked.
+        on_action_open_vscode: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
         /// Callback invoked when the pin action icon is clicked.
         on_action_pin: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
 
@@ -145,6 +179,18 @@ pub const WorkspaceTab = extern struct {
         action_userdata: ?*anyopaque = null,
 
         pub var offset: c_int = 0;
+
+        fn workspaceActionCallbacks(self: Private) WorkspaceActionCallbacks {
+            return .{
+                .on_rename = self.on_action_rename,
+                .on_delete = self.on_action_delete,
+                .on_change_dir = self.on_action_change_dir,
+                .on_source_control = self.on_action_source_control,
+                .on_open_folder = self.on_action_open_folder,
+                .on_open_vscode = self.on_action_open_vscode,
+                .on_pin = self.on_action_pin,
+            };
+        }
     };
 
     fn init(self: *Self, _: *Class) callconv(.c) void {
@@ -228,6 +274,22 @@ pub const WorkspaceTab = extern struct {
         source_control_btn.as(gtk.Widget).setTooltipText("Open Source Control");
         _ = gtk.Button.signals.clicked.connect(source_control_btn, *Self, &onActionSourceControl, self, .{});
         action_box.append(source_control_btn.as(gtk.Widget));
+
+        const open_folder_btn = gtk.Button.newFromIconName("folder-open-symbolic");
+        open_folder_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
+        open_folder_btn.as(gtk.Widget).addCssClass("termplex-tab-action-open-folder");
+        open_folder_btn.as(gtk.Widget).addCssClass("flat");
+        open_folder_btn.as(gtk.Widget).setTooltipText("Open workspace folder");
+        _ = gtk.Button.signals.clicked.connect(open_folder_btn, *Self, &onActionOpenFolder, self, .{});
+        action_box.append(open_folder_btn.as(gtk.Widget));
+
+        const open_vscode_btn = gtk.Button.newFromIconName("applications-development-symbolic");
+        open_vscode_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
+        open_vscode_btn.as(gtk.Widget).addCssClass("termplex-tab-action-open-vscode");
+        open_vscode_btn.as(gtk.Widget).addCssClass("flat");
+        open_vscode_btn.as(gtk.Widget).setTooltipText("Open workspace in VS Code");
+        _ = gtk.Button.signals.clicked.connect(open_vscode_btn, *Self, &onActionOpenVSCode, self, .{});
+        action_box.append(open_vscode_btn.as(gtk.Widget));
 
         const pin_btn = gtk.Button.newFromIconName("emblem-favorite-symbolic");
         pin_btn.as(gtk.Widget).addCssClass("termplex-tab-action");
@@ -343,11 +405,7 @@ pub const WorkspaceTab = extern struct {
     fn onHoverEnter(_: *gtk.EventControllerMotion, _: f64, _: f64, self: *Self) callconv(.c) void {
         const priv = self.private();
         // Only show actions if callbacks are wired (not orchestrator).
-        if (priv.on_action_rename == null and
-            priv.on_action_delete == null and
-            priv.on_action_change_dir == null and
-            priv.on_action_source_control == null and
-            priv.on_action_pin == null) return;
+        if (!priv.workspaceActionCallbacks().hasVisibleActions()) return;
         priv.is_hovered = true;
         priv.action_box.as(gtk.Widget).setOpacity(1.0);
         priv.action_box.as(gtk.Widget).setSensitive(1);
@@ -383,6 +441,18 @@ pub const WorkspaceTab = extern struct {
     fn onActionSourceControl(_: *gtk.Button, self: *Self) callconv(.c) void {
         const priv = self.private();
         const cb = priv.on_action_source_control orelse return;
+        cb(priv.workspace_index, priv.action_userdata);
+    }
+
+    fn onActionOpenFolder(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        const cb = priv.on_action_open_folder orelse return;
+        cb(priv.workspace_index, priv.action_userdata);
+    }
+
+    fn onActionOpenVSCode(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        const cb = priv.on_action_open_vscode orelse return;
         cb(priv.workspace_index, priv.action_userdata);
     }
 
@@ -432,6 +502,8 @@ pub const WorkspaceTab = extern struct {
         on_delete: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_change_dir: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_source_control: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        on_open_folder: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        on_open_vscode: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_pin: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         userdata: ?*anyopaque,
     ) void {
@@ -440,6 +512,8 @@ pub const WorkspaceTab = extern struct {
         priv.on_action_delete = on_delete;
         priv.on_action_change_dir = on_change_dir;
         priv.on_action_source_control = on_source_control;
+        priv.on_action_open_folder = on_open_folder;
+        priv.on_action_open_vscode = on_open_vscode;
         priv.on_action_pin = on_pin;
         priv.action_userdata = userdata;
     }
@@ -863,4 +937,16 @@ test "workspace tab parses sidebar branch dirty marker" {
     const empty = parseBranchStatus("");
     try std.testing.expectEqualStrings("", empty.branch);
     try std.testing.expectEqual(false, empty.dirty);
+}
+
+fn dummyWorkspaceAction(_: u32, _: ?*anyopaque) void {}
+
+test "workspace tab action callbacks include external open actions" {
+    const callbacks = WorkspaceActionCallbacks{
+        .on_open_folder = dummyWorkspaceAction,
+        .on_open_vscode = dummyWorkspaceAction,
+    };
+
+    try std.testing.expect(callbacks.hasVisibleActions());
+    try std.testing.expectEqual(@as(u8, 2), callbacks.visibleActionCount());
 }

@@ -59,13 +59,35 @@ Adw.Dialog dialog {
           width-request: 330;
           vexpand: true;
 
-          Gtk.Label {
-            label: _("Staged");
-            halign: start;
+          styles [
+            "termplex-source-sidebar",
+          ]
 
-            styles [
-              "heading",
-            ]
+          Gtk.Box {
+            orientation: horizontal;
+            spacing: 8;
+
+            Gtk.Label {
+              label: _("Staged Changes");
+              halign: start;
+              hexpand: true;
+
+              styles [
+                "heading",
+              ]
+            }
+
+            Gtk.Button {
+              icon-name: "go-down-symbolic";
+              tooltip-text: _("Unstage selected file");
+              clicked => $unstage_clicked();
+            }
+
+            Gtk.Button {
+              icon-name: "go-bottom-symbolic";
+              tooltip-text: _("Unstage all files");
+              clicked => $unstage_all_clicked();
+            }
           }
 
           Gtk.ScrolledWindow {
@@ -124,32 +146,33 @@ Adw.Dialog dialog {
             }
           }
 
+          Gtk.Separator {}
+
           Gtk.Box {
             orientation: horizontal;
             spacing: 8;
 
-            Gtk.Button unstage_button {
-              label: _("Unstage File");
+            Gtk.Label {
+              label: _("Working Tree");
+              halign: start;
               hexpand: true;
-              clicked => $unstage_clicked();
+
+              styles [
+                "heading",
+              ]
             }
 
             Gtk.Button {
-              label: _("Unstage All");
-              hexpand: true;
-              clicked => $unstage_all_clicked();
+              icon-name: "go-up-symbolic";
+              tooltip-text: _("Stage selected file");
+              clicked => $stage_clicked();
             }
-          }
 
-          Gtk.Separator {}
-
-          Gtk.Label {
-            label: _("Changes");
-            halign: start;
-
-            styles [
-              "heading",
-            ]
+            Gtk.Button {
+              icon-name: "go-top-symbolic";
+              tooltip-text: _("Stage all files");
+              clicked => $stage_all_clicked();
+            }
           }
 
           Gtk.ScrolledWindow {
@@ -207,23 +230,6 @@ Adw.Dialog dialog {
               };
             }
           }
-
-          Gtk.Box {
-            orientation: horizontal;
-            spacing: 8;
-
-            Gtk.Button stage_button {
-              label: _("Stage File");
-              hexpand: true;
-              clicked => $stage_clicked();
-            }
-
-            Gtk.Button {
-              label: _("Stage All");
-              hexpand: true;
-              clicked => $stage_all_clicked();
-            }
-          }
         }
 
         Gtk.Box {
@@ -246,6 +252,10 @@ Adw.Dialog dialog {
             hexpand: true;
             vexpand: true;
 
+            styles [
+              "termplex-diff-view",
+            ]
+
             Gtk.Label diff_label {
               selectable: true;
               wrap: false;
@@ -264,6 +274,10 @@ Adw.Dialog dialog {
             orientation: horizontal;
             spacing: 8;
 
+            styles [
+              "termplex-commit-bar",
+            ]
+
             Gtk.Entry commit_entry {
               hexpand: true;
               placeholder-text: _("Commit message");
@@ -273,6 +287,10 @@ Adw.Dialog dialog {
             Gtk.Button commit_button {
               label: _("Commit");
               clicked => $commit_clicked();
+
+              styles [
+                "suggested-action",
+              ]
             }
           }
         }

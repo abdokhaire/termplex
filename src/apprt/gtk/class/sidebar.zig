@@ -97,6 +97,12 @@ pub const Sidebar = extern struct {
         /// Callback invoked when the user opens Source Control for a workspace.
         on_source_control: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
 
+        /// Callback invoked when the user opens a workspace folder externally.
+        on_open_folder: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
+        /// Callback invoked when the user opens a workspace in VS Code.
+        on_open_vscode: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
+
         /// Callback invoked when the user toggles pinned state for a workspace.
         on_pin: ?*const fn (index: u32, userdata: ?*anyopaque) void = null,
 
@@ -314,6 +320,8 @@ pub const Sidebar = extern struct {
         on_delete: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_change_dir: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_source_control: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        on_open_folder: ?*const fn (index: u32, userdata: ?*anyopaque) void,
+        on_open_vscode: ?*const fn (index: u32, userdata: ?*anyopaque) void,
         on_pin: ?*const fn (index: u32, userdata: ?*anyopaque) void,
     ) void {
         const priv = self.private();
@@ -321,6 +329,8 @@ pub const Sidebar = extern struct {
         priv.on_delete = on_delete;
         priv.on_change_dir = on_change_dir;
         priv.on_source_control = on_source_control;
+        priv.on_open_folder = on_open_folder;
+        priv.on_open_vscode = on_open_vscode;
         priv.on_pin = on_pin;
         self.refreshWorkspaceActionCallbacks();
     }
@@ -353,6 +363,8 @@ pub const Sidebar = extern struct {
                 priv.on_delete,
                 priv.on_change_dir,
                 priv.on_source_control,
+                priv.on_open_folder,
+                priv.on_open_vscode,
                 priv.on_pin,
                 priv.userdata,
             );
@@ -511,7 +523,7 @@ pub const Sidebar = extern struct {
             if (is_orchestrator) {
                 row.as(gtk.Widget).addCssClass("termplex-orchestrator-row");
                 tab.as(gtk.Widget).addCssClass("termplex-orchestrator-label");
-                tab.setActionCallbacks(null, null, null, null, null, priv.userdata);
+                tab.setActionCallbacks(null, null, null, null, null, null, null, priv.userdata);
             } else {
                 row.as(gtk.Widget).removeCssClass("termplex-orchestrator-row");
                 tab.as(gtk.Widget).removeCssClass("termplex-orchestrator-label");
@@ -520,6 +532,8 @@ pub const Sidebar = extern struct {
                     priv.on_delete,
                     priv.on_change_dir,
                     priv.on_source_control,
+                    priv.on_open_folder,
+                    priv.on_open_vscode,
                     priv.on_pin,
                     priv.userdata,
                 );

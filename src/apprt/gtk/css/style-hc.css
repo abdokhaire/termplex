@@ -97,6 +97,21 @@
   color: #ffffff;
 }
 
+.termplex-dashboard-action-bar,
+.termplex-dashboard-action-group,
+.termplex-commit-bar {
+  background-color: #000000;
+  border: 1px solid #ffffff;
+}
+
+.termplex-diff-view,
+.termplex-diff-view label,
+.termplex-dashboard-details textview,
+.termplex-dashboard-details textview text {
+  background-color: #000000;
+  color: #ffffff;
+}
+
 .termplex-sidebar-header-button:hover {
   background-color: #ffffff;
   color: #000000;

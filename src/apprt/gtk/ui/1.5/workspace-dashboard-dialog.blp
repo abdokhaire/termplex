@@ -40,43 +40,88 @@ Adw.Dialog dialog {
 
       Gtk.Box {
         orientation: horizontal;
-        spacing: 8;
+        spacing: 12;
 
-        Gtk.Button {
-          label: _("Command History");
-          clicked => $command_history_clicked();
+        styles [
+          "termplex-dashboard-action-bar",
+        ]
+
+        Gtk.Box {
+          orientation: horizontal;
+          spacing: 4;
+
+          styles [
+            "termplex-dashboard-action-group",
+          ]
+
+          Gtk.Button {
+            icon-name: "folder-open-symbolic";
+            tooltip-text: _("Open Workspace Folder");
+            clicked => $open_folder_clicked();
+          }
+
+          Gtk.Button {
+            icon-name: "applications-development-symbolic";
+            tooltip-text: _("Open Workspace in VS Code");
+            clicked => $open_vscode_clicked();
+          }
         }
 
-        Gtk.Button {
-          label: _("Transcript Viewer");
-          clicked => $transcript_clicked();
+        Gtk.Box {
+          orientation: horizontal;
+          spacing: 4;
+
+          styles [
+            "termplex-dashboard-action-group",
+          ]
+
+          Gtk.Button {
+            icon-name: "utilities-terminal-symbolic";
+            tooltip-text: _("Command History");
+            clicked => $command_history_clicked();
+          }
+
+          Gtk.Button {
+            icon-name: "text-x-generic-symbolic";
+            tooltip-text: _("Transcript Viewer");
+            clicked => $transcript_clicked();
+          }
         }
 
-        Gtk.Button {
-          label: _("Source Control");
-          clicked => $source_control_clicked();
+        Gtk.Box {
+          orientation: horizontal;
+          spacing: 4;
+
+          styles [
+            "termplex-dashboard-action-group",
+          ]
+
+          Gtk.Button {
+            icon-name: "view-list-symbolic";
+            tooltip-text: _("Source Control");
+            clicked => $source_control_clicked();
+          }
+
+          Gtk.Button {
+            icon-name: "drive-harddisk-symbolic";
+            tooltip-text: _("Storage And History");
+            clicked => $storage_clicked();
+          }
         }
 
-        Gtk.Button {
-          label: _("Storage And History");
-          clicked => $storage_clicked();
-        }
+        Gtk.Box {
+          orientation: horizontal;
+          spacing: 4;
 
-        Gtk.Button {
-          label: _("Diagnostics");
-          clicked => $diagnostics_clicked();
-        }
+          styles [
+            "termplex-dashboard-action-group",
+          ]
 
-        Gtk.Button {
-          icon-name: "folder-open-symbolic";
-          tooltip-text: _("Open Workspace Folder");
-          clicked => $open_folder_clicked();
-        }
-
-        Gtk.Button {
-          label: _("VS Code");
-          tooltip-text: _("Open Workspace in VS Code");
-          clicked => $open_vscode_clicked();
+          Gtk.Button {
+            icon-name: "dialog-information-symbolic";
+            tooltip-text: _("Diagnostics");
+            clicked => $diagnostics_clicked();
+          }
         }
       }
 
@@ -106,6 +151,10 @@ Adw.Dialog dialog {
           spacing: 8;
           width-request: 360;
           vexpand: true;
+
+          styles [
+            "termplex-dashboard-pane",
+          ]
 
           Gtk.Box {
             orientation: horizontal;
@@ -289,6 +338,10 @@ Adw.Dialog dialog {
           min-content-width: 420;
           min-content-height: 420;
           vexpand: true;
+
+          styles [
+            "termplex-dashboard-details",
+          ]
 
           Gtk.TextView details_view {
             editable: false;

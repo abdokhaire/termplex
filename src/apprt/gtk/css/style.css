@@ -386,6 +386,12 @@ label.resize-overlay {
   background-color: rgba(56, 189, 248, 0.10);
 }
 
+.termplex-tab-action-open-folder:hover,
+.termplex-tab-action-open-vscode:hover {
+  color: #00d4ff;
+  background-color: rgba(0, 212, 255, 0.09);
+}
+
 .termplex-tab-action-pin:hover {
   color: #38bdf8;
   background-color: rgba(56, 189, 248, 0.10);
@@ -600,4 +606,56 @@ window {
 
 .termplex-workbench-dialog separator {
   background-color: #243447;
+}
+
+.termplex-dashboard-action-bar {
+  padding: 6px;
+  background-color: #101722;
+  border: 1px solid #243447;
+  border-radius: 2px;
+}
+
+.termplex-dashboard-action-group {
+  padding: 2px;
+  background-color: rgba(148, 163, 184, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.08);
+  border-radius: 2px;
+}
+
+.termplex-dashboard-action-group button,
+.termplex-source-sidebar button {
+  min-width: 30px;
+  min-height: 28px;
+  padding: 0 8px;
+}
+
+.termplex-dashboard-pane {
+  padding: 2px 0;
+}
+
+.termplex-dashboard-details textview,
+.termplex-dashboard-details textview text,
+.termplex-diff-view,
+.termplex-diff-view label {
+  background-color: #0a1119;
+}
+
+.termplex-source-sidebar {
+  padding: 2px 0;
+}
+
+.termplex-commit-bar {
+  padding: 8px;
+  background-color: #101722;
+  border: 1px solid #243447;
+  border-radius: 2px;
+}
+
+.termplex-commit-bar entry {
+  min-height: 30px;
+}
+
+.termplex-commit-bar button {
+  min-height: 30px;
+  padding: 0 14px;
 }
