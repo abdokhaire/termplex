@@ -3202,6 +3202,20 @@ pub const Window = extern struct {
                 self,
                 .{},
             );
+            _ = WorkspaceDashboardDialog.signals.@"run-task".connect(
+                dialog,
+                *Window,
+                signalDashboardRunTask,
+                self,
+                .{},
+            );
+            _ = WorkspaceDashboardDialog.signals.@"delete-task".connect(
+                dialog,
+                *Window,
+                signalDashboardDeleteTask,
+                self,
+                .{},
+            );
 
             priv.workspace_dashboard_dialog.set(dialog);
             break :dialog dialog;
@@ -3310,6 +3324,58 @@ pub const Window = extern struct {
         self: *Self,
     ) callconv(.c) void {
         self.promptSaveCommandAsTask(command_id, command);
+    }
+
+    fn signalDashboardRunTask(dialog: *WorkspaceDashboardDialog, name_z: [*:0]const u8, self: *Self) callconv(.c) void {
+        const alloc = std.heap.c_allocator;
+        const app = Application.default();
+        const workspace_idx = app.activeWorkspaceIndex();
+        const name = std.mem.span(name_z);
+
+        var task = app.loadWorkspaceTask(alloc, workspace_idx, name) catch |err| {
+            log.warn("failed to load dashboard task for run: {}", .{err});
+            self.addToast(i18n._("Unable to run task"));
+            return;
+        };
+        defer task.deinit(std.heap.c_allocator);
+
+        const text = std.fmt.allocPrint(alloc, "{s}\n", .{task.command}) catch {
+            self.addToast(i18n._("Unable to run task"));
+            return;
+        };
+        defer alloc.free(text);
+
+        if (!self.writeTextToActiveSurface(text)) {
+            self.addToast(i18n._("Unable to send task"));
+            return;
+        }
+
+        var updated_task = app.markWorkspaceTaskRun(alloc, workspace_idx, name) catch |err| {
+            log.warn("failed to mark dashboard task run: {}", .{err});
+            self.addToast(i18n._("Task sent"));
+            dialog.refreshVisible();
+            return;
+        };
+        updated_task.deinit(std.heap.c_allocator);
+
+        self.addToast(i18n._("Task sent"));
+        dialog.refreshVisible();
+    }
+
+    fn signalDashboardDeleteTask(dialog: *WorkspaceDashboardDialog, name_z: [*:0]const u8, self: *Self) callconv(.c) void {
+        const alloc = std.heap.c_allocator;
+        const app = Application.default();
+        const workspace_idx = app.activeWorkspaceIndex();
+        const name = std.mem.span(name_z);
+
+        app.deleteWorkspaceTask(alloc, workspace_idx, name) catch |err| {
+            log.warn("failed to delete dashboard task: {}", .{err});
+            self.addToast(i18n._("Unable to delete task"));
+            return;
+        };
+
+        self.addToast(i18n._("Task deleted"));
+        dialog.refreshVisible();
     }
 
     /// React to a GTK action requesting that the command palette be toggled.

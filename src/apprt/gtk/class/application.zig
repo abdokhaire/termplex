@@ -4356,6 +4356,60 @@ pub const Application = extern struct {
         return try db.getTask(command.workspace_id, name);
     }
 
+    pub fn loadWorkspaceTask(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        workspace_idx: u32,
+        name: []const u8,
+    ) !terminal_history_db.TaskRecord {
+        if (name.len == 0) return error.InvalidTaskName;
+
+        const workspace_id = try self.workspaceIdString(alloc, workspace_idx);
+        defer alloc.free(workspace_id);
+
+        const db = try self.taskDatabase();
+        return try db.getTask(workspace_id, name);
+    }
+
+    pub fn markWorkspaceTaskRun(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        workspace_idx: u32,
+        name: []const u8,
+    ) !terminal_history_db.TaskRecord {
+        if (name.len == 0) return error.InvalidTaskName;
+
+        const workspace_id = try self.workspaceIdString(alloc, workspace_idx);
+        defer alloc.free(workspace_id);
+
+        const db = try self.taskDatabase();
+        const timestamp = self.terminalHistoryTimestamp(alloc) orelse return error.TimestampFailed;
+        defer alloc.free(timestamp);
+
+        try db.markTaskRun(workspace_id, name, timestamp);
+        try db.commitIfNeeded();
+        return try db.getTask(workspace_id, name);
+    }
+
+    pub fn deleteWorkspaceTask(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        workspace_idx: u32,
+        name: []const u8,
+    ) !void {
+        if (name.len == 0) return error.InvalidTaskName;
+
+        const workspace_id = try self.workspaceIdString(alloc, workspace_idx);
+        defer alloc.free(workspace_id);
+
+        const db = try self.taskDatabase();
+        var task = try db.getTask(workspace_id, name);
+        task.deinit(std.heap.c_allocator);
+
+        try db.deleteTask(workspace_id, name);
+        try db.commitIfNeeded();
+    }
+
     fn ipcTaskList(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
         const params = taskParams(obj);
         const workspace = self.taskWorkspaceId(alloc, params) catch |err| switch (err) {

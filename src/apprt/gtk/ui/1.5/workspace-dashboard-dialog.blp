@@ -89,62 +89,161 @@ Adw.Dialog dialog {
         hexpand: true;
         vexpand: true;
 
-        Gtk.ScrolledWindow {
-          min-content-width: 360;
-          min-content-height: 420;
+        Gtk.Box {
+          orientation: vertical;
+          spacing: 8;
+          width-request: 360;
           vexpand: true;
 
-          Gtk.ListView command_view {
-            show-separators: true;
-            single-click-activate: true;
-            activate => $command_activated();
+          Gtk.Box {
+            orientation: horizontal;
+            spacing: 6;
 
-            model: Gtk.SingleSelection command_model {
-              model: Gio.ListStore command_source {
-                item-type: typeof<$TermplexDashboardCommand>;
+            Gtk.Label {
+              label: _("Tasks");
+              hexpand: true;
+              xalign: 0;
+
+              styles [
+                "heading",
+              ]
+            }
+
+            Gtk.Button {
+              icon-name: "media-playback-start-symbolic";
+              tooltip-text: _("Run Task");
+              clicked => $run_task_clicked();
+            }
+
+            Gtk.Button {
+              icon-name: "user-trash-symbolic";
+              tooltip-text: _("Delete Task");
+              clicked => $delete_task_clicked();
+            }
+          }
+
+          Gtk.ScrolledWindow {
+            min-content-height: 160;
+            vexpand: false;
+
+            Gtk.ListView task_view {
+              show-separators: true;
+              single-click-activate: true;
+              activate => $task_activated();
+
+              model: Gtk.SingleSelection task_model {
+                model: Gio.ListStore task_source {
+                  item-type: typeof<$TermplexDashboardTask>;
+                };
               };
-            };
+
+              styles [
+                "rich-list",
+              ]
+
+              factory: Gtk.BuilderListItemFactory {
+                template Gtk.ListItem {
+                  child: Gtk.Box {
+                    orientation: vertical;
+                    spacing: 3;
+                    tooltip-text: bind template.item as <$TermplexDashboardTask>.command;
+
+                    Gtk.Label {
+                      ellipsize: end;
+                      halign: start;
+                      wrap: false;
+                      single-line-mode: true;
+
+                      styles [
+                        "title",
+                      ]
+
+                      label: bind template.item as <$TermplexDashboardTask>.name;
+                    }
+
+                    Gtk.Label {
+                      ellipsize: end;
+                      halign: start;
+                      wrap: false;
+                      single-line-mode: true;
+
+                      styles [
+                        "subtitle",
+                      ]
+
+                      label: bind template.item as <$TermplexDashboardTask>.metadata;
+                    }
+                  };
+                }
+              };
+            }
+          }
+
+          Gtk.Label {
+            label: _("Recent Commands");
+            xalign: 0;
 
             styles [
-              "rich-list",
+              "heading",
             ]
+          }
 
-            factory: Gtk.BuilderListItemFactory {
-              template Gtk.ListItem {
-                child: Gtk.Box {
-                  orientation: vertical;
-                  spacing: 3;
-                  tooltip-text: bind template.item as <$TermplexDashboardCommand>.command;
+          Gtk.ScrolledWindow {
+            min-content-height: 240;
+            vexpand: true;
 
-                  Gtk.Label {
-                    ellipsize: end;
-                    halign: start;
-                    wrap: false;
-                    single-line-mode: true;
+            Gtk.ListView command_view {
+              show-separators: true;
+              single-click-activate: true;
+              activate => $command_activated();
 
-                    styles [
-                      "title",
-                      "monospace",
-                    ]
-
-                    label: bind template.item as <$TermplexDashboardCommand>.command;
-                  }
-
-                  Gtk.Label {
-                    ellipsize: end;
-                    halign: start;
-                    wrap: false;
-                    single-line-mode: true;
-
-                    styles [
-                      "subtitle",
-                    ]
-
-                    label: bind template.item as <$TermplexDashboardCommand>.metadata;
-                  }
+              model: Gtk.SingleSelection command_model {
+                model: Gio.ListStore command_source {
+                  item-type: typeof<$TermplexDashboardCommand>;
                 };
-              }
-            };
+              };
+
+              styles [
+                "rich-list",
+              ]
+
+              factory: Gtk.BuilderListItemFactory {
+                template Gtk.ListItem {
+                  child: Gtk.Box {
+                    orientation: vertical;
+                    spacing: 3;
+                    tooltip-text: bind template.item as <$TermplexDashboardCommand>.command;
+
+                    Gtk.Label {
+                      ellipsize: end;
+                      halign: start;
+                      wrap: false;
+                      single-line-mode: true;
+
+                      styles [
+                        "title",
+                        "monospace",
+                      ]
+
+                      label: bind template.item as <$TermplexDashboardCommand>.command;
+                    }
+
+                    Gtk.Label {
+                      ellipsize: end;
+                      halign: start;
+                      wrap: false;
+                      single-line-mode: true;
+
+                      styles [
+                        "subtitle",
+                      ]
+
+                      label: bind template.item as <$TermplexDashboardCommand>.metadata;
+                    }
+                  };
+                }
+              };
+            }
           }
         }
 

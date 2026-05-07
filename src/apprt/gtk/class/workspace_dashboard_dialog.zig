@@ -80,12 +80,27 @@ pub const WorkspaceDashboardDialog = extern struct {
                 void,
             );
         };
+
+        pub const @"run-task" = struct {
+            pub const name = "run-task";
+            pub const connect = impl.connect;
+            const impl = gobject.ext.defineSignal(name, Self, &.{[*:0]const u8}, void);
+        };
+
+        pub const @"delete-task" = struct {
+            pub const name = "delete-task";
+            pub const connect = impl.connect;
+            const impl = gobject.ext.defineSignal(name, Self, &.{[*:0]const u8}, void);
+        };
     };
 
     const Private = struct {
         dialog: *adw.Dialog,
         workspace_label: *gtk.Label,
         summary_label: *gtk.Label,
+        task_view: *gtk.ListView,
+        task_model: *gtk.SingleSelection,
+        task_source: *gio.ListStore,
         command_view: *gtk.ListView,
         command_model: *gtk.SingleSelection,
         command_source: *gio.ListStore,
@@ -116,6 +131,7 @@ pub const WorkspaceDashboardDialog = extern struct {
             alloc.free(value);
             priv.active_history_id = null;
         }
+        priv.task_source.removeAll();
         priv.command_source.removeAll();
     }
 
@@ -152,6 +168,20 @@ pub const WorkspaceDashboardDialog = extern struct {
         const z = alloc.dupeZ(u8, text) catch return;
         defer alloc.free(z);
         self.private().details_buffer.setText(z.ptr, @intCast(text.len));
+    }
+
+    fn updateTaskDetails(self: *Self, item: *DashboardTask) void {
+        const alloc = std.heap.c_allocator;
+        const name = item.taskName() orelse "";
+        const command = item.command() orelse "";
+        const metadata = item.metadata() orelse "";
+        const text = std.fmt.allocPrint(
+            alloc,
+            "Task:\n{s}\n\nCommand:\n{s}\n\nMetadata:\n{s}",
+            .{ name, command, metadata },
+        ) catch return;
+        defer alloc.free(text);
+        self.setDetails(text);
     }
 
     fn updateCommandDetails(self: *Self, item: *DashboardCommand) void {
@@ -227,6 +257,15 @@ pub const WorkspaceDashboardDialog = extern struct {
         defer alloc.free(summary_text);
         setLabel(priv.summary_label, summary_text);
 
+        for (status.tasks.items) |record| {
+            const item = DashboardTask.new(record) catch |err| {
+                log.warn("failed to create dashboard task row: {}", .{err});
+                continue;
+            };
+            priv.task_source.append(item.as(gobject.Object));
+            item.unref();
+        }
+
         for (status.recent_commands.items) |record| {
             const item = DashboardCommand.new(record) catch |err| {
                 log.warn("failed to create dashboard command row: {}", .{err});
@@ -236,7 +275,16 @@ pub const WorkspaceDashboardDialog = extern struct {
             item.unref();
         }
 
-        self.setDetails("Select a recent command to inspect its metadata.");
+        self.setDetails("Select a task or recent command to inspect its metadata.");
+    }
+
+    fn selectedTask(self: *Self) ?*DashboardTask {
+        const priv = self.private();
+        const object = priv.task_model.as(gio.ListModel).getObject(priv.task_model.getSelected()) orelse return null;
+        return gobject.ext.cast(DashboardTask, object) orelse {
+            object.unref();
+            return null;
+        };
     }
 
     fn selectedCommand(self: *Self) ?*DashboardCommand {
@@ -254,6 +302,16 @@ pub const WorkspaceDashboardDialog = extern struct {
 
     fn refreshClicked(_: *gtk.Button, self: *WorkspaceDashboardDialog) callconv(.c) void {
         self.refresh();
+    }
+
+    fn taskActivated(_: *gtk.ListView, pos: c_uint, self: *WorkspaceDashboardDialog) callconv(.c) void {
+        const object = self.private().task_model.as(gio.ListModel).getObject(pos) orelse return;
+        const item = gobject.ext.cast(DashboardTask, object) orelse {
+            object.unref();
+            return;
+        };
+        defer item.unref();
+        self.updateTaskDetails(item);
     }
 
     fn commandActivated(_: *gtk.ListView, pos: c_uint, self: *WorkspaceDashboardDialog) callconv(.c) void {
@@ -316,6 +374,20 @@ pub const WorkspaceDashboardDialog = extern struct {
         signals.@"save-task".impl.emit(self, null, .{ command_id.ptr, command.ptr }, null);
     }
 
+    fn runTaskClicked(_: *gtk.Button, self: *WorkspaceDashboardDialog) callconv(.c) void {
+        const item = self.selectedTask() orelse return;
+        defer item.unref();
+        const name = item.taskName() orelse return;
+        signals.@"run-task".impl.emit(self, null, .{name.ptr}, null);
+    }
+
+    fn deleteTaskClicked(_: *gtk.Button, self: *WorkspaceDashboardDialog) callconv(.c) void {
+        const item = self.selectedTask() orelse return;
+        defer item.unref();
+        const name = item.taskName() orelse return;
+        signals.@"delete-task".impl.emit(self, null, .{name.ptr}, null);
+    }
+
     pub fn toggle(self: *Self, window: *Window) void {
         const priv = self.private();
 
@@ -348,6 +420,7 @@ pub const WorkspaceDashboardDialog = extern struct {
 
         fn init(class: *Class) callconv(.c) void {
             gobject.ext.ensureType(DashboardCommand);
+            gobject.ext.ensureType(DashboardTask);
             gtk.Widget.Class.setTemplateFromResource(
                 class.as(gtk.Widget.Class),
                 comptime gresource.blueprint(.{
@@ -360,6 +433,9 @@ pub const WorkspaceDashboardDialog = extern struct {
             class.bindTemplateChildPrivate("dialog", .{});
             class.bindTemplateChildPrivate("workspace_label", .{});
             class.bindTemplateChildPrivate("summary_label", .{});
+            class.bindTemplateChildPrivate("task_view", .{});
+            class.bindTemplateChildPrivate("task_model", .{});
+            class.bindTemplateChildPrivate("task_source", .{});
             class.bindTemplateChildPrivate("command_view", .{});
             class.bindTemplateChildPrivate("command_model", .{});
             class.bindTemplateChildPrivate("command_source", .{});
@@ -376,6 +452,9 @@ pub const WorkspaceDashboardDialog = extern struct {
             class.bindTemplateCallback("rerun_command_clicked", &rerunCommandClicked);
             class.bindTemplateCallback("command_transcript_clicked", &commandTranscriptClicked);
             class.bindTemplateCallback("save_task_clicked", &saveTaskClicked);
+            class.bindTemplateCallback("run_task_clicked", &runTaskClicked);
+            class.bindTemplateCallback("delete_task_clicked", &deleteTaskClicked);
+            class.bindTemplateCallback("task_activated", &taskActivated);
             class.bindTemplateCallback("command_activated", &commandActivated);
 
             signals.@"open-command-history".impl.register(.{});
@@ -386,6 +465,8 @@ pub const WorkspaceDashboardDialog = extern struct {
             signals.copy.impl.register(.{});
             signals.rerun.impl.register(.{});
             signals.@"save-task".impl.register(.{});
+            signals.@"run-task".impl.register(.{});
+            signals.@"delete-task".impl.register(.{});
 
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);
         }
@@ -393,6 +474,181 @@ pub const WorkspaceDashboardDialog = extern struct {
         pub const as = C.Class.as;
         pub const bindTemplateChildPrivate = C.Class.bindTemplateChildPrivate;
         pub const bindTemplateCallback = C.Class.bindTemplateCallback;
+    };
+};
+
+const DashboardTask = extern struct {
+    const Self = @This();
+    pub const Parent = gobject.Object;
+    parent: Parent,
+
+    pub const getGObjectType = gobject.ext.defineClass(Self, .{
+        .name = "TermplexDashboardTask",
+        .instanceInit = &init,
+        .classInit = Class.init,
+        .parent_class = &Class.parent,
+        .private = .{ .Type = Private, .offset = &Private.offset },
+    });
+
+    const properties = struct {
+        pub const @"task-name" = struct {
+            pub const name = "name";
+            const impl = gobject.ext.defineProperty(
+                name,
+                Self,
+                ?[:0]const u8,
+                .{
+                    .default = null,
+                    .accessor = gobject.ext.typedAccessor(
+                        Self,
+                        ?[:0]const u8,
+                        .{
+                            .getter = propGetName,
+                            .getter_transfer = .none,
+                        },
+                    ),
+                },
+            );
+        };
+
+        pub const command = struct {
+            pub const name = "command";
+            const impl = gobject.ext.defineProperty(
+                name,
+                Self,
+                ?[:0]const u8,
+                .{
+                    .default = null,
+                    .accessor = gobject.ext.typedAccessor(
+                        Self,
+                        ?[:0]const u8,
+                        .{
+                            .getter = propGetCommand,
+                            .getter_transfer = .none,
+                        },
+                    ),
+                },
+            );
+        };
+
+        pub const metadata = struct {
+            pub const name = "metadata";
+            const impl = gobject.ext.defineProperty(
+                name,
+                Self,
+                ?[:0]const u8,
+                .{
+                    .default = null,
+                    .accessor = gobject.ext.typedAccessor(
+                        Self,
+                        ?[:0]const u8,
+                        .{
+                            .getter = propGetMetadata,
+                            .getter_transfer = .none,
+                        },
+                    ),
+                },
+            );
+        };
+    };
+
+    const Private = struct {
+        arena: ArenaAllocator,
+        name_text: ?[:0]const u8 = null,
+        command_text: ?[:0]const u8 = null,
+        metadata_text: ?[:0]const u8 = null,
+
+        pub var offset: c_int = 0;
+    };
+
+    pub fn new(record: terminal_history_db.TaskRecord) Allocator.Error!*Self {
+        const self = gobject.ext.newInstance(Self, .{});
+        errdefer self.unref();
+
+        const priv = self.private();
+        const alloc = priv.arena.allocator();
+        priv.name_text = try alloc.dupeZ(u8, record.name);
+        priv.command_text = try alloc.dupeZ(u8, record.command);
+        priv.metadata_text = try formatMetadata(alloc, record);
+        return self;
+    }
+
+    fn formatMetadata(alloc: Allocator, record: terminal_history_db.TaskRecord) Allocator.Error![:0]const u8 {
+        const dir = record.working_directory orelse "workspace default";
+        const last_run = record.last_run_at orelse "never run";
+        const metadata_text = try std.fmt.allocPrint(
+            alloc,
+            "runs {d} - {s} - {s}",
+            .{ record.run_count, last_run, dir },
+        );
+        defer alloc.free(metadata_text);
+        return try alloc.dupeZ(u8, metadata_text);
+    }
+
+    fn init(self: *Self, _: *Class) callconv(.c) void {
+        self.private().arena = .init(Application.default().allocator());
+    }
+
+    fn dispose(self: *Self) callconv(.c) void {
+        gobject.Object.virtual_methods.dispose.call(
+            Class.parent,
+            self.as(Parent),
+        );
+    }
+
+    fn finalize(self: *Self) callconv(.c) void {
+        self.private().arena.deinit();
+        gobject.Object.virtual_methods.finalize.call(
+            Class.parent,
+            self.as(Parent),
+        );
+    }
+
+    fn propGetName(self: *Self) ?[:0]const u8 {
+        return self.private().name_text;
+    }
+
+    fn propGetCommand(self: *Self) ?[:0]const u8 {
+        return self.private().command_text;
+    }
+
+    fn propGetMetadata(self: *Self) ?[:0]const u8 {
+        return self.private().metadata_text;
+    }
+
+    fn taskName(self: *Self) ?[:0]const u8 {
+        return self.private().name_text;
+    }
+
+    fn command(self: *Self) ?[:0]const u8 {
+        return self.private().command_text;
+    }
+
+    fn metadata(self: *Self) ?[:0]const u8 {
+        return self.private().metadata_text;
+    }
+
+    const C = Common(Self, Private);
+    pub const as = C.as;
+    pub const unref = C.unref;
+    const private = C.private;
+
+    pub const Class = extern struct {
+        parent_class: Parent.Class,
+        var parent: *Parent.Class = undefined;
+        pub const Instance = Self;
+
+        fn init(class: *Class) callconv(.c) void {
+            gobject.ext.registerProperties(class, &.{
+                properties.@"task-name".impl,
+                properties.command.impl,
+                properties.metadata.impl,
+            });
+            gobject.Object.virtual_methods.dispose.implement(class, &dispose);
+            gobject.Object.virtual_methods.finalize.implement(class, &finalize);
+        }
+
+        pub const as = C.Class.as;
     };
 };
 
