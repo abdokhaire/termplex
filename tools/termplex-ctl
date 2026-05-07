@@ -112,6 +112,14 @@ def main():
     ws_rename.add_argument("--name", required=True, help="Current name")
     ws_rename.add_argument("--new-name", required=True, help="New name")
 
+    ws_open_folder = ws_sub.add_parser("open-folder", help="Open workspace folder in the system file manager")
+    ws_open_folder.add_argument("--name", help="Workspace name")
+    ws_open_folder.add_argument("--index", type=int, help="Workspace index")
+
+    ws_open_vscode = ws_sub.add_parser("open-vscode", help="Open workspace in VS Code")
+    ws_open_vscode.add_argument("--name", help="Workspace name")
+    ws_open_vscode.add_argument("--index", type=int, help="Workspace index")
+
     # --- tab ---
     tab = subparsers.add_parser("tab", help="Tab operations")
     tab_sub = tab.add_subparsers(dest="action")
@@ -498,6 +506,20 @@ def build_request(args):
             return "workspace.close", p
         if action == "rename":
             return "workspace.rename", {"name": args.name, "new_name": args.new_name}
+        if action == "open-folder":
+            p = {}
+            if args.name:
+                p["ref"] = args.name
+            if args.index is not None:
+                p["index"] = args.index
+            return "workspace.open_folder", p
+        if action == "open-vscode":
+            p = {}
+            if args.name:
+                p["ref"] = args.name
+            if args.index is not None:
+                p["index"] = args.index
+            return "workspace.open_vscode", p
         return None, None
 
     if resource == "tab":

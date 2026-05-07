@@ -796,6 +796,18 @@ pub const Database = struct {
         try delete_commands.stepDone();
     }
 
+    pub fn clearWorkspaceCommandRowsBeforeOrAt(self: *Database, workspace_id: []const u8, started_before: []const u8) !void {
+        var delete_commands = try self.prepare(
+            \\DELETE FROM command_history
+            \\WHERE workspace_id = ?
+            \\  AND started_at <= ?
+        );
+        defer delete_commands.deinit();
+        try delete_commands.bindText(1, workspace_id);
+        try delete_commands.bindText(2, started_before);
+        try delete_commands.stepDone();
+    }
+
     pub fn deleteProject(self: *Database, workspace_id: []const u8, timestamp: []const u8) !void {
         try self.clearWorkspaceHistoryRows(workspace_id);
         var mark_project = try self.prepare(
@@ -1482,4 +1494,64 @@ test "terminal history db clears workspace history while preserving project meta
     var project = try db.getProject("workspace-clear");
     defer project.deinit(allocator);
     try std.testing.expectEqual(@as(?[]const u8, null), project.git_remote_url);
+}
+
+test "terminal history db clears commands at or before cutoff" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    try db.ensureProject(.{
+        .workspace_id = "workspace-cutoff",
+        .workspace_name = "Cutoff",
+        .workspace_dir = "/tmp/cutoff",
+        .timestamp = "2026-05-07T08:00:00Z",
+    });
+    try db.upsertSurface(.{
+        .history_id = "surface-cutoff",
+        .workspace_id = "workspace-cutoff",
+        .workspace_name = "Cutoff",
+        .workspace_dir = "/tmp/cutoff",
+        .working_directory = "/tmp/cutoff",
+        .transcript_path = "/tmp/cutoff.ansi",
+        .timestamp = "2026-05-07T08:00:00Z",
+    });
+    _ = try db.startCommand(.{
+        .history_id = "surface-cutoff",
+        .workspace_id = "workspace-cutoff",
+        .workspace_name = "Cutoff",
+        .workspace_dir = "/tmp/cutoff",
+        .command = "old",
+        .started_at = "2026-05-07T08:00:00Z",
+        .source = "test",
+    });
+    _ = try db.startCommand(.{
+        .history_id = "surface-cutoff",
+        .workspace_id = "workspace-cutoff",
+        .workspace_name = "Cutoff",
+        .workspace_dir = "/tmp/cutoff",
+        .command = "new",
+        .started_at = "2026-05-07T08:00:02Z",
+        .source = "test",
+    });
+
+    try db.clearWorkspaceCommandRowsBeforeOrAt("workspace-cutoff", "2026-05-07T08:00:01Z");
+
+    var list = try db.searchCommands(.{
+        .workspace_id = "workspace-cutoff",
+        .limit = 10,
+    });
+    defer list.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), list.items.len);
+    try std.testing.expectEqualStrings("new", list.items[0].command);
 }

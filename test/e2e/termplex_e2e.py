@@ -168,6 +168,7 @@ def profile_env(args, profile):
     env["TERMPLEX_SOCKET"] = str(profile / "runtime" / "termplex.sock")
     env["GSETTINGS_BACKEND"] = "memory"
     env["TERMPLEX_E2E"] = "1"
+    env["TERMPLEX_E2E_OPEN_WORKSPACE_LOG"] = str(profile / "artifacts" / "workspace-open.jsonl")
     env["APPIMAGE"] = str(appimage)
     env["TERMPLEX_UPDATE_MANIFEST_URL"] = "file://" + str(manifest)
     env["TERMPLEX_UPDATE_DOWNLOAD_OVERRIDE"] = str(appimage)
@@ -532,6 +533,32 @@ def assert_dashboard_status(args, env, workspace_name, command_marker, timeout):
     ctl(args, env, "dashboard", "show")
 
 
+def assert_workspace_open_actions(args, env, profile, workspace_name, workspace_dir):
+    log_path = profile / "artifacts" / "workspace-open.jsonl"
+    if log_path.exists():
+        log_path.unlink()
+
+    folder = ctl(args, env, "workspace", "open-folder", "--name", workspace_name)
+    if folder.get("target") != "folder" or folder.get("dir") != workspace_dir:
+        raise E2EError("workspace open-folder returned wrong result: {}".format(folder))
+
+    vscode = ctl(args, env, "workspace", "open-vscode", "--name", workspace_name)
+    if vscode.get("target") != "vscode" or vscode.get("dir") != workspace_dir:
+        raise E2EError("workspace open-vscode returned wrong result: {}".format(vscode))
+
+    entries = []
+    if log_path.exists():
+        for line in log_path.read_text().splitlines():
+            if line.strip():
+                entries.append(json.loads(line))
+    expected = [
+        {"target": "folder", "dir": workspace_dir},
+        {"target": "vscode", "dir": workspace_dir},
+    ]
+    if entries != expected:
+        raise E2EError("workspace open actions did not write expected dry-run log: {}".format(entries))
+
+
 def assert_task_shortcuts_flow(args, env, profile, workspace_name, workspace_dir, tab, timeout):
     marker = "TPX_E2E_TASK_SHORTCUT_001"
     task_name = "echo-task"
@@ -743,6 +770,17 @@ def assert_storage_management_flow(args, env, profile, workspace_name, workspace
     ctl(args, env, "storage", "clear-workspace", "--workspace", workspace_name)
     wait_until(
         "storage clear-workspace removes command rows",
+        timeout,
+        lambda: query_one(
+            profile,
+            "SELECT count(*) FROM command_history WHERE workspace_name = ?",
+            (workspace_name,),
+        )
+        == 0,
+    )
+    time.sleep(0.35)
+    wait_until(
+        "storage clear-workspace remains clear after deferred cleanup",
         timeout,
         lambda: query_one(
             profile,
@@ -1013,6 +1051,7 @@ def run_scenario(args, profile, env):
         assert_storage_status_has_history(args, env, args.timeout)
         assert_task_shortcuts_flow(args, env, profile, workspace_name, workspace_dir, main_tab, args.timeout)
         assert_dashboard_status(args, env, workspace_name, command_name, args.timeout)
+        assert_workspace_open_actions(args, env, profile, workspace_name, workspace_dir)
         assert_diagnostics_export(args, env, profile, workspace_name, marker, command_name)
         assert_storage_management_flow(args, env, profile, storage_workspace_name, storage_workspace_dir, args.timeout)
 

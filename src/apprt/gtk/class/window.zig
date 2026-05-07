@@ -3249,6 +3249,20 @@ pub const Window = extern struct {
                 self,
                 .{},
             );
+            _ = WorkspaceDashboardDialog.signals.@"open-folder".connect(
+                dialog,
+                *Window,
+                signalDashboardOpenFolder,
+                self,
+                .{},
+            );
+            _ = WorkspaceDashboardDialog.signals.@"open-vscode".connect(
+                dialog,
+                *Window,
+                signalDashboardOpenVSCode,
+                self,
+                .{},
+            );
             _ = WorkspaceDashboardDialog.signals.@"open-transcript".connect(
                 dialog,
                 *Window,
@@ -3375,6 +3389,26 @@ pub const Window = extern struct {
         };
         defer alloc.free(message_z);
         self.addToast(message_z.ptr);
+    }
+
+    fn signalDashboardOpenFolder(_: *WorkspaceDashboardDialog, self: *Self) callconv(.c) void {
+        const app = Application.default();
+        app.openWorkspaceFolder(app.activeWorkspaceIndex()) catch |err| {
+            log.warn("failed to open workspace folder: {}", .{err});
+            self.addToast(i18n._("Unable to open workspace folder"));
+            return;
+        };
+        self.addToast(i18n._("Opening workspace folder"));
+    }
+
+    fn signalDashboardOpenVSCode(_: *WorkspaceDashboardDialog, self: *Self) callconv(.c) void {
+        const app = Application.default();
+        app.openWorkspaceVSCode(app.activeWorkspaceIndex()) catch |err| {
+            log.warn("failed to open workspace in VS Code: {}", .{err});
+            self.addToast(i18n._("Unable to open VS Code"));
+            return;
+        };
+        self.addToast(i18n._("Opening workspace in VS Code"));
     }
 
     fn signalDashboardOpenTranscript(_: *WorkspaceDashboardDialog, history_id: [*:0]const u8, self: *Self) callconv(.c) void {

@@ -54,6 +54,7 @@ const transcript_view = @import("../../../termplex/core/transcript_view.zig");
 const update_checker_mod = @import("../../../termplex/core/update_checker.zig");
 const update_manifest_mod = @import("../../../termplex/core/update_manifest.zig");
 const update_state_mod = @import("../../../termplex/core/update_state.zig");
+const workspace_open = @import("../../../termplex/core/workspace_open.zig");
 const workspace_mod = @import("../../../termplex/core/workspace.zig");
 const termplex_config = @import("../../../termplex/core/config.zig");
 const agents = @import("../../../termplex/ipc/agents.zig");
@@ -1251,6 +1252,7 @@ pub const Application = extern struct {
     const DeferredProjectHistoryClear = struct {
         app: *Self,
         workspace_id: []u8,
+        started_before: []u8,
         attempts_left: u8,
     };
 
@@ -1284,12 +1286,17 @@ pub const Application = extern struct {
         return @intFromBool(glib.SOURCE_REMOVE);
     }
 
-    fn scheduleTerminalHistoryProjectClear(self: *Self, workspace_id: []const u8) void {
+    fn scheduleTerminalHistoryProjectClear(self: *Self, workspace_id: []const u8, started_before: []const u8) void {
         const alloc = std.heap.c_allocator;
         const ctx = alloc.create(DeferredProjectHistoryClear) catch return;
         ctx.* = .{
             .app = self,
             .workspace_id = alloc.dupe(u8, workspace_id) catch {
+                alloc.destroy(ctx);
+                return;
+            },
+            .started_before = alloc.dupe(u8, started_before) catch {
+                alloc.free(ctx.workspace_id);
                 alloc.destroy(ctx);
                 return;
             },
@@ -1303,7 +1310,7 @@ pub const Application = extern struct {
         const priv = ctx.app.private();
 
         if (priv.terminal_history_db) |*db| {
-            db.clearWorkspaceCommandRows(ctx.workspace_id) catch |err| {
+            db.clearWorkspaceCommandRowsBeforeOrAt(ctx.workspace_id, ctx.started_before) catch |err| {
                 log.warn("failed to clear deferred workspace command rows: {}", .{err});
             };
             db.commitIfNeeded() catch |err| {
@@ -1318,6 +1325,7 @@ pub const Application = extern struct {
         }
 
         std.heap.c_allocator.free(ctx.workspace_id);
+        std.heap.c_allocator.free(ctx.started_before);
         std.heap.c_allocator.destroy(ctx);
         return @intFromBool(glib.SOURCE_REMOVE);
     }
@@ -1639,6 +1647,8 @@ pub const Application = extern struct {
     fn clearWorkspaceHistoryForIndex(self: *Self, alloc: std.mem.Allocator, workspace_idx: u32) !void {
         const workspace_id = try self.workspaceIdString(alloc, workspace_idx);
         defer alloc.free(workspace_id);
+        const clear_started_before = self.terminalHistoryTimestamp(alloc) orelse return error.OutOfMemory;
+        defer alloc.free(clear_started_before);
         try terminal_history.clearWorkspaceHistory(alloc, workspace_id);
 
         if (self.private().terminal_history_db) |*db| {
@@ -1650,7 +1660,7 @@ pub const Application = extern struct {
 
         self.reopenTerminalHistoryDatabase();
         self.upsertTerminalHistoryProject(workspace_idx);
-        self.scheduleTerminalHistoryProjectClear(workspace_id);
+        self.scheduleTerminalHistoryProjectClear(workspace_id, clear_started_before);
         self.refreshTerminalHistoryDatabaseLink();
     }
 
@@ -2069,6 +2079,17 @@ pub const Application = extern struct {
         const priv = self.private();
         if (index >= priv.workspace_dirs.items.len) return null;
         return priv.workspace_dirs.items[index];
+    }
+
+    pub fn openWorkspaceFolder(self: *Self, index: u32) !void {
+        const dir = self.workspaceDir(index) orelse return error.WorkspaceNotFound;
+        if (try workspace_open.recordDryRunFromEnv(self.allocator(), .folder, dir)) return;
+        Action.openUrl(self, .{ .kind = .unknown, .url = dir });
+    }
+
+    pub fn openWorkspaceVSCode(self: *Self, index: u32) !void {
+        const dir = self.workspaceDir(index) orelse return error.WorkspaceNotFound;
+        try workspace_open.openVSCode(self.allocator(), dir);
     }
 
     /// Format a workspace directory for display, replacing $HOME with ~.
@@ -3264,6 +3285,14 @@ pub const Application = extern struct {
             return ipcWorkspaceRename(self, alloc, id, root.object);
         }
 
+        if (std.mem.eql(u8, method, "workspace.open_folder")) {
+            return ipcWorkspaceOpen(self, alloc, id, root.object, .folder);
+        }
+
+        if (std.mem.eql(u8, method, "workspace.open_vscode")) {
+            return ipcWorkspaceOpen(self, alloc, id, root.object, .vscode);
+        }
+
         if (std.mem.eql(u8, method, "notification.create")) {
             return ipcNotificationCreate(self, alloc, id, root.object);
         }
@@ -3817,6 +3846,60 @@ pub const Application = extern struct {
             alloc,
             "{{\"ok\":true,\"result\":{{}},\"id\":{d}}}",
             .{id},
+        ) catch null;
+    }
+
+    fn ipcWorkspaceOpen(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        id: i64,
+        obj: std.json.ObjectMap,
+        target: workspace_open.Target,
+    ) ?[]u8 {
+        const params_val = obj.get("params") orelse .null;
+        const params = if (params_val == .object) params_val.object else obj;
+        const ws_idx = self.resolveWorkspaceIdx(params) orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+        const dir = self.workspaceDir(ws_idx) orelse {
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"not_found\",\"message\":\"workspace directory not found\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        const open_result = switch (target) {
+            .folder => self.openWorkspaceFolder(ws_idx),
+            .vscode => self.openWorkspaceVSCode(ws_idx),
+        };
+        open_result catch |err| {
+            log.warn("failed to open workspace target={s} dir={s}: {}", .{ workspace_open.targetName(target), dir, err });
+            return std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":false,\"error\":{{\"code\":\"open_failed\",\"message\":\"failed to open workspace\"}},\"id\":{d}}}",
+                .{id},
+            ) catch null;
+        };
+
+        var result_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer result_buf.deinit(alloc);
+        result_buf.appendSlice(alloc, "{\"target\":") catch return null;
+        appendJsonString(&result_buf, alloc, workspace_open.targetName(target)) catch return null;
+        result_buf.appendSlice(alloc, ",\"workspace\":") catch return null;
+        appendJsonInt(&result_buf, alloc, ws_idx) catch return null;
+        result_buf.appendSlice(alloc, ",\"dir\":") catch return null;
+        appendJsonString(&result_buf, alloc, dir) catch return null;
+        result_buf.appendSlice(alloc, "}") catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ result_buf.items, id },
         ) catch null;
     }
 

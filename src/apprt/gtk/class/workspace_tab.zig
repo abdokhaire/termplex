@@ -179,6 +179,8 @@ pub const WorkspaceTab = extern struct {
         const name_label = gtk.Label.new(null);
         name_label.setXalign(0.0);
         name_label.as(gtk.Widget).setHexpand(1);
+        name_label.setEllipsize(.end);
+        name_label.setMaxWidthChars(18);
         name_label.as(gtk.Widget).addCssClass("termplex-tab-name");
         priv.name_label = name_label;
         row1.append(name_label.as(gtk.Widget));
@@ -214,7 +216,6 @@ pub const WorkspaceTab = extern struct {
         // -- Action icons box: shown on hover, hidden by default --
         const action_box = gtk.Box.new(.horizontal, 2);
         action_box.as(gtk.Widget).addCssClass("termplex-tab-actions");
-        action_box.as(gtk.Widget).setSizeRequest(116, -1);
         action_box.as(gtk.Widget).setOpacity(0.0);
         action_box.as(gtk.Widget).setSensitive(0);
         priv.action_box = action_box;
@@ -288,6 +289,8 @@ pub const WorkspaceTab = extern struct {
         branch_label.setXalign(0.0);
         branch_label.as(gtk.Widget).addCssClass("termplex-tab-branch");
         branch_label.as(gtk.Widget).setHexpand(1);
+        branch_label.setEllipsize(.end);
+        branch_label.setMaxWidthChars(20);
         priv.branch_label = branch_label;
         row3.append(branch_label.as(gtk.Widget));
 

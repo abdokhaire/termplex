@@ -285,12 +285,12 @@ label.resize-overlay {
 }
 
 .termplex-workspace-title-row {
-  min-height: 21px;
+  min-height: 24px;
 }
 
 .termplex-workspace-meta-row,
 .termplex-workspace-branch-row {
-  min-height: 15px;
+  min-height: 18px;
 }
 
 .termplex-tab-name {
@@ -363,16 +363,17 @@ label.resize-overlay {
  * Termplex Workspace Tab Hover Action Icons
  */
 .termplex-tab-action {
-  min-width: 21px;
-  min-height: 20px;
+  min-width: 18px;
+  min-height: 18px;
   padding: 0;
   color: #7a8ba3;
   border-radius: 2px;
-  -gtk-icon-size: 13px;
+  -gtk-icon-size: 12px;
 }
 
 .termplex-tab-actions {
   transition: opacity 120ms ease;
+  margin-left: 2px;
 }
 
 .termplex-tab-action:hover {

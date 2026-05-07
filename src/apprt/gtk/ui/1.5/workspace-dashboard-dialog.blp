@@ -66,6 +66,18 @@ Adw.Dialog dialog {
           label: _("Diagnostics");
           clicked => $diagnostics_clicked();
         }
+
+        Gtk.Button {
+          icon-name: "folder-open-symbolic";
+          tooltip-text: _("Open Workspace Folder");
+          clicked => $open_folder_clicked();
+        }
+
+        Gtk.Button {
+          label: _("VS Code");
+          tooltip-text: _("Open Workspace in VS Code");
+          clicked => $open_vscode_clicked();
+        }
       }
 
       Gtk.Label workspace_label {

@@ -52,6 +52,18 @@ pub const WorkspaceDashboardDialog = extern struct {
             const impl = gobject.ext.defineSignal(name, Self, &.{}, void);
         };
 
+        pub const @"open-folder" = struct {
+            pub const name = "open-folder";
+            pub const connect = impl.connect;
+            const impl = gobject.ext.defineSignal(name, Self, &.{}, void);
+        };
+
+        pub const @"open-vscode" = struct {
+            pub const name = "open-vscode";
+            pub const connect = impl.connect;
+            const impl = gobject.ext.defineSignal(name, Self, &.{}, void);
+        };
+
         pub const @"open-transcript" = struct {
             pub const name = "open-transcript";
             pub const connect = impl.connect;
@@ -356,6 +368,14 @@ pub const WorkspaceDashboardDialog = extern struct {
         signals.@"export-diagnostics".impl.emit(self, null, .{}, null);
     }
 
+    fn openFolderClicked(_: *gtk.Button, self: *WorkspaceDashboardDialog) callconv(.c) void {
+        signals.@"open-folder".impl.emit(self, null, .{}, null);
+    }
+
+    fn openVSCodeClicked(_: *gtk.Button, self: *WorkspaceDashboardDialog) callconv(.c) void {
+        signals.@"open-vscode".impl.emit(self, null, .{}, null);
+    }
+
     fn transcriptClicked(_: *gtk.Button, self: *WorkspaceDashboardDialog) callconv(.c) void {
         const history_id = self.private().active_history_id orelse return;
         signals.@"open-transcript".impl.emit(self, null, .{history_id.ptr}, null);
@@ -475,6 +495,8 @@ pub const WorkspaceDashboardDialog = extern struct {
             class.bindTemplateCallback("source_control_clicked", &sourceControlClicked);
             class.bindTemplateCallback("storage_clicked", &storageClicked);
             class.bindTemplateCallback("diagnostics_clicked", &diagnosticsClicked);
+            class.bindTemplateCallback("open_folder_clicked", &openFolderClicked);
+            class.bindTemplateCallback("open_vscode_clicked", &openVSCodeClicked);
             class.bindTemplateCallback("copy_command_clicked", &copyCommandClicked);
             class.bindTemplateCallback("rerun_command_clicked", &rerunCommandClicked);
             class.bindTemplateCallback("command_transcript_clicked", &commandTranscriptClicked);
@@ -489,6 +511,8 @@ pub const WorkspaceDashboardDialog = extern struct {
             signals.@"open-source-control".impl.register(.{});
             signals.@"open-storage".impl.register(.{});
             signals.@"export-diagnostics".impl.register(.{});
+            signals.@"open-folder".impl.register(.{});
+            signals.@"open-vscode".impl.register(.{});
             signals.@"open-transcript".impl.register(.{});
             signals.copy.impl.register(.{});
             signals.rerun.impl.register(.{});
