@@ -4283,6 +4283,79 @@ pub const Application = extern struct {
         return error.TaskUnavailable;
     }
 
+    pub fn defaultTaskNameFromCommand(
+        alloc: std.mem.Allocator,
+        command: []const u8,
+        command_id: i64,
+    ) ![]u8 {
+        var tokens = std.mem.tokenizeAny(u8, command, " \t\r\n");
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer buf.deinit(alloc);
+
+        var count: u8 = 0;
+        while (tokens.next()) |token| {
+            if (count >= 3) break;
+            if (count > 0) try buf.append(alloc, ' ');
+            try buf.appendSlice(alloc, token);
+            count += 1;
+        }
+
+        if (buf.items.len == 0) {
+            return std.fmt.allocPrint(alloc, "command {d}", .{command_id});
+        }
+
+        return try buf.toOwnedSlice(alloc);
+    }
+
+    pub fn promoteCommandHistoryTask(
+        self: *Self,
+        alloc: std.mem.Allocator,
+        command_id: i64,
+        workspace_idx: ?u32,
+        name: []const u8,
+    ) !terminal_history_db.TaskRecord {
+        if (name.len == 0) return error.InvalidTaskName;
+        if (command_id <= 0) return error.InvalidCommandId;
+
+        const db = try self.taskDatabase();
+
+        var command = try db.getCommand(command_id);
+        defer command.deinit(std.heap.c_allocator);
+
+        if (workspace_idx) |idx| {
+            const workspace_id = try self.workspaceIdString(alloc, idx);
+            defer alloc.free(workspace_id);
+            if (!std.mem.eql(u8, workspace_id, command.workspace_id)) {
+                return error.WorkspaceMismatch;
+            }
+        }
+
+        var surface = db.getSurface(command.history_id) catch |err| switch (err) {
+            error.NotFound => null,
+            else => return err,
+        };
+        defer if (surface) |*record| record.deinit(std.heap.c_allocator);
+
+        const working_directory = if (surface) |record|
+            record.working_directory
+        else
+            command.workspace_dir;
+
+        const timestamp = self.terminalHistoryTimestamp(alloc) orelse return error.TimestampFailed;
+        defer alloc.free(timestamp);
+
+        try db.upsertTask(.{
+            .workspace_id = command.workspace_id,
+            .name = name,
+            .command = command.command,
+            .working_directory = working_directory,
+            .timestamp = timestamp,
+        });
+        try db.commitIfNeeded();
+
+        return try db.getTask(command.workspace_id, name);
+    }
+
     fn ipcTaskList(self: *Self, alloc: std.mem.Allocator, id: i64, obj: std.json.ObjectMap) ?[]u8 {
         const params = taskParams(obj);
         const workspace = self.taskWorkspaceId(alloc, params) catch |err| switch (err) {
@@ -4390,66 +4463,26 @@ pub const Application = extern struct {
             return ipcTaskError(alloc, id, "invalid_params", "command_id must be positive");
         }
 
-        const db = self.taskDatabase() catch {
-            return ipcTaskError(alloc, id, "task_unavailable", "task storage is unavailable");
-        };
-
-        var command = db.getCommand(command_id) catch |err| switch (err) {
-            error.NotFound => return ipcTaskError(alloc, id, "not_found", "command history row not found"),
-            else => {
-                log.warn("failed to load command history row for task promotion: {}", .{err});
-                return ipcTaskError(alloc, id, "task_promote_failed", "failed to load command history row");
-            },
-        };
-        defer command.deinit(std.heap.c_allocator);
-
+        var workspace_idx: ?u32 = null;
         if (params.get("workspace") != null or params.get("ref") != null or params.get("index") != null) {
             const workspace = self.taskWorkspaceId(alloc, params) catch |err| switch (err) {
                 error.NotFound => return ipcTaskError(alloc, id, "not_found", "workspace not found"),
                 else => return ipcTaskError(alloc, id, "task_failed", "failed to resolve workspace"),
             };
             defer alloc.free(workspace.id);
-            if (!std.mem.eql(u8, workspace.id, command.workspace_id)) {
-                return ipcTaskError(alloc, id, "invalid_params", "command does not belong to workspace");
-            }
+            workspace_idx = workspace.index;
         }
 
-        var surface = db.getSurface(command.history_id) catch |err| switch (err) {
-            error.NotFound => null,
-            else => blk: {
-                log.warn("failed to load command surface for task promotion: {}", .{err});
-                break :blk null;
-            },
-        };
-        defer if (surface) |*record| record.deinit(std.heap.c_allocator);
-
-        const working_directory = if (surface) |record|
-            record.working_directory
-        else
-            command.workspace_dir;
-
-        const timestamp = self.terminalHistoryTimestamp(alloc) orelse {
-            return ipcTaskError(alloc, id, "task_failed", "failed to create task timestamp");
-        };
-        defer alloc.free(timestamp);
-
-        db.upsertTask(.{
-            .workspace_id = command.workspace_id,
-            .name = name,
-            .command = command.command,
-            .working_directory = working_directory,
-            .timestamp = timestamp,
-        }) catch |err| {
+        var task = self.promoteCommandHistoryTask(alloc, command_id, workspace_idx, name) catch |err| {
             log.warn("failed to promote command history row to workspace task: {}", .{err});
-            return ipcTaskError(alloc, id, "task_promote_failed", "failed to save promoted task");
-        };
-        db.commitIfNeeded() catch |err| {
-            log.warn("failed to commit promoted workspace task: {}", .{err});
-        };
-
-        var task = db.getTask(command.workspace_id, name) catch |err| {
-            log.warn("failed to reload promoted workspace task: {}", .{err});
-            return ipcTaskError(alloc, id, "task_promote_failed", "failed to load promoted task");
+            return switch (err) {
+                error.NotFound => ipcTaskError(alloc, id, "not_found", "command history row not found"),
+                error.TaskUnavailable => ipcTaskError(alloc, id, "task_unavailable", "task storage is unavailable"),
+                error.WorkspaceMismatch => ipcTaskError(alloc, id, "invalid_params", "command does not belong to workspace"),
+                error.InvalidTaskName => ipcTaskError(alloc, id, "missing_param", "name is required"),
+                error.InvalidCommandId => ipcTaskError(alloc, id, "invalid_params", "command_id must be positive"),
+                else => ipcTaskError(alloc, id, "task_promote_failed", "failed to save promoted task"),
+            };
         };
         defer task.deinit(std.heap.c_allocator);
 
@@ -11906,4 +11939,16 @@ test "session workspace pinned parser defaults false and reads true" {
     const missing = try std.json.parseFromSlice(std.json.Value, alloc, "{\"name\":\"api\"}", .{});
     defer missing.deinit();
     try std.testing.expectEqual(false, Application.sessionWorkspacePinned(missing.value));
+}
+
+test "task default name is derived from command text" {
+    const alloc = std.testing.allocator;
+
+    const first = try Application.defaultTaskNameFromCommand(alloc, "zig build test -Dtest-filter=history", 42);
+    defer alloc.free(first);
+    try std.testing.expectEqualStrings("zig build test", first);
+
+    const empty = try Application.defaultTaskNameFromCommand(alloc, "", 7);
+    defer alloc.free(empty);
+    try std.testing.expectEqualStrings("command 7", empty);
 }

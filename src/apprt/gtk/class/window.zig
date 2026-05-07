@@ -24,6 +24,7 @@ const Common = @import("../class.zig").Common;
 const Config = @import("config.zig").Config;
 const Application = @import("application.zig").Application;
 const CloseConfirmationDialog = @import("close_confirmation_dialog.zig").CloseConfirmationDialog;
+const TitleDialog = @import("title_dialog.zig").TitleDialog;
 const SplitTree = @import("split_tree.zig").SplitTree;
 const Surface = @import("surface.zig").Surface;
 const Tab = @import("tab.zig").Tab;
@@ -2934,6 +2935,110 @@ pub const Window = extern struct {
         self.performBindingAction(action.*);
     }
 
+    const PromoteTaskContext = struct {
+        window: *Window,
+        command_id: i64,
+    };
+
+    fn promoteTaskContextWeakNotify(
+        ud: ?*anyopaque,
+        _: *gobject.Object,
+    ) callconv(.c) void {
+        const ctx: *PromoteTaskContext = @ptrCast(@alignCast(ud orelse return));
+        std.heap.c_allocator.destroy(ctx);
+    }
+
+    fn signalPromoteTaskDialogSet(
+        _: *TitleDialog,
+        name_ptr: [*:0]const u8,
+        ctx: *PromoteTaskContext,
+    ) callconv(.c) void {
+        const self = ctx.window;
+        const name = std.mem.span(name_ptr);
+        if (name.len == 0) {
+            self.addToast(i18n._("Task name is required"));
+            return;
+        }
+
+        var task = Application.default().promoteCommandHistoryTask(
+            std.heap.c_allocator,
+            ctx.command_id,
+            null,
+            name,
+        ) catch |err| {
+            log.warn("failed to save command as task: {}", .{err});
+            self.addToast(i18n._("Unable to save task"));
+            return;
+        };
+        defer task.deinit(std.heap.c_allocator);
+
+        const message = std.fmt.allocPrint(
+            std.heap.c_allocator,
+            "Saved task: {s}",
+            .{task.name},
+        ) catch {
+            self.addToast(i18n._("Task saved"));
+            return;
+        };
+        defer std.heap.c_allocator.free(message);
+
+        const message_z = std.heap.c_allocator.dupeZ(u8, message) catch {
+            self.addToast(i18n._("Task saved"));
+            return;
+        };
+        defer std.heap.c_allocator.free(message_z);
+        self.addToast(message_z.ptr);
+
+        if (self.private().workspace_dashboard_dialog.get()) |dialog| {
+            defer dialog.unref();
+            dialog.refreshVisible();
+        }
+    }
+
+    fn promptSaveCommandAsTask(
+        self: *Self,
+        command_id_text: [*:0]const u8,
+        command_text: [*:0]const u8,
+    ) void {
+        const command_id = std.fmt.parseInt(i64, std.mem.span(command_id_text), 10) catch {
+            self.addToast(i18n._("Unable to save task"));
+            return;
+        };
+        const command = std.mem.span(command_text);
+        const default_name = Application.defaultTaskNameFromCommand(
+            std.heap.c_allocator,
+            command,
+            command_id,
+        ) catch {
+            self.addToast(i18n._("Unable to save task"));
+            return;
+        };
+        defer std.heap.c_allocator.free(default_name);
+
+        const default_name_z = std.heap.c_allocator.dupeZ(u8, default_name) catch {
+            self.addToast(i18n._("Unable to save task"));
+            return;
+        };
+        defer std.heap.c_allocator.free(default_name_z);
+
+        const ctx = std.heap.c_allocator.create(PromoteTaskContext) catch {
+            self.addToast(i18n._("Unable to save task"));
+            return;
+        };
+        ctx.* = .{ .window = self, .command_id = command_id };
+
+        const dialog = TitleDialog.new(.task, default_name_z);
+        dialog.as(gobject.Object).weakRef(promoteTaskContextWeakNotify, ctx);
+        _ = TitleDialog.signals.set.connect(
+            dialog,
+            *PromoteTaskContext,
+            signalPromoteTaskDialogSet,
+            ctx,
+            .{},
+        );
+        dialog.present(self.as(gtk.Widget));
+    }
+
     fn writeTextToActiveSurface(self: *Self, text: []const u8) bool {
         const surface = self.getActiveSurface() orelse return false;
         const core_surface = surface.core() orelse return false;
@@ -2969,6 +3074,13 @@ pub const Window = extern struct {
                 dialog,
                 *Window,
                 signalCommandHistoryOpenTranscript,
+                self,
+                .{},
+            );
+            _ = CommandHistoryDialog.signals.@"save-task".connect(
+                dialog,
+                *Window,
+                signalCommandHistorySaveTask,
                 self,
                 .{},
             );
@@ -3083,6 +3195,13 @@ pub const Window = extern struct {
                 self,
                 .{},
             );
+            _ = WorkspaceDashboardDialog.signals.@"save-task".connect(
+                dialog,
+                *Window,
+                signalDashboardSaveTask,
+                self,
+                .{},
+            );
 
             priv.workspace_dashboard_dialog.set(dialog);
             break :dialog dialog;
@@ -3112,6 +3231,15 @@ pub const Window = extern struct {
         if (!self.showTranscriptViewer(std.mem.span(history_id))) {
             self.addToast(i18n._("Unable to open transcript"));
         }
+    }
+
+    fn signalCommandHistorySaveTask(
+        _: *CommandHistoryDialog,
+        command_id: [*:0]const u8,
+        command: [*:0]const u8,
+        self: *Self,
+    ) callconv(.c) void {
+        self.promptSaveCommandAsTask(command_id, command);
     }
 
     fn signalDashboardOpenCommandHistory(_: *WorkspaceDashboardDialog, self: *Self) callconv(.c) void {
@@ -3173,6 +3301,15 @@ pub const Window = extern struct {
         if (self.writeTextToActiveSurface(text)) {
             self.addToast(i18n._("Command sent"));
         }
+    }
+
+    fn signalDashboardSaveTask(
+        _: *WorkspaceDashboardDialog,
+        command_id: [*:0]const u8,
+        command: [*:0]const u8,
+        self: *Self,
+    ) callconv(.c) void {
+        self.promptSaveCommandAsTask(command_id, command);
     }
 
     /// React to a GTK action requesting that the command palette be toggled.

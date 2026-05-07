@@ -69,6 +69,17 @@ pub const WorkspaceDashboardDialog = extern struct {
             pub const connect = impl.connect;
             const impl = gobject.ext.defineSignal(name, Self, &.{[*:0]const u8}, void);
         };
+
+        pub const @"save-task" = struct {
+            pub const name = "save-task";
+            pub const connect = impl.connect;
+            const impl = gobject.ext.defineSignal(
+                name,
+                Self,
+                &.{ [*:0]const u8, [*:0]const u8 },
+                void,
+            );
+        };
     };
 
     const Private = struct {
@@ -147,11 +158,12 @@ pub const WorkspaceDashboardDialog = extern struct {
         const alloc = std.heap.c_allocator;
         const command = item.command() orelse "";
         const metadata = item.metadata() orelse "";
+        const command_id = item.commandId() orelse "";
         const history_id = item.historyId() orelse "";
         const text = std.fmt.allocPrint(
             alloc,
-            "Command:\n{s}\n\nMetadata:\n{s}\n\nHistory ID:\n{s}",
-            .{ command, metadata, history_id },
+            "Command:\n{s}\n\nMetadata:\n{s}\n\nCommand ID:\n{s}\nHistory ID:\n{s}",
+            .{ command, metadata, command_id, history_id },
         ) catch return;
         defer alloc.free(text);
         self.setDetails(text);
@@ -296,6 +308,14 @@ pub const WorkspaceDashboardDialog = extern struct {
         signals.rerun.impl.emit(self, null, .{command.ptr}, null);
     }
 
+    fn saveTaskClicked(_: *gtk.Button, self: *WorkspaceDashboardDialog) callconv(.c) void {
+        const item = self.selectedCommand() orelse return;
+        defer item.unref();
+        const command_id = item.commandId() orelse return;
+        const command = item.command() orelse return;
+        signals.@"save-task".impl.emit(self, null, .{ command_id.ptr, command.ptr }, null);
+    }
+
     pub fn toggle(self: *Self, window: *Window) void {
         const priv = self.private();
 
@@ -306,6 +326,12 @@ pub const WorkspaceDashboardDialog = extern struct {
 
         self.refresh();
         priv.dialog.present(window.as(gtk.Widget));
+    }
+
+    pub fn refreshVisible(self: *Self) void {
+        if (self.private().dialog.as(gtk.Widget).getRealized() != 0) {
+            self.refresh();
+        }
     }
 
     const C = Common(Self, Private);
@@ -349,6 +375,7 @@ pub const WorkspaceDashboardDialog = extern struct {
             class.bindTemplateCallback("copy_command_clicked", &copyCommandClicked);
             class.bindTemplateCallback("rerun_command_clicked", &rerunCommandClicked);
             class.bindTemplateCallback("command_transcript_clicked", &commandTranscriptClicked);
+            class.bindTemplateCallback("save_task_clicked", &saveTaskClicked);
             class.bindTemplateCallback("command_activated", &commandActivated);
 
             signals.@"open-command-history".impl.register(.{});
@@ -358,6 +385,7 @@ pub const WorkspaceDashboardDialog = extern struct {
             signals.@"open-transcript".impl.register(.{});
             signals.copy.impl.register(.{});
             signals.rerun.impl.register(.{});
+            signals.@"save-task".impl.register(.{});
 
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);
         }
@@ -441,6 +469,26 @@ const DashboardCommand = extern struct {
                 },
             );
         };
+
+        pub const @"command-id" = struct {
+            pub const name = "command-id";
+            const impl = gobject.ext.defineProperty(
+                name,
+                Self,
+                ?[:0]const u8,
+                .{
+                    .default = null,
+                    .accessor = gobject.ext.typedAccessor(
+                        Self,
+                        ?[:0]const u8,
+                        .{
+                            .getter = propGetCommandId,
+                            .getter_transfer = .none,
+                        },
+                    ),
+                },
+            );
+        };
     };
 
     const Private = struct {
@@ -448,6 +496,7 @@ const DashboardCommand = extern struct {
         command_text: ?[:0]const u8 = null,
         metadata_text: ?[:0]const u8 = null,
         history_id_text: ?[:0]const u8 = null,
+        command_id_text: ?[:0]const u8 = null,
 
         pub var offset: c_int = 0;
     };
@@ -460,6 +509,8 @@ const DashboardCommand = extern struct {
         const alloc = priv.arena.allocator();
         priv.command_text = try alloc.dupeZ(u8, record.command);
         priv.history_id_text = try alloc.dupeZ(u8, record.history_id);
+        const command_id_text = try std.fmt.allocPrint(alloc, "{d}", .{record.id});
+        priv.command_id_text = try alloc.dupeZ(u8, command_id_text);
         priv.metadata_text = try formatMetadata(alloc, record);
         return self;
     }
@@ -511,6 +562,10 @@ const DashboardCommand = extern struct {
         return self.private().history_id_text;
     }
 
+    fn propGetCommandId(self: *Self) ?[:0]const u8 {
+        return self.private().command_id_text;
+    }
+
     fn command(self: *Self) ?[:0]const u8 {
         return self.private().command_text;
     }
@@ -521,6 +576,10 @@ const DashboardCommand = extern struct {
 
     fn historyId(self: *Self) ?[:0]const u8 {
         return self.private().history_id_text;
+    }
+
+    fn commandId(self: *Self) ?[:0]const u8 {
+        return self.private().command_id_text;
     }
 
     const C = Common(Self, Private);
@@ -538,6 +597,7 @@ const DashboardCommand = extern struct {
                 properties.command.impl,
                 properties.metadata.impl,
                 properties.@"history-id".impl,
+                properties.@"command-id".impl,
             });
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);
             gobject.Object.virtual_methods.finalize.implement(class, &finalize);

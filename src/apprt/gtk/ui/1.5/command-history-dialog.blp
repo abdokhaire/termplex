@@ -32,6 +32,13 @@ Adw.Dialog dialog {
       }
 
       [end]
+      Gtk.Button save_task_button {
+        icon-name: "list-add-symbolic";
+        tooltip-text: _("Save As Task");
+        clicked => $save_task_clicked();
+      }
+
+      [end]
       Gtk.Button copy_button {
         icon-name: "edit-copy-symbolic";
         tooltip-text: _("Copy Command");

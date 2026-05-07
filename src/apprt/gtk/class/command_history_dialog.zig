@@ -60,6 +60,17 @@ pub const CommandHistoryDialog = extern struct {
                 void,
             );
         };
+
+        pub const @"save-task" = struct {
+            pub const name = "save-task";
+            pub const connect = impl.connect;
+            const impl = gobject.ext.defineSignal(
+                name,
+                Self,
+                &.{ [*:0]const u8, [*:0]const u8 },
+                void,
+            );
+        };
     };
 
     const Private = struct {
@@ -214,6 +225,20 @@ pub const CommandHistoryDialog = extern struct {
         self.close();
     }
 
+    fn saveTaskClicked(_: *gtk.Button, self: *CommandHistoryDialog) callconv(.c) void {
+        const item = self.selectedCommand() orelse return;
+        defer item.unref();
+
+        const command_id = item.commandId() orelse return;
+        const command = item.command() orelse return;
+        signals.@"save-task".impl.emit(
+            self,
+            null,
+            .{ command_id.ptr, command.ptr },
+            null,
+        );
+    }
+
     pub fn toggle(self: *CommandHistoryDialog, window: *Window) void {
         const priv = self.private();
 
@@ -265,10 +290,12 @@ pub const CommandHistoryDialog = extern struct {
             class.bindTemplateCallback("copy_clicked", &copyClicked);
             class.bindTemplateCallback("rerun_clicked", &rerunClicked);
             class.bindTemplateCallback("transcript_clicked", &transcriptClicked);
+            class.bindTemplateCallback("save_task_clicked", &saveTaskClicked);
 
             signals.copy.impl.register(.{});
             signals.rerun.impl.register(.{});
             signals.@"open-transcript".impl.register(.{});
+            signals.@"save-task".impl.register(.{});
 
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);
         }
@@ -352,11 +379,32 @@ const HistoryCommand = extern struct {
                 },
             );
         };
+
+        pub const @"command-id" = struct {
+            pub const name = "command-id";
+            const impl = gobject.ext.defineProperty(
+                name,
+                Self,
+                ?[:0]const u8,
+                .{
+                    .default = null,
+                    .accessor = gobject.ext.typedAccessor(
+                        Self,
+                        ?[:0]const u8,
+                        .{
+                            .getter = propGetCommandId,
+                            .getter_transfer = .none,
+                        },
+                    ),
+                },
+            );
+        };
     };
 
     const Private = struct {
         arena: ArenaAllocator,
         history_id: ?[:0]const u8 = null,
+        command_id_text: ?[:0]const u8 = null,
         command_text: ?[:0]const u8 = null,
         metadata_text: ?[:0]const u8 = null,
 
@@ -370,6 +418,8 @@ const HistoryCommand = extern struct {
         const priv = self.private();
         const alloc = priv.arena.allocator();
         priv.history_id = try alloc.dupeZ(u8, record.history_id);
+        const command_id_text = try std.fmt.allocPrint(alloc, "{d}", .{record.id});
+        priv.command_id_text = try alloc.dupeZ(u8, command_id_text);
         priv.command_text = try alloc.dupeZ(u8, record.command);
         priv.metadata_text = try formatMetadata(alloc, record);
 
@@ -419,6 +469,10 @@ const HistoryCommand = extern struct {
         return self.private().history_id;
     }
 
+    fn propGetCommandId(self: *Self) ?[:0]const u8 {
+        return self.private().command_id_text;
+    }
+
     fn propGetMetadata(self: *Self) ?[:0]const u8 {
         return self.private().metadata_text;
     }
@@ -429,6 +483,10 @@ const HistoryCommand = extern struct {
 
     fn historyId(self: *Self) ?[:0]const u8 {
         return self.private().history_id;
+    }
+
+    fn commandId(self: *Self) ?[:0]const u8 {
+        return self.private().command_id_text;
     }
 
     const C = Common(Self, Private);
@@ -446,6 +504,7 @@ const HistoryCommand = extern struct {
                 properties.command.impl,
                 properties.metadata.impl,
                 properties.@"history-id".impl,
+                properties.@"command-id".impl,
             });
 
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);

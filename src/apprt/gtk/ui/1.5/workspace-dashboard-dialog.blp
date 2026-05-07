@@ -183,6 +183,12 @@ Adw.Dialog dialog {
           tooltip-text: _("Open Command Transcript");
           clicked => $command_transcript_clicked();
         }
+
+        Gtk.Button {
+          icon-name: "list-add-symbolic";
+          tooltip-text: _("Save As Task");
+          clicked => $save_task_clicked();
+        }
       }
     }
   }

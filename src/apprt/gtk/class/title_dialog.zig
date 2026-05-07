@@ -116,6 +116,7 @@ pub const TitleDialog = extern struct {
 
         // Set the title for the dialog
         self.as(Dialog.Parent).setHeading(priv.target.title());
+        self.as(Dialog.Parent).setBody(priv.target.body());
 
         // Show it. We could also just use virtual methods to bind to
         // response but this is pretty simple.
@@ -220,10 +221,20 @@ pub const TitleDialog = extern struct {
 pub const Target = enum(c_int) {
     surface,
     tab,
+    task,
+
     pub fn title(self: Target) [*:0]const u8 {
         return switch (self) {
             .surface => i18n._("Change Terminal Title"),
             .tab => i18n._("Change Tab Title"),
+            .task => i18n._("Save Command As Task"),
+        };
+    }
+
+    pub fn body(self: Target) [*:0]const u8 {
+        return switch (self) {
+            .surface, .tab => i18n._("Leave blank to restore the default title."),
+            .task => i18n._("Choose the task name to save for this workspace."),
         };
     }
 
