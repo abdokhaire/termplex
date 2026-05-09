@@ -35,6 +35,7 @@ const TranscriptViewerDialog = @import("transcript_viewer_dialog.zig").Transcrip
 const SourceControlDialog = @import("source_control_dialog.zig").SourceControlDialog;
 const StorageManagementDialog = @import("storage_management_dialog.zig").StorageManagementDialog;
 const WorkspaceDashboardDialog = @import("workspace_dashboard_dialog.zig").WorkspaceDashboardDialog;
+const GlobalTabsDialog = @import("global_tabs_dialog.zig").GlobalTabsDialog;
 const Sidebar = @import("sidebar.zig").Sidebar;
 const WorkspaceTab = @import("workspace_tab.zig").WorkspaceTab;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
@@ -45,6 +46,7 @@ const uuid = @import("../../../termplex/util/uuid.zig");
 const Uuid = uuid.Uuid;
 
 const log = std.log.scoped(.gtk_termplex_window);
+const max_sidebar_width: c_int = 320;
 
 pub const Window = extern struct {
     const Self = @This();
@@ -281,6 +283,9 @@ pub const Window = extern struct {
         /// A weak reference to the workspace dashboard dialog.
         workspace_dashboard_dialog: WeakRef(WorkspaceDashboardDialog) = .empty,
 
+        /// A weak reference to the global workspace tab picker.
+        global_tabs_dialog: WeakRef(GlobalTabsDialog) = .empty,
+
         /// Tab page that the context menu was opened for.
         /// setup by `setup-menu`.
         context_menu_page: ?*adw.TabPage = null,
@@ -440,7 +445,7 @@ pub const Window = extern struct {
             }
 
             // 4. Set the initial sidebar width.
-            const sidebar_width = Application.default().initialSidebarWidth();
+            const sidebar_width = clampSidebarWidth(Application.default().initialSidebarWidth());
             priv_.sidebar_saved_width = sidebar_width;
             if (!priv_.sidebar_on_right) {
                 paned.setPosition(sidebar_width);
@@ -594,6 +599,7 @@ pub const Window = extern struct {
             .init("clear", actionClear, null),
             // TODO: accept the surface that toggled the command palette
             .init("toggle-command-palette", actionToggleCommandPalette, null),
+            .init("termplex-global-tabs", actionTermplexGlobalTabs, null),
             .init("termplex-workspace-dashboard", actionTermplexWorkspaceDashboard, null),
             .init("termplex-command-history", actionTermplexCommandHistory, null),
             .init("termplex-transcript-viewer", actionTermplexTranscriptViewer, null),
@@ -1363,7 +1369,12 @@ pub const Window = extern struct {
 
     /// Return the current sidebar paned position (sidebar width in pixels).
     pub fn getSidebarWidth(self: *Self) c_int {
-        return self.effectiveSidebarWidth();
+        return clampSidebarWidth(self.effectiveSidebarWidth());
+    }
+
+    fn clampSidebarWidth(width: c_int) c_int {
+        if (width <= 10) return 180;
+        return @min(width, max_sidebar_width);
     }
 
     fn effectiveSidebarWidth(self: *Self) c_int {
@@ -1388,7 +1399,7 @@ pub const Window = extern struct {
 
     fn restoredSidebarPosition(self: *Self) c_int {
         const priv = self.private();
-        const restore_width = if (priv.sidebar_saved_width > 10) priv.sidebar_saved_width else 180;
+        const restore_width = clampSidebarWidth(priv.sidebar_saved_width);
         if (!priv.sidebar_on_right) return restore_width;
 
         const total = priv.sidebar_paned.as(gtk.Widget).getWidth();
@@ -1791,10 +1802,48 @@ pub const Window = extern struct {
     /// Called when the user clicks "+ New Workspace" in the sidebar.
     fn termplexOnNewWorkspace(userdata: ?*anyopaque) void {
         const win: *Self = @ptrCast(@alignCast(userdata orelse return));
-        const app = Application.default();
+        win.promptNewWorkspaceDir();
+    }
 
-        const new_idx = app.addWorkspace() orelse {
+    fn promptNewWorkspaceDir(self: *Self) void {
+        const dialog = TitleDialog.new(.workspace_dir, null);
+        _ = TitleDialog.signals.set.connect(
+            dialog,
+            *Self,
+            signalNewWorkspaceDirDialogSet,
+            self,
+            .{},
+        );
+        dialog.present(self.as(gtk.Widget));
+    }
+
+    fn signalNewWorkspaceDirDialogSet(
+        _: *TitleDialog,
+        dir_ptr: [*:0]const u8,
+        self: *Self,
+    ) callconv(.c) void {
+        const app = Application.default();
+        const dir = std.mem.trim(u8, std.mem.span(dir_ptr), " \t\r\n");
+        if (dir.len == 0) {
+            self.addToast(i18n._("Workspace path is required"));
+            return;
+        }
+
+        const dir_z = app.allocator().dupeZ(u8, dir) catch {
+            self.addToast(i18n._("Unable to create workspace"));
+            return;
+        };
+        defer app.allocator().free(dir_z);
+
+        if (app.workspaceIndexByDir(dir_z)) |existing_idx| {
+            self.performWorkspaceSwitch(existing_idx);
+            self.addToast(i18n._("A workspace for that directory already exists"));
+            return;
+        }
+
+        const new_idx = app.addWorkspaceWithDir(dir_z) orelse {
             log.warn("failed to create new workspace (out of memory)", .{});
+            self.addToast(i18n._("Unable to create workspace"));
             return;
         };
 
@@ -1806,8 +1855,10 @@ pub const Window = extern struct {
 
         // Switch to the new workspace's TabView and create an initial tab.
         if (app.workspaceTabView(new_idx)) |tv| {
-            win.switchToTabView(tv);
-            win.newTab(null);
+            self.switchToTabView(tv);
+            self.newTabForWindow(null, .{
+                .working_directory = app.workspaceDir(new_idx),
+            });
         }
     }
 
@@ -3190,6 +3241,47 @@ pub const Window = extern struct {
         dialog.toggle(self);
     }
 
+    pub fn toggleGlobalTabs(self: *Window) void {
+        const priv = self.private();
+
+        const dialog = priv.global_tabs_dialog.get() orelse dialog: {
+            const dialog = GlobalTabsDialog.new();
+            priv.global_tabs_dialog.set(dialog);
+            break :dialog dialog;
+        };
+        defer dialog.unref();
+
+        dialog.toggle(self);
+    }
+
+    pub fn activateGlobalTab(self: *Window, workspace_idx: u32, tab_idx: u32) bool {
+        const app = Application.default();
+        if (workspace_idx >= app.workspaceCount()) return false;
+
+        if (self.private().tab_overview.getOpen() != 0) {
+            self.private().tab_overview.setOpen(0);
+        }
+
+        if (workspace_idx != app.activeWorkspaceIndex()) {
+            self.performWorkspaceSwitch(workspace_idx);
+        }
+
+        const tab_view = app.workspaceTabView(workspace_idx) orelse return false;
+        if (tab_idx >= @as(u32, @intCast(@max(tab_view.getNPages(), 0)))) return false;
+
+        const page = tab_view.getNthPage(@intCast(tab_idx));
+        tab_view.setSelectedPage(page);
+
+        const tab_widget = page.getChild();
+        if (gobject.ext.cast(Tab, tab_widget)) |tab| {
+            if (tab.getActiveSurface()) |surface| {
+                _ = surface.as(gtk.Widget).grabFocus();
+            }
+        }
+
+        return true;
+    }
+
     fn transcriptViewerDialog(self: *Window) *TranscriptViewerDialog {
         const priv = self.private();
         return priv.transcript_viewer_dialog.get() orelse dialog: {
@@ -3628,6 +3720,14 @@ pub const Window = extern struct {
         self.toggleWorkspaceDashboard();
     }
 
+    fn actionTermplexGlobalTabs(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        self.toggleGlobalTabs();
+    }
+
     fn actionTermplexCommandHistory(
         _: *gio.SimpleAction,
         _: ?*glib.Variant,
@@ -3770,6 +3870,18 @@ pub const Window = extern struct {
             priv.sidebar_paned.setPosition(self.collapsedSidebarPosition());
             priv.sidebar_programmatic = false;
             priv.sidebar_toggle_btn.as(gtk.Widget).setVisible(1);
+            return;
+        }
+
+        if (sidebar_visible) {
+            const width = self.effectiveSidebarWidth();
+            if (width > max_sidebar_width) {
+                priv.sidebar_saved_width = max_sidebar_width;
+                priv.sidebar_programmatic = true;
+                defer priv.sidebar_programmatic = false;
+                priv.sidebar_paned.setPosition(self.restoredSidebarPosition());
+                return;
+            }
         }
     }
 
@@ -3786,7 +3898,7 @@ pub const Window = extern struct {
         if (visible != 0 and self.effectiveSidebarWidth() > 0) {
             // Sidebar is showing — save width and hide.
             _ = pos;
-            priv.sidebar_saved_width = self.effectiveSidebarWidth();
+            priv.sidebar_saved_width = clampSidebarWidth(self.effectiveSidebarWidth());
             sidebar_widget.setVisible(0);
             paned.setPosition(self.collapsedSidebarPosition());
             priv.sidebar_toggle_btn.as(gtk.Widget).setVisible(1);

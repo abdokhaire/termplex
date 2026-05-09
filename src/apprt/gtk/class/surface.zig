@@ -18,6 +18,7 @@ const internal_os = @import("../../../os/main.zig");
 const renderer = @import("../../../renderer.zig");
 const terminal = @import("../../../terminal/main.zig");
 const terminal_history = @import("../../../termplex/core/terminal_history.zig");
+const terminal_replay = @import("../../../termplex/core/terminal_replay.zig");
 const termplex_uuid = @import("../../../termplex/util/uuid.zig");
 const CoreSurface = @import("../../../Surface.zig");
 const gresource = @import("../build/gresource.zig");
@@ -597,6 +598,10 @@ pub const Surface = extern struct {
         /// Initial replay bytes to write into the frontend terminal only.
         initial_replay: ?[]const u8 = null,
 
+        /// Incremented when a new background replay is scheduled. Idle replay
+        /// callbacks drop stale work when another restore supersedes it.
+        replay_generation: u64 = 0,
+
         /// The manually overridden title of this surface from `promptTitle`.
         title_override: ?[:0]const u8 = null,
 
@@ -812,7 +817,9 @@ pub const Surface = extern struct {
         // we aren't inheriting any of these values.
         if (priv.config) |config_obj| {
             // Setup our cwd if configured to inherit
-            if (apprt.surface.shouldInheritWorkingDirectory(context, config_obj.get())) {
+            if (priv.overrides.working_directory == null and
+                apprt.surface.shouldInheritWorkingDirectory(context, config_obj.get()))
+            {
                 if (parent.rt_surface.surface.getPwd()) |pwd| {
                     priv.pwd = glib.ext.dupeZ(u8, pwd);
                     self.as(gobject.Object).notifyByPspec(properties.pwd.impl.param_spec);
@@ -2047,29 +2054,166 @@ pub const Surface = extern struct {
         return replay;
     }
 
-    fn loadDeferredInitialReplay(self: *Self, alloc: std.mem.Allocator, workspace_id: []const u8, history_id: []const u8) ?[]u8 {
-        _ = self;
+    const BackgroundReplayJob = struct {
+        surface: *Self,
+        path: []u8,
+        options: terminal_history.Options,
+        generation: u64,
+        bytes: ?[]u8 = null,
+        offset: usize = 0,
+
+        fn destroy(self: *BackgroundReplayJob) void {
+            const alloc = std.heap.c_allocator;
+            if (self.bytes) |bytes| alloc.free(bytes);
+            alloc.free(self.path);
+            self.surface.unref();
+            alloc.destroy(self);
+        }
+    };
+
+    fn replayContext(self: *Self, workspace_id: []const u8) terminal_replay.Context {
+        const app = Application.default();
+        const alloc = app.allocator();
+        const active_workspace_id = app.currentWorkspaceIdString(alloc) catch null;
+        defer if (active_workspace_id) |id| alloc.free(id);
+
+        const workspace_active = if (active_workspace_id) |id|
+            std.mem.eql(u8, id, workspace_id)
+        else
+            false;
+
+        return .{
+            .workspace_active = workspace_active,
+            .surface_focused = self.private().focused,
+            .workspace_recently_visible = workspace_active,
+        };
+    }
+
+    fn scheduleBackgroundInitialReplay(self: *Self, alloc: std.mem.Allocator, workspace_id: []const u8, history_id: []const u8) void {
         const app = Application.default();
         const options = app.terminalHistoryOptions();
-        if (!options.enabled or options.restore_mode != .transcript) return null;
+        if (!options.enabled or options.restore_mode != .transcript) return;
 
         const path = terminal_history.transcriptPath(alloc, workspace_id, history_id) catch |err| {
-            log.warn("failed to resolve deferred terminal replay path: {}", .{err});
-            return null;
+            log.warn("failed to resolve background terminal replay path: {}", .{err});
+            return;
         };
         defer alloc.free(path);
 
-        const bytes = terminal_history.readTranscript(alloc, path, options) catch |err| {
-            log.warn("failed to read deferred terminal replay: {}", .{err});
-            return null;
+        const c_alloc = std.heap.c_allocator;
+        const job = c_alloc.create(BackgroundReplayJob) catch |err| {
+            log.warn("failed to allocate background terminal replay job: {}", .{err});
+            return;
         };
-        if (bytes.len == 0) {
-            alloc.free(bytes);
-            return null;
+        errdefer c_alloc.destroy(job);
+
+        const path_copy = c_alloc.dupe(u8, path) catch |err| {
+            log.warn("failed to allocate background terminal replay path: {}", .{err});
+            return;
+        };
+        errdefer c_alloc.free(path_copy);
+
+        const priv = self.private();
+        priv.replay_generation +%= 1;
+        job.* = .{
+            .surface = self.ref(),
+            .path = path_copy,
+            .options = terminal_replay.backgroundOptions(options),
+            .generation = priv.replay_generation,
+        };
+
+        const delay_ms = terminal_replay.scheduleDelayMs(self.replayContext(workspace_id));
+        log.debug(
+            "scheduled background terminal replay workspace_id={s} history_id={s} delay_ms={d}",
+            .{ workspace_id, history_id, delay_ms },
+        );
+        if (delay_ms == 0) {
+            _ = glib.idleAdd(startBackgroundInitialReplay, job);
+        } else {
+            _ = glib.timeoutAdd(delay_ms, startBackgroundInitialReplay, job);
+        }
+    }
+
+    fn startBackgroundInitialReplay(ud: ?*anyopaque) callconv(.c) c_int {
+        const job: *BackgroundReplayJob = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        const surface = job.surface;
+        if (surface.private().replay_generation != job.generation or surface.core() == null) {
+            log.debug("dropping stale background terminal replay before thread start", .{});
+            job.destroy();
+            return @intFromBool(glib.SOURCE_REMOVE);
         }
 
-        log.info("loaded deferred terminal replay history_id={s} bytes={d}", .{ history_id, bytes.len });
-        return bytes;
+        log.debug("starting background terminal replay read path={s}", .{job.path});
+        const thread = std.Thread.spawn(.{}, backgroundInitialReplayThread, .{job}) catch |err| {
+            log.warn("failed to spawn background terminal replay thread: {}", .{err});
+            job.destroy();
+            return @intFromBool(glib.SOURCE_REMOVE);
+        };
+        thread.detach();
+        return @intFromBool(glib.SOURCE_REMOVE);
+    }
+
+    fn backgroundInitialReplayThread(job: *BackgroundReplayJob) void {
+        const alloc = std.heap.c_allocator;
+        job.bytes = terminal_history.readTranscript(alloc, job.path, job.options) catch |err| blk: {
+            log.warn("failed to read background terminal replay: {}", .{err});
+            break :blk null;
+        };
+
+        if (job.bytes == null or job.bytes.?.len == 0) {
+            log.debug("background terminal replay had no bytes path={s}", .{job.path});
+            _ = glib.idleAdd(backgroundInitialReplayCleanup, job);
+            return;
+        }
+
+        log.debug("loaded background terminal replay bytes={d}", .{job.bytes.?.len});
+        _ = glib.idleAdd(backgroundInitialReplayChunk, job);
+    }
+
+    fn backgroundInitialReplayCleanup(ud: ?*anyopaque) callconv(.c) c_int {
+        const job: *BackgroundReplayJob = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        job.destroy();
+        return @intFromBool(glib.SOURCE_REMOVE);
+    }
+
+    fn backgroundInitialReplayChunk(ud: ?*anyopaque) callconv(.c) c_int {
+        const job: *BackgroundReplayJob = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
+        const surface = job.surface;
+        if (surface.private().replay_generation != job.generation) {
+            job.destroy();
+            return @intFromBool(glib.SOURCE_REMOVE);
+        }
+
+        const bytes = job.bytes orelse {
+            job.destroy();
+            return @intFromBool(glib.SOURCE_REMOVE);
+        };
+
+        const core_surface = surface.core() orelse {
+            job.destroy();
+            return @intFromBool(glib.SOURCE_REMOVE);
+        };
+
+        const remaining = bytes.len - job.offset;
+        const chunk_len = terminal_replay.nextChunkLen(remaining, terminal_replay.default_chunk_bytes);
+        if (chunk_len == 0) {
+            job.destroy();
+            return @intFromBool(glib.SOURCE_REMOVE);
+        }
+
+        core_surface.io.replayOutputNoHistory(bytes[job.offset .. job.offset + chunk_len]);
+        job.offset += chunk_len;
+
+        if (job.offset >= bytes.len) {
+            if (job.options.replay_notice) {
+                core_surface.io.replayOutputNoHistory("\r\n[Termplex restored previous terminal output.]\r\n");
+            }
+            log.debug("completed background terminal replay bytes={d}", .{bytes.len});
+            job.destroy();
+            return @intFromBool(glib.SOURCE_REMOVE);
+        }
+
+        return @intFromBool(glib.SOURCE_CONTINUE);
     }
 
     /// Copies the effective title to the clipboard.
@@ -3581,18 +3725,8 @@ pub const Surface = extern struct {
         else
             "";
 
-        var deferred_initial_replay: ?[]u8 = null;
-        defer if (deferred_initial_replay) |bytes| alloc.free(bytes);
         const initial_replay_for_history = replay: {
             if (priv.initial_replay) |bytes| break :replay bytes;
-            if (restored_workspace_id) |workspace_id| {
-                if (priv.history_id) |history_id| {
-                    if (self.loadDeferredInitialReplay(alloc, workspace_id, history_id)) |bytes| {
-                        deferred_initial_replay = bytes;
-                        break :replay bytes;
-                    }
-                }
-            }
             break :replay "";
         };
 
@@ -3620,6 +3754,12 @@ pub const Surface = extern struct {
 
         // Store it!
         priv.core_surface = surface;
+
+        if (restored_workspace_id) |workspace_id| {
+            if (priv.history_id) |history_id| {
+                self.scheduleBackgroundInitialReplay(alloc, workspace_id, history_id);
+            }
+        }
 
         // Emit the signal that we initialized the surface.
         Surface.signals.init.impl.emit(

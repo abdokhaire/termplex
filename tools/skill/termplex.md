@@ -29,6 +29,14 @@ termplex-ctl agent unregister --pid <your_pid>
 
 ## Core Commands
 
+### Unified orchestrator context
+
+```bash
+termplex-ctl orchestrator status
+```
+
+Run this first when you need to understand Termplex. It combines the live runtime workspace tree, registered agents, recent SQLite command history, active resume candidates, and storage counts in one response.
+
 ### Workspace inspection
 
 ```bash
@@ -38,6 +46,22 @@ termplex-ctl status
 
 Use `workspace list` to discover available workspaces and the active one.
 Use `status` for top-level runtime state reported by the server.
+
+### Source of truth
+
+For live workspace counts, names, active workspace, tabs, and current terminal state, use `termplex-ctl`. For global context, prefer `termplex-ctl orchestrator status`; use narrower commands only when you need a focused follow-up.
+
+Do not count workspaces from `~/.termplex/orchestration/state.json` or `<workspace>/.termplex/state.json`. Those files are deprecated compatibility snapshots for process history. They can contain previous-session entries, closed workspaces, and surfaces with `"process_alive": false`.
+
+Authoritative live queries:
+
+```bash
+termplex-ctl orchestrator status  # unified live + SQLite orchestrator view
+termplex-ctl workspace list   # live workspace list; count result.items
+termplex-ctl status           # live workspace/tab tree
+termplex-ctl tab list --workspace "backend"
+termplex-ctl agent list       # registered AI agents only
+```
 
 ### Workspace control
 
@@ -84,6 +108,18 @@ termplex-ctl agent terminate --pid 1234
 ```
 
 `agent list` is the authoritative way to see which AI agents have registered with Termplex.
+
+### Agent-to-agent communication
+
+Termplex does not currently expose a separate A2A message bus. Communicate with another agent through its terminal:
+
+```bash
+termplex-ctl agent list
+termplex-ctl surface send --workspace "backend" --tab 0 "Please inspect the failing test and report findings.\n"
+termplex-ctl surface read --workspace "backend" --tab 0 --lines 80
+```
+
+Use `agent list` first to identify the target agent's workspace/tab. Then use `surface send` to deliver the request and `surface read` to inspect the response. If there is no registered target agent, create or select a tab first, then register or ask the agent to register.
 
 ### Utility
 
@@ -181,8 +217,10 @@ termplex-ctl --human workspace list
 
 - Register on startup and unregister on exit.
 - Prefer explicit `--workspace` and `--tab` flags.
+- Use `orchestrator status` for global context; use `workspace list`/`status` for focused live navigation; do not read `state.json` for counts.
 - Re-run `tab list` after creating or closing tabs because indices can shift.
 - Use `surface read` as the main way to inspect live terminal state.
 - Use `agent list` before creating another agent tab for the same task.
 - Use `surface send` with `\n` to press Enter.
+- Never close the `Orchestrator` workspace.
 - Treat `Orchestrator` as the reserved orchestration workspace name.

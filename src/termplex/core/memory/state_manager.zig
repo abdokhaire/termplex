@@ -294,6 +294,11 @@ pub const StateManager = struct {
                     .workspace_dir = event.workspace_dir,
                     .working_directory = working_directory,
                     .transcript_path = transcript_path,
+                    .process_pid = if (event.shell_pid) |pid| @as(i64, @intCast(pid)) else null,
+                    .process_alive = true,
+                    .detection_method = "shell_hook",
+                    .command_started_at = timestamp,
+                    .last_command = command,
                     .timestamp = timestamp,
                 }) catch |err| {
                     log.warn("failed to upsert terminal history surface: {}", .{err});
@@ -320,6 +325,17 @@ pub const StateManager = struct {
                     .exit_code = event.exit_code,
                 }) catch |err| {
                     log.warn("failed to finish terminal history command: {}", .{err});
+                    return;
+                };
+
+                db.updateSurfaceRuntimeState(
+                    event.surface_uuid,
+                    false,
+                    if (event.shell_pid) |pid| @as(i64, @intCast(pid)) else null,
+                    event.exit_code,
+                    timestamp,
+                ) catch |err| {
+                    log.warn("failed to update terminal history surface runtime state: {}", .{err});
                     return;
                 };
             },
@@ -409,6 +425,78 @@ pub const StateManager = struct {
         new_surfs[old_surfs.len] = new_surf;
         self.allocator.free(old_surfs);
         ws.surfaces = new_surfs;
+    }
+
+    fn findWorkspaceIndex(self: *const StateManager, s: *const MemoryState, workspace_name: []const u8) ?usize {
+        _ = self;
+        for (s.workspace_names, 0..) |name, i| {
+            if (std.mem.eql(u8, name, workspace_name)) return i;
+        }
+        return null;
+    }
+
+    /// Remove a workspace from memory state when it is closed in the live app.
+    pub fn removeWorkspaceByName(self: *StateManager, workspace_name: []const u8) !bool {
+        var s = &(self.state orelse return false);
+        const idx = self.findWorkspaceIndex(s, workspace_name) orelse return false;
+
+        const old_names = s.workspace_names;
+        const old_workspaces = s.workspaces;
+        const new_len = old_names.len - 1;
+
+        const new_names = try self.allocator.alloc([]const u8, new_len);
+        errdefer self.allocator.free(new_names);
+        const new_workspaces = try self.allocator.alloc(WorkspaceState, new_len);
+
+        if (idx > 0) {
+            @memcpy(new_names[0..idx], old_names[0..idx]);
+            @memcpy(new_workspaces[0..idx], old_workspaces[0..idx]);
+        }
+        if (idx + 1 < old_names.len) {
+            @memcpy(new_names[idx..], old_names[idx + 1 ..]);
+            @memcpy(new_workspaces[idx..], old_workspaces[idx + 1 ..]);
+        }
+
+        self.allocator.free(old_names[idx]);
+        var removed_workspace = old_workspaces[idx];
+        removed_workspace.deinit(self.allocator);
+        self.allocator.free(old_names);
+        self.allocator.free(old_workspaces);
+
+        s.workspace_names = new_names;
+        s.workspaces = new_workspaces;
+        refreshLastUpdated(self, s);
+        self.dirty = true;
+        return true;
+    }
+
+    /// Rename a workspace key in memory state when the live workspace is renamed.
+    pub fn renameWorkspaceByName(self: *StateManager, old_name: []const u8, new_name: []const u8) !bool {
+        var s = &(self.state orelse return false);
+        if (std.mem.eql(u8, old_name, new_name)) return false;
+        if (self.findWorkspaceIndex(s, old_name) == null) return false;
+
+        const replacement = try self.allocator.dupe(u8, new_name);
+        errdefer self.allocator.free(replacement);
+
+        if (self.findWorkspaceIndex(s, new_name)) |new_idx| {
+            const old_idx = self.findWorkspaceIndex(s, old_name).?;
+            if (new_idx != old_idx) {
+                _ = try self.removeWorkspaceByName(new_name);
+                s = &(self.state.?);
+            }
+        }
+
+        const idx = self.findWorkspaceIndex(s, old_name) orelse {
+            self.allocator.free(replacement);
+            return false;
+        };
+        const old_owned = s.workspace_names[idx];
+        s.workspace_names[idx] = replacement;
+        self.allocator.free(old_owned);
+        refreshLastUpdated(self, s);
+        self.dirty = true;
+        return true;
     }
 
     /// Debounced save: only writes if dirty. Call this from a GLib timer (1s interval).
@@ -556,6 +644,63 @@ test "state manager handle command end marks process dead" {
     try std.testing.expectEqual(false, s.workspaces[0].surfaces[0].process_alive);
 }
 
+test "state manager removes closed workspace entries" {
+    const allocator = std.testing.allocator;
+    var mgr = StateManager.init(allocator, "/tmp/test-orch");
+    defer mgr.deinit();
+
+    mgr.handleCommandEvent(.{
+        .kind = .start,
+        .surface_uuid = "backend-surface",
+        .workspace_name = "backend",
+        .workspace_dir = "/home/user/backend",
+        .command = "npm run dev",
+        .shell_pid = 1234,
+        .exit_code = null,
+    });
+    mgr.handleCommandEvent(.{
+        .kind = .start,
+        .surface_uuid = "frontend-surface",
+        .workspace_name = "frontend",
+        .workspace_dir = "/home/user/frontend",
+        .command = "npm test",
+        .shell_pid = 5678,
+        .exit_code = null,
+    });
+
+    try std.testing.expect(try mgr.removeWorkspaceByName("backend"));
+
+    const s = mgr.getState().?;
+    try std.testing.expectEqual(@as(usize, 1), s.workspace_names.len);
+    try std.testing.expectEqualStrings("frontend", s.workspace_names[0]);
+    try std.testing.expectEqualStrings("frontend-surface", s.workspaces[0].surface_ids[0]);
+    try std.testing.expect(mgr.dirty);
+}
+
+test "state manager renames workspace entries" {
+    const allocator = std.testing.allocator;
+    var mgr = StateManager.init(allocator, "/tmp/test-orch");
+    defer mgr.deinit();
+
+    mgr.handleCommandEvent(.{
+        .kind = .start,
+        .surface_uuid = "backend-surface",
+        .workspace_name = "backend",
+        .workspace_dir = "/home/user/backend",
+        .command = "npm run dev",
+        .shell_pid = 1234,
+        .exit_code = null,
+    });
+
+    try std.testing.expect(try mgr.renameWorkspaceByName("backend", "api"));
+
+    const s = mgr.getState().?;
+    try std.testing.expectEqual(@as(usize, 1), s.workspace_names.len);
+    try std.testing.expectEqualStrings("api", s.workspace_names[0]);
+    try std.testing.expectEqualStrings("backend-surface", s.workspaces[0].surface_ids[0]);
+    try std.testing.expect(mgr.dirty);
+}
+
 test "state manager forwards command lifecycle to terminal history database" {
     const allocator = std.testing.allocator;
 
@@ -615,6 +760,67 @@ test "state manager forwards command lifecycle to terminal history database" {
     var project = try db.getProject("workspace-1234");
     defer project.deinit(allocator);
     try std.testing.expectEqualStrings("backend", project.workspace_name);
+}
+
+test "state manager writes command runtime snapshot to terminal history database" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try terminal_history_db.Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    var mgr = StateManager.init(allocator, "/tmp/test-orch");
+    defer mgr.deinit();
+    mgr.setCommandHistoryDatabase(&db);
+
+    mgr.handleCommandEvent(.{
+        .kind = .start,
+        .surface_uuid = "hist-runtime",
+        .workspace_id = "workspace-runtime",
+        .workspace_name = "runtime",
+        .workspace_dir = "/home/user/runtime",
+        .working_directory = "/home/user/runtime/api",
+        .transcript_path = "/tmp/hist-runtime.ansi",
+        .command = "npm run dev",
+        .shell_pid = 4321,
+        .exit_code = null,
+        .source = "osc_7337",
+    });
+
+    var surface = try db.getSurface("hist-runtime");
+    defer surface.deinit(allocator);
+    try std.testing.expectEqual(@as(?i64, 4321), surface.process_pid);
+    try std.testing.expectEqual(true, surface.process_alive);
+    try std.testing.expectEqualStrings("shell_hook", surface.detection_method.?);
+    try std.testing.expect(surface.command_started_at != null);
+    try std.testing.expectEqualStrings("npm run dev", surface.last_command.?);
+
+    mgr.handleCommandEvent(.{
+        .kind = .end,
+        .surface_uuid = "hist-runtime",
+        .workspace_id = "workspace-runtime",
+        .workspace_name = "runtime",
+        .workspace_dir = "/home/user/runtime",
+        .working_directory = "/home/user/runtime/api",
+        .transcript_path = "/tmp/hist-runtime.ansi",
+        .command = null,
+        .shell_pid = 4321,
+        .exit_code = 0,
+        .source = "osc_7337",
+    });
+
+    var stopped_surface = try db.getSurface("hist-runtime");
+    defer stopped_surface.deinit(allocator);
+    try std.testing.expectEqual(false, stopped_surface.process_alive);
+    try std.testing.expectEqualStrings("npm run dev", stopped_surface.last_command.?);
 }
 
 test "state manager refreshes last_updated on subsequent command events" {

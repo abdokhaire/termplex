@@ -1,0 +1,1 @@
+{"nodes": [{"id": "flatpak_resourcesdir", "label": "flatpak.resourcesDir", "file_type": "code", "source_file": "src/apprt/gtk/flatpak.zig", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

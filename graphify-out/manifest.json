@@ -1,0 +1,330 @@
+{
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/App.zig": {
+    "mtime": 1774730026.0721705,
+    "hash": "4257afd1b43f04350db1b3928ecadb2e"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/Surface.zig": {
+    "mtime": 1773568291.1959808,
+    "hash": "e4ca900d410d9fff3e3283cbf7f14361"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/adw_version.zig": {
+    "mtime": 1773568291.1959808,
+    "hash": "aec806d4279004c9ab57925a2fc0f61c"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/cgroup.zig": {
+    "mtime": 1773568291.1959808,
+    "hash": "77995ce8dd847687b68213643829e011"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class.zig": {
+    "mtime": 1773524381.5276906,
+    "hash": "1aa5050edfe42a85b63aeb3bf5402d91"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/application.zig": {
+    "mtime": 1778306217.6290433,
+    "hash": "2df60a95f7760a241b4edb4b82289a64"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/clipboard_confirmation_dialog.zig": {
+    "mtime": 1773568291.1969807,
+    "hash": "28b8feb1590e02f4a71bf66bce81fc25"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/close_confirmation_dialog.zig": {
+    "mtime": 1773568291.1969807,
+    "hash": "2a740ccc1a07a63634a1dffd14010f50"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/command_history_dialog.zig": {
+    "mtime": 1778127359.3194792,
+    "hash": "c93a69474159bd3e2404082722d7b9ae"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/command_palette.zig": {
+    "mtime": 1773568291.1979806,
+    "hash": "93aea2639657d955be99651a9c9becd2"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/config.zig": {
+    "mtime": 1773568291.1979806,
+    "hash": "b44f75f0211711901748d0469125a6a2"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/config_errors_dialog.zig": {
+    "mtime": 1773568291.1979806,
+    "hash": "b365f1c2ea5ef3e59eee9414a066b410"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/debug_warning.zig": {
+    "mtime": 1773568291.1979806,
+    "hash": "4736c32fd244534ddbdbc85ca3e41d5e"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/dialog.zig": {
+    "mtime": 1773568291.1979806,
+    "hash": "64cbefa6b45358a5da0fcdb065ef32d3"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/global_shortcuts.zig": {
+    "mtime": 1773568291.1979806,
+    "hash": "e5d0476d80c7f682746458e5017d19ba"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/global_tabs_dialog.zig": {
+    "mtime": 1778227778.2871342,
+    "hash": "620df768c2b8bb4c94b57e3345683992"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/imgui_widget.zig": {
+    "mtime": 1773568291.1979806,
+    "hash": "172d75de48620213f7b93d791addedb4"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/inspector_widget.zig": {
+    "mtime": 1773568291.1979806,
+    "hash": "71aea28804a4c36c5ddbef2bf84ab1ac"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/inspector_window.zig": {
+    "mtime": 1773568291.1979806,
+    "hash": "27929fd267d466581a93bef2060ee3a1"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/key_state_overlay.zig": {
+    "mtime": 1773568291.1989808,
+    "hash": "a1b7503815b2cf9f1161687eb1a36de9"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/resize_overlay.zig": {
+    "mtime": 1773568291.1989808,
+    "hash": "035a5ea017cb68cbfdcf57bf32050d3b"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/search_overlay.zig": {
+    "mtime": 1773568291.1989808,
+    "hash": "8f089cf829a544ca595be24cf6070843"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/sidebar.zig": {
+    "mtime": 1778148512.090545,
+    "hash": "717c6943d8d5e0e7ae8318712bc9c8f0"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/source_control_dialog.zig": {
+    "mtime": 1778069444.0913837,
+    "hash": "28a147ad0695bd16b7463b5b128dca30"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/split_tree.zig": {
+    "mtime": 1778303641.7800899,
+    "hash": "c52a2865781d790fcbed12e45688c411"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/storage_management_dialog.zig": {
+    "mtime": 1777912444.1064017,
+    "hash": "fffc146a9fa1e1b3fc156d6719727c10"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/surface.zig": {
+    "mtime": 1778303636.795196,
+    "hash": "458b9c75efe4ecfac9d3081877566a28"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/surface_child_exited.zig": {
+    "mtime": 1773568291.1999807,
+    "hash": "d5e9e5ac4896ec07eae039d28744c343"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/surface_scrolled_window.zig": {
+    "mtime": 1773568291.1999807,
+    "hash": "be6ca773934eb1f4c30ab4593aa54143"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/tab.zig": {
+    "mtime": 1774477278.8713527,
+    "hash": "c717845a0a85635d974b229b3315af4b"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/title_dialog.zig": {
+    "mtime": 1778303631.8243022,
+    "hash": "80d6980a3d429860c15ce5d540089edd"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/transcript_viewer_dialog.zig": {
+    "mtime": 1777928731.9362288,
+    "hash": "ba1219efc9ed2a24fff90ce593e9529d"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/window.zig": {
+    "mtime": 1778303667.645579,
+    "hash": "8eea5daca5fd3acb515ffacb7bc542dd"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/workspace_dashboard_dialog.zig": {
+    "mtime": 1778137496.6234605,
+    "hash": "d6c6019b101780bce25998bc017405aa"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/class/workspace_tab.zig": {
+    "mtime": 1778179838.9045622,
+    "hash": "6dd88636bbba0d06c2d6df2b67b3d7e5"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/ext.zig": {
+    "mtime": 1773524381.5416899,
+    "hash": "69be8bae2d039971a76d34566c032b36"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/ext/actions.zig": {
+    "mtime": 1773524381.5406897,
+    "hash": "ab7fc37df00ffe6515989458d2c7eded"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/ext/slice.zig": {
+    "mtime": 1773568291.2009807,
+    "hash": "97c4b2bf6b3c8287c72c6e21940384a4"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/flatpak.zig": {
+    "mtime": 1773568291.2009807,
+    "hash": "6f9c60b7df666f547037bfbf4d19c22a"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/gsettings.zig": {
+    "mtime": 1773524381.5426898,
+    "hash": "d9c154324dd83cc0cfa1fb03ecbfb850"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/gtk_version.zig": {
+    "mtime": 1773568291.2009807,
+    "hash": "641762b3d2634121a15e8ce973c9734a"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/ipc/DBus.zig": {
+    "mtime": 1773568291.2009807,
+    "hash": "cb7f80da6d853707303213d80475b458"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/ipc/new_split.zig": {
+    "mtime": 1774477278.8743525,
+    "hash": "e7f5ee0f55bce15e6ede522e7c65b7fb"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/ipc/new_window.zig": {
+    "mtime": 1773568291.2009807,
+    "hash": "a85eac6571731675c48c20c01956f1db"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/key.zig": {
+    "mtime": 1773524381.5396898,
+    "hash": "bee0840d82a1a5421ca8d960aa2dc096"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/post_fork.zig": {
+    "mtime": 1773524381.5276906,
+    "hash": "66fa199e5905df2178a2152107ca6c3b"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/pre_exec.zig": {
+    "mtime": 1773524381.5416899,
+    "hash": "2c8200c2a154da549ef83b0fa6c468a6"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/weak_ref.zig": {
+    "mtime": 1773524381.5416899,
+    "hash": "aaf5bc97521e250c419cffcc720178d2"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/winproto.zig": {
+    "mtime": 1773568291.2029808,
+    "hash": "19a897172bb0d66635095bf70241539d"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/winproto/noop.zig": {
+    "mtime": 1773524381.5416899,
+    "hash": "1495eb3479dd542fa58f5f820fdf807e"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/winproto/wayland.zig": {
+    "mtime": 1773568291.2029808,
+    "hash": "0239d5fac34abfb8167a6b8142f1c231"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/apprt/gtk/winproto/x11.zig": {
+    "mtime": 1773568291.2029808,
+    "hash": "19b118da314ed3926c7e9119c5be89e5"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/cli_main.zig": {
+    "mtime": 1774477278.9083521,
+    "hash": "b34ac273afb01e1bc59c81b1ba4c9990"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/config.zig": {
+    "mtime": 1777747328.831973,
+    "hash": "be2ca349d5aa1561f5c925f661492fcd"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/git_probe.zig": {
+    "mtime": 1777995483.0226734,
+    "hash": "df28ce3ec92ce6bf2fdfa83f58e8270f"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/git_status.zig": {
+    "mtime": 1778069323.6456604,
+    "hash": "25896739e0216ba0454800a4815a9d36"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/memory/orchestrator_context.zig": {
+    "mtime": 1775802618.739172,
+    "hash": "1f98b1da75e1059cbb3ed9e6c673579d"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/memory/paths.zig": {
+    "mtime": 1777810538.5521903,
+    "hash": "cfe40e350cb601e0819a6fc2b84a5a86"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/memory/process_inspector.zig": {
+    "mtime": 1774728305.1717474,
+    "hash": "4c2f1e35797f9843320aa722bee55fd9"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/memory/resume_manifest.zig": {
+    "mtime": 1778305458.1157057,
+    "hash": "9bfafeadb2d06b362d6b1dcfcda65f7c"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/memory/state.zig": {
+    "mtime": 1775809315.3085575,
+    "hash": "0065e2d422f90c6c8bdb9c7527e03a42"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/memory/state_manager.zig": {
+    "mtime": 1778305440.021042,
+    "hash": "e1f90490b6f3699f4e343087d9314bce"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/notification.zig": {
+    "mtime": 1774477278.913352,
+    "hash": "e941663f6ae740eeb0da765cc3d9c21d"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/port_scanner.zig": {
+    "mtime": 1773568291.2309806,
+    "hash": "cebd1af9337834fd2c180b0d7b8c4368"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/session.zig": {
+    "mtime": 1777747328.9149714,
+    "hash": "59531baa9a08f0330914e012d1142bfb"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/storage_status.zig": {
+    "mtime": 1777912260.2712016,
+    "hash": "9573ecf0e16f43d210438d2ad3a1c180"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/terminal_history.zig": {
+    "mtime": 1777747328.9159715,
+    "hash": "4695cc9aebc7436c583d34c744ffaa13"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/terminal_history_db.zig": {
+    "mtime": 1778306749.103294,
+    "hash": "80b5e88aca91fb76b70fcfbc8be00444"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/transcript_view.zig": {
+    "mtime": 1777923982.8884923,
+    "hash": "fd8f3b00a6f88f0a25fdb35d7f96448f"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/update_checker.zig": {
+    "mtime": 1777814019.5999024,
+    "hash": "503cf956510a39b79af23e515c429eeb"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/update_manifest.zig": {
+    "mtime": 1777810083.9510434,
+    "hash": "994d7615c7f2842600e32be0454b4587"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/update_state.zig": {
+    "mtime": 1777810593.8793094,
+    "hash": "65099bdcc6c4209df74bae3ff755752c"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/workspace.zig": {
+    "mtime": 1774477278.914352,
+    "hash": "ff870de70573c2e5f3f636d738294e76"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/workspace_manager.zig": {
+    "mtime": 1773568291.2309806,
+    "hash": "7b1ade5f4892570e4d45d003a238c0f3"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/core/workspace_open.zig": {
+    "mtime": 1778137432.8745284,
+    "hash": "a2a075cc61eb4a096f0cb87fdabee983"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/ipc/agents.zig": {
+    "mtime": 1775809502.5300105,
+    "hash": "e929e31a8cd33843d10de77bac6e8b46"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/ipc/handle.zig": {
+    "mtime": 1773568291.2309806,
+    "hash": "cfb471bcca1576c20555a045600fbcc4"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/ipc/protocol.zig": {
+    "mtime": 1773568291.2319806,
+    "hash": "bc0399c1810480131effe64127f132f0"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/ipc/socket_server.zig": {
+    "mtime": 1773568291.2319806,
+    "hash": "54d63b699b3160953d68520a9875de7a"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/main.zig": {
+    "mtime": 1777912301.708319,
+    "hash": "9718fedbff0cb414911e0d7c76731b0f"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/util/json.zig": {
+    "mtime": 1773568291.2319806,
+    "hash": "48a4eeb7c6776e6cfeb483a987bf422e"
+  },
+  "/mnt/hdd/terminal-apps/termplex/src/termplex/util/uuid.zig": {
+    "mtime": 1773568291.2319806,
+    "hash": "54109aec0fa0628b69cc47aeac6d652a"
+  }
+}

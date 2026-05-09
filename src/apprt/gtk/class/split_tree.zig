@@ -628,10 +628,15 @@ pub const SplitTree = extern struct {
             return;
         };
 
+        const app = Application.default();
+        const workspace_dir = app.workspaceDir(app.activeWorkspaceIndex());
+
         self.newSplit(
             direction,
             self.getActiveSurface(),
-            .none,
+            .{
+                .working_directory = workspace_dir,
+            },
         ) catch |err| {
             log.warn("new split failed error={}", .{err});
         };

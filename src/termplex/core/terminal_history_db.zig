@@ -103,6 +103,12 @@ pub const SurfaceUpsert = struct {
     transcript_path: []const u8,
     status: []const u8 = "active",
     last_exit_code: ?i32 = null,
+    process_pid: ?i64 = null,
+    process_alive: bool = false,
+    detection_method: ?[]const u8 = null,
+    ports_json: ?[]const u8 = null,
+    command_started_at: ?[]const u8 = null,
+    last_command: ?[]const u8 = null,
     timestamp: []const u8,
 };
 
@@ -116,6 +122,12 @@ pub const SurfaceRecord = struct {
     transcript_path: []const u8,
     status: []const u8,
     last_exit_code: ?i32,
+    process_pid: ?i64,
+    process_alive: bool,
+    detection_method: ?[]const u8,
+    ports_json: ?[]const u8,
+    command_started_at: ?[]const u8,
+    last_command: ?[]const u8,
     updated_at: []const u8,
 
     pub fn deinit(self: *SurfaceRecord, allocator: std.mem.Allocator) void {
@@ -127,7 +139,54 @@ pub const SurfaceRecord = struct {
         if (self.env_fingerprint) |v| allocator.free(v);
         allocator.free(self.transcript_path);
         allocator.free(self.status);
+        if (self.detection_method) |v| allocator.free(v);
+        if (self.ports_json) |v| allocator.free(v);
+        if (self.command_started_at) |v| allocator.free(v);
+        if (self.last_command) |v| allocator.free(v);
         allocator.free(self.updated_at);
+    }
+};
+
+pub const ResumeCandidateQuery = struct {
+    limit: u32 = 20,
+    workspace_id: ?[]const u8 = null,
+};
+
+pub const ResumeCandidate = struct {
+    history_id: []const u8,
+    workspace_id: []const u8,
+    workspace_name: []const u8,
+    workspace_dir: []const u8,
+    working_directory: []const u8,
+    status: []const u8,
+    process_pid: ?i64,
+    detection_method: ?[]const u8,
+    ports_json: ?[]const u8,
+    command_started_at: ?[]const u8,
+    last_command: ?[]const u8,
+    updated_at: []const u8,
+
+    pub fn deinit(self: *ResumeCandidate, allocator: std.mem.Allocator) void {
+        allocator.free(self.history_id);
+        allocator.free(self.workspace_id);
+        allocator.free(self.workspace_name);
+        allocator.free(self.workspace_dir);
+        allocator.free(self.working_directory);
+        allocator.free(self.status);
+        if (self.detection_method) |v| allocator.free(v);
+        if (self.ports_json) |v| allocator.free(v);
+        if (self.command_started_at) |v| allocator.free(v);
+        if (self.last_command) |v| allocator.free(v);
+        allocator.free(self.updated_at);
+    }
+};
+
+pub const ResumeCandidateList = struct {
+    items: []ResumeCandidate,
+
+    pub fn deinit(self: ResumeCandidateList, allocator: std.mem.Allocator) void {
+        for (self.items) |*item| item.deinit(allocator);
+        allocator.free(self.items);
     }
 };
 
@@ -333,6 +392,12 @@ pub const Database = struct {
             \\  transcript_path TEXT NOT NULL,
             \\  status TEXT NOT NULL DEFAULT 'active',
             \\  last_exit_code INTEGER,
+            \\  process_pid INTEGER,
+            \\  process_alive INTEGER NOT NULL DEFAULT 0,
+            \\  detection_method TEXT,
+            \\  ports_json TEXT,
+            \\  command_started_at TEXT,
+            \\  last_command TEXT,
             \\  created_at TEXT NOT NULL,
             \\  updated_at TEXT NOT NULL,
             \\  deleted_at TEXT,
@@ -382,6 +447,40 @@ pub const Database = struct {
             \\INSERT OR IGNORE INTO schema_migrations(version, applied_at)
             \\VALUES (2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
         );
+        try self.ensureColumn("terminal_surfaces", "process_pid", "process_pid INTEGER");
+        try self.ensureColumn("terminal_surfaces", "process_alive", "process_alive INTEGER NOT NULL DEFAULT 0");
+        try self.ensureColumn("terminal_surfaces", "detection_method", "detection_method TEXT");
+        try self.ensureColumn("terminal_surfaces", "ports_json", "ports_json TEXT");
+        try self.ensureColumn("terminal_surfaces", "command_started_at", "command_started_at TEXT");
+        try self.ensureColumn("terminal_surfaces", "last_command", "last_command TEXT");
+        try self.exec(
+            \\CREATE INDEX IF NOT EXISTS idx_terminal_surfaces_process_alive
+            \\  ON terminal_surfaces(process_alive, updated_at DESC);
+            \\INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+            \\VALUES (3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+        );
+    }
+
+    fn ensureColumn(self: *Database, table_name: []const u8, column_name: []const u8, column_def: []const u8) !void {
+        if (try self.columnExists(table_name, column_name)) return;
+        const sql_buf = try std.fmt.allocPrint(self.allocator, "ALTER TABLE {s} ADD COLUMN {s}\x00", .{ table_name, column_def });
+        defer self.allocator.free(sql_buf);
+        const sql: [:0]const u8 = sql_buf[0 .. sql_buf.len - 1 :0];
+        try self.exec(sql);
+    }
+
+    fn columnExists(self: *Database, table_name: []const u8, column_name: []const u8) !bool {
+        const sql_buf = try std.fmt.allocPrint(self.allocator, "PRAGMA table_info({s})\x00", .{table_name});
+        defer self.allocator.free(sql_buf);
+        const sql: [:0]const u8 = sql_buf[0 .. sql_buf.len - 1 :0];
+        var stmt = try self.prepare(sql);
+        defer stmt.deinit();
+        while (try stmt.stepRow()) {
+            const name = try stmt.readTextAlloc(1);
+            defer self.allocator.free(name);
+            if (std.mem.eql(u8, name, column_name)) return true;
+        }
+        return false;
     }
 
     pub fn upsertProject(self: *Database, input: ProjectUpsert) !void {
@@ -447,8 +546,10 @@ pub const Database = struct {
         var stmt = try self.prepare(
             \\INSERT INTO terminal_surfaces (
             \\  history_id, workspace_id, workspace_name, workspace_dir, working_directory,
-            \\  env_fingerprint, transcript_path, status, last_exit_code, created_at, updated_at, deleted_at
-            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            \\  env_fingerprint, transcript_path, status, last_exit_code, process_pid,
+            \\  process_alive, detection_method, ports_json, command_started_at,
+            \\  last_command, created_at, updated_at, deleted_at
+            \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             \\ON CONFLICT(history_id) DO UPDATE SET
             \\  workspace_id = excluded.workspace_id,
             \\  workspace_name = excluded.workspace_name,
@@ -458,6 +559,12 @@ pub const Database = struct {
             \\  transcript_path = excluded.transcript_path,
             \\  status = excluded.status,
             \\  last_exit_code = excluded.last_exit_code,
+            \\  process_pid = excluded.process_pid,
+            \\  process_alive = excluded.process_alive,
+            \\  detection_method = excluded.detection_method,
+            \\  ports_json = excluded.ports_json,
+            \\  command_started_at = excluded.command_started_at,
+            \\  last_command = excluded.last_command,
             \\  updated_at = excluded.updated_at,
             \\  deleted_at = NULL
         );
@@ -471,8 +578,14 @@ pub const Database = struct {
         try stmt.bindText(7, input.transcript_path);
         try stmt.bindText(8, input.status);
         try stmt.bindOptionalInt(9, input.last_exit_code);
-        try stmt.bindText(10, input.timestamp);
-        try stmt.bindText(11, input.timestamp);
+        try stmt.bindOptionalInt64(10, input.process_pid);
+        try stmt.bindInt64(11, @as(i64, if (input.process_alive) 1 else 0));
+        try stmt.bindOptionalText(12, input.detection_method);
+        try stmt.bindOptionalText(13, input.ports_json);
+        try stmt.bindOptionalText(14, input.command_started_at);
+        try stmt.bindOptionalText(15, input.last_command);
+        try stmt.bindText(16, input.timestamp);
+        try stmt.bindText(17, input.timestamp);
         try stmt.stepDone();
     }
 
@@ -480,7 +593,9 @@ pub const Database = struct {
         var stmt = try self.prepare(
             \\SELECT history_id, workspace_id, workspace_name, workspace_dir,
             \\       working_directory, env_fingerprint, transcript_path,
-            \\       status, last_exit_code, updated_at
+            \\       status, last_exit_code, process_pid, process_alive,
+            \\       detection_method, ports_json, command_started_at,
+            \\       last_command, updated_at
             \\FROM terminal_surfaces
             \\WHERE history_id = ? AND deleted_at IS NULL
         );
@@ -488,6 +603,58 @@ pub const Database = struct {
         try stmt.bindText(1, history_id);
         if (!try stmt.stepRow()) return error.NotFound;
         return try stmt.readSurfaceRecord();
+    }
+
+    pub fn updateSurfaceRuntimeState(
+        self: *Database,
+        history_id: []const u8,
+        process_alive: bool,
+        process_pid: ?i64,
+        last_exit_code: ?i32,
+        timestamp: []const u8,
+    ) !void {
+        var stmt = try self.prepare(
+            \\UPDATE terminal_surfaces
+            \\SET process_alive = ?1,
+            \\    process_pid = coalesce(?2, process_pid),
+            \\    last_exit_code = coalesce(?3, last_exit_code),
+            \\    updated_at = ?4
+            \\WHERE history_id = ?5 AND deleted_at IS NULL
+        );
+        defer stmt.deinit();
+        try stmt.bindInt64(1, @as(i64, if (process_alive) 1 else 0));
+        try stmt.bindOptionalInt64(2, process_pid);
+        try stmt.bindOptionalInt(3, last_exit_code);
+        try stmt.bindText(4, timestamp);
+        try stmt.bindText(5, history_id);
+        try stmt.stepDone();
+    }
+
+    pub fn listResumeCandidates(self: *Database, query: ResumeCandidateQuery) !ResumeCandidateList {
+        var stmt = try self.prepare(
+            \\SELECT history_id, workspace_id, workspace_name, workspace_dir,
+            \\       working_directory, status, process_pid, detection_method,
+            \\       ports_json, command_started_at, last_command, updated_at
+            \\FROM terminal_surfaces
+            \\WHERE deleted_at IS NULL
+            \\  AND process_alive != 0
+            \\  AND (?1 IS NULL OR workspace_id = ?1)
+            \\ORDER BY coalesce(command_started_at, updated_at) DESC, updated_at DESC
+            \\LIMIT ?2
+        );
+        defer stmt.deinit();
+        try stmt.bindOptionalText(1, nonEmptyOptional(query.workspace_id));
+        try stmt.bindInt64(2, @max(query.limit, 1));
+
+        var items: std.ArrayListUnmanaged(ResumeCandidate) = .empty;
+        errdefer {
+            for (items.items) |*item| item.deinit(self.allocator);
+            items.deinit(self.allocator);
+        }
+        while (try stmt.stepRow()) {
+            try items.append(self.allocator, try stmt.readResumeCandidate());
+        }
+        return .{ .items = try items.toOwnedSlice(self.allocator) };
     }
 
     pub fn startCommand(self: *Database, input: CommandStart) !i64 {
@@ -886,6 +1053,11 @@ const Statement = struct {
         if (self.sqlite.bind_null(self.stmt, index) != SQLITE_OK) return error.SqlBindFailed;
     }
 
+    fn bindOptionalInt64(self: *Statement, index: c_int, value: ?i64) !void {
+        if (value) |int_value| return self.bindInt64(index, int_value);
+        if (self.sqlite.bind_null(self.stmt, index) != SQLITE_OK) return error.SqlBindFailed;
+    }
+
     fn stepDone(self: *Statement) !void {
         const rc = self.sqlite.step(self.stmt);
         if (rc != SQLITE_DONE) return error.SqlStepFailed;
@@ -916,6 +1088,11 @@ const Statement = struct {
         return @intCast(self.sqlite.column_int64(self.stmt, index));
     }
 
+    fn readOptionalInt64(self: *Statement, index: c_int) ?i64 {
+        if (self.sqlite.column_type(self.stmt, index) == SQLITE_NULL) return null;
+        return self.sqlite.column_int64(self.stmt, index);
+    }
+
     fn readProjectRecord(self: *Statement) !ProjectRecord {
         return .{
             .workspace_id = try self.readTextAlloc(0),
@@ -939,7 +1116,30 @@ const Statement = struct {
             .transcript_path = try self.readTextAlloc(6),
             .status = try self.readTextAlloc(7),
             .last_exit_code = self.readOptionalInt(8),
-            .updated_at = try self.readTextAlloc(9),
+            .process_pid = self.readOptionalInt64(9),
+            .process_alive = self.sqlite.column_int64(self.stmt, 10) != 0,
+            .detection_method = try self.readOptionalTextAlloc(11),
+            .ports_json = try self.readOptionalTextAlloc(12),
+            .command_started_at = try self.readOptionalTextAlloc(13),
+            .last_command = try self.readOptionalTextAlloc(14),
+            .updated_at = try self.readTextAlloc(15),
+        };
+    }
+
+    fn readResumeCandidate(self: *Statement) !ResumeCandidate {
+        return .{
+            .history_id = try self.readTextAlloc(0),
+            .workspace_id = try self.readTextAlloc(1),
+            .workspace_name = try self.readTextAlloc(2),
+            .workspace_dir = try self.readTextAlloc(3),
+            .working_directory = try self.readTextAlloc(4),
+            .status = try self.readTextAlloc(5),
+            .process_pid = self.readOptionalInt64(6),
+            .detection_method = try self.readOptionalTextAlloc(7),
+            .ports_json = try self.readOptionalTextAlloc(8),
+            .command_started_at = try self.readOptionalTextAlloc(9),
+            .last_command = try self.readOptionalTextAlloc(10),
+            .updated_at = try self.readTextAlloc(11),
         };
     }
 
@@ -1042,6 +1242,113 @@ test "terminal history db migrates and records command lifecycle" {
     defer project.deinit(allocator);
     try std.testing.expectEqualStrings("backend", project.workspace_name);
     try std.testing.expectEqual(true, project.git_dirty);
+}
+
+test "surface runtime snapshot fields round trip" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    try db.upsertProject(.{
+        .workspace_id = "workspace-runtime",
+        .workspace_name = "Runtime",
+        .workspace_dir = "/repo/runtime",
+        .timestamp = "2026-05-09T08:00:00Z",
+    });
+    try db.upsertSurface(.{
+        .history_id = "surface-runtime",
+        .workspace_id = "workspace-runtime",
+        .workspace_name = "Runtime",
+        .workspace_dir = "/repo/runtime",
+        .working_directory = "/repo/runtime",
+        .transcript_path = "/tmp/runtime.ansi",
+        .process_pid = 12345,
+        .process_alive = true,
+        .detection_method = "shell_hook",
+        .ports_json = "[3000,5173]",
+        .command_started_at = "2026-05-09T08:00:01Z",
+        .last_command = "npm run dev",
+        .timestamp = "2026-05-09T08:00:01Z",
+    });
+
+    var surface = try db.getSurface("surface-runtime");
+    defer surface.deinit(allocator);
+    try std.testing.expectEqual(@as(?i64, 12345), surface.process_pid);
+    try std.testing.expectEqual(true, surface.process_alive);
+    try std.testing.expectEqualStrings("shell_hook", surface.detection_method.?);
+    try std.testing.expectEqualStrings("[3000,5173]", surface.ports_json.?);
+    try std.testing.expectEqualStrings("2026-05-09T08:00:01Z", surface.command_started_at.?);
+    try std.testing.expectEqualStrings("npm run dev", surface.last_command.?);
+}
+
+test "resume candidates include only alive surfaces" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const base = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(base);
+    const db_path = try std.fs.path.join(allocator, &.{ base, "history.sqlite3" });
+    defer allocator.free(db_path);
+
+    var db = try Database.open(allocator, db_path);
+    defer db.deinit();
+    try db.migrate();
+
+    try db.upsertProject(.{
+        .workspace_id = "workspace-live",
+        .workspace_name = "Live",
+        .workspace_dir = "/repo/live",
+        .timestamp = "2026-05-09T08:00:00Z",
+    });
+    try db.upsertSurface(.{
+        .history_id = "surface-live",
+        .workspace_id = "workspace-live",
+        .workspace_name = "Live",
+        .workspace_dir = "/repo/live",
+        .working_directory = "/repo/live",
+        .transcript_path = "/tmp/live.ansi",
+        .process_alive = true,
+        .detection_method = "shell_hook",
+        .command_started_at = "2026-05-09T08:00:01Z",
+        .last_command = "python app.py",
+        .timestamp = "2026-05-09T08:00:01Z",
+    });
+    try db.upsertProject(.{
+        .workspace_id = "workspace-dead",
+        .workspace_name = "Dead",
+        .workspace_dir = "/repo/dead",
+        .timestamp = "2026-05-09T08:00:00Z",
+    });
+    try db.upsertSurface(.{
+        .history_id = "surface-dead",
+        .workspace_id = "workspace-dead",
+        .workspace_name = "Dead",
+        .workspace_dir = "/repo/dead",
+        .working_directory = "/repo/dead",
+        .transcript_path = "/tmp/dead.ansi",
+        .process_alive = false,
+        .detection_method = "shell_hook",
+        .command_started_at = "2026-05-09T08:00:01Z",
+        .last_command = "python old.py",
+        .timestamp = "2026-05-09T08:00:01Z",
+    });
+
+    const candidates = try db.listResumeCandidates(.{ .limit = 10 });
+    defer candidates.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), candidates.items.len);
+    try std.testing.expectEqualStrings("surface-live", candidates.items[0].history_id);
+    try std.testing.expectEqualStrings("Live", candidates.items[0].workspace_name);
+    try std.testing.expectEqualStrings("python app.py", candidates.items[0].last_command.?);
 }
 
 test "terminal history db creates nested parent directories" {

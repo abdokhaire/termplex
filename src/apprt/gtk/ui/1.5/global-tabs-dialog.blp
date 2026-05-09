@@ -1,0 +1,61 @@
+using Gtk 4.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 1040;
+  content-height: 720;
+  closed => $closed();
+
+  styles [
+    "termplex-workbench-dialog",
+    "termplex-global-tabs-dialog",
+  ]
+
+  Adw.ToolbarView {
+    top-bar-style: flat;
+
+    [top]
+    Adw.HeaderBar {
+      [title]
+      Gtk.SearchEntry search {
+        hexpand: true;
+        placeholder-text: _("Search all workspace tabs...");
+        search-changed => $search_changed();
+        stop-search => $search_stopped();
+        activate => $search_activated();
+      }
+
+      [end]
+      Gtk.Button {
+        icon-name: "view-refresh-symbolic";
+        tooltip-text: _("Refresh");
+        clicked => $refresh_clicked();
+      }
+    }
+
+    Gtk.ScrolledWindow {
+      min-content-height: 520;
+      hscrollbar-policy: never;
+
+      Gtk.Box content_box {
+        orientation: vertical;
+        spacing: 18;
+        margin-top: 18;
+        margin-bottom: 18;
+        margin-start: 18;
+        margin-end: 18;
+
+        Gtk.Label empty_label {
+          label: _("No matching tabs");
+          halign: center;
+          valign: center;
+          vexpand: true;
+
+          styles [
+            "dim-label",
+          ]
+        }
+      }
+    }
+  }
+}

@@ -90,6 +90,11 @@ def main():
     # --- status ---
     subparsers.add_parser("status", help="Get server status")
 
+    # --- orchestrator ---
+    orchestrator = subparsers.add_parser("orchestrator", help="Orchestrator context operations")
+    orchestrator_sub = orchestrator.add_subparsers(dest="action")
+    orchestrator_sub.add_parser("status", help="Show unified live and durable orchestrator state")
+
     # --- workspace ---
     ws = subparsers.add_parser("workspace", help="Workspace operations")
     ws_sub = ws.add_subparsers(dest="action")
@@ -319,6 +324,11 @@ def build_request(args):
 
     if resource == "status":
         return "system.tree", {}
+
+    if resource == "orchestrator":
+        if action == "status":
+            return "orchestrator.status", {}
+        return None, None
 
     if resource == "update":
         if action == "status":

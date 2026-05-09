@@ -10,6 +10,16 @@ pub const Options = struct {
     retention_days: u32 = 90,
 };
 
+pub const initial_replay_max_lines: usize = 0;
+pub const initial_replay_max_bytes: usize = 0;
+
+pub fn initialReplayOptions(options: Options) Options {
+    var result = options;
+    result.max_lines_per_surface = @min(result.max_lines_per_surface, initial_replay_max_lines);
+    result.max_bytes_per_surface = @min(result.max_bytes_per_surface, initial_replay_max_bytes);
+    return result;
+}
+
 pub const RestoreMode = enum {
     off,
     layout_only,
@@ -498,6 +508,23 @@ test "terminal history append read and clear transcript" {
     const cleared = try readTranscript(allocator, path, .{ .max_lines_per_surface = 5000 });
     defer allocator.free(cleared);
     try std.testing.expectEqualStrings("", cleared);
+}
+
+test "terminal history initial replay is disabled during startup restore" {
+    const bounded = initialReplayOptions(.{
+        .max_lines_per_surface = 5000,
+        .max_bytes_per_surface = 10 * 1024 * 1024,
+    });
+
+    try std.testing.expectEqual(@as(usize, initial_replay_max_lines), bounded.max_lines_per_surface);
+    try std.testing.expectEqual(@as(usize, initial_replay_max_bytes), bounded.max_bytes_per_surface);
+
+    const already_small = initialReplayOptions(.{
+        .max_lines_per_surface = 80,
+        .max_bytes_per_surface = 4096,
+    });
+    try std.testing.expectEqual(@as(usize, initial_replay_max_lines), already_small.max_lines_per_surface);
+    try std.testing.expectEqual(@as(usize, initial_replay_max_bytes), already_small.max_bytes_per_surface);
 }
 
 test "terminal transcript writer coalesces pending chunks" {

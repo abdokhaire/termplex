@@ -64,6 +64,14 @@ template $TermplexWindow: Adw.ApplicationWindow {
             focus-on-click: false;
           }
 
+          Gtk.Button {
+            icon-name: "view-list-symbolic";
+            tooltip-text: _("View All Workspace Tabs");
+            action-name: "win.termplex-global-tabs";
+            can-focus: false;
+            focus-on-click: false;
+          }
+
           Gtk.MenuButton {
             notify::active => $notify_menu_active();
             icon-name: "open-menu-symbolic";
@@ -117,6 +125,18 @@ template $TermplexWindow: Adw.ApplicationWindow {
             icon-name: "view-grid-symbolic";
             tooltip-text: _("View Open Tabs");
             active: bind tab_overview.open bidirectional;
+            can-focus: false;
+            focus-on-click: false;
+          }
+
+          Gtk.Button {
+            styles [
+              "flat",
+            ]
+
+            icon-name: "view-list-symbolic";
+            tooltip-text: _("View All Workspace Tabs");
+            action-name: "win.termplex-global-tabs";
             can-focus: false;
             focus-on-click: false;
           }
@@ -305,6 +325,11 @@ menu main_menu {
     item {
       label: _("Command Palette");
       action: "win.toggle-command-palette";
+    }
+
+    item {
+      label: _("All Workspace Tabs...");
+      action: "win.termplex-global-tabs";
     }
 
     item {

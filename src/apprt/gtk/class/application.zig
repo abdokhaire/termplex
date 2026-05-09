@@ -358,6 +358,9 @@ pub const Application = extern struct {
         /// GLib source id for the one-shot initial git probe timer (500ms after startup).
         initial_probe_timer: ?c_uint = null,
 
+        /// Round-robin cursor for scheduled inactive workspace git probes.
+        scheduled_workspace_probe_idx: u32 = 0,
+
         /// Formatted listening-ports string for display (null-terminated, owned).
         listening_ports_str: ?[:0]const u8 = null,
 
@@ -1869,6 +1872,32 @@ pub const Application = extern struct {
         priv.notifications.markAllReadForWorkspace(workspace_id);
     }
 
+    pub fn workspacePwdChanged(current: ?[]const u8, next: []const u8) bool {
+        const current_pwd = current orelse return true;
+        return !std.mem.eql(u8, current_pwd, next);
+    }
+
+    pub fn nextScheduledWorkspaceProbeIndex(
+        workspace_count: usize,
+        cursor: u32,
+        orchestration_idx: ?u32,
+    ) ?u32 {
+        if (workspace_count == 0) return null;
+
+        var attempts: usize = 0;
+        var idx: u32 = @intCast(@as(usize, cursor) % workspace_count);
+        while (attempts < workspace_count) : (attempts += 1) {
+            if (orchestration_idx == null or idx != orchestration_idx.?) return idx;
+            idx = @intCast((@as(usize, idx) + 1) % workspace_count);
+        }
+
+        return null;
+    }
+
+    pub fn startupBackgroundProbesEnabled() bool {
+        return false;
+    }
+
     /// Create a new workspace with an auto-generated name.  Returns the
     /// 0-based index of the newly created workspace, or null on OOM.
     pub fn addWorkspace(self: *Self) ?u32 {
@@ -2222,6 +2251,19 @@ pub const Application = extern struct {
             if (index == orch_idx) return;
         }
 
+        if (priv.memory_manager) |*mgr| {
+            const workspace_name = priv.workspace_names.items[index];
+            const removed = mgr.removeWorkspaceByName(workspace_name) catch |err| blk: {
+                log.warn("failed to remove workspace from memory state for {s}: {}", .{ workspace_name, err });
+                break :blk false;
+            };
+            if (removed) {
+                mgr.saveToDisk() catch |err| {
+                    log.warn("failed to save memory state after closing {s}: {}", .{ workspace_name, err });
+                };
+            }
+        }
+
         const workspace_id = self.workspaceIdString(alloc, index) catch null;
         defer if (workspace_id) |id| alloc.free(id);
         if (workspace_id) |id| {
@@ -2290,8 +2332,21 @@ pub const Application = extern struct {
         const alloc = self.allocator();
         const priv = self.private();
         if (index >= priv.workspace_names.items.len) return;
-        alloc.free(priv.workspace_names.items[index]);
-        priv.workspace_names.items[index] = alloc.dupeZ(u8, new_name) catch return;
+        const old_name = priv.workspace_names.items[index];
+        const new_name_owned = alloc.dupeZ(u8, new_name) catch return;
+        if (priv.memory_manager) |*mgr| {
+            const renamed = mgr.renameWorkspaceByName(old_name, new_name) catch |err| blk: {
+                log.warn("failed to rename workspace in memory state from {s} to {s}: {}", .{ old_name, new_name, err });
+                break :blk false;
+            };
+            if (renamed) {
+                mgr.saveToDisk() catch |err| {
+                    log.warn("failed to save memory state after renaming {s} to {s}: {}", .{ old_name, new_name, err });
+                };
+            }
+        }
+        alloc.free(old_name);
+        priv.workspace_names.items[index] = new_name_owned;
         self.upsertTerminalHistoryProject(index);
     }
 
@@ -2482,12 +2537,17 @@ pub const Application = extern struct {
         priv.socket_path_buf = path;
         priv.socket_poll_timer = glib.timeoutAdd(100, pollSocketCallback, self);
 
-        // Termplex: start the 10-second combined git+port probe timer.
-        priv.port_scan_timer = glib.timeoutAdd(10000, combinedProbeCallback, self);
-
-        // Schedule initial combined probe shortly after startup (one-shot)
-        // so branch info appears quickly without waiting for the 10s timer.
-        priv.initial_probe_timer = glib.timeoutAdd(500, initialProbeCallback, self);
+        // Git and port probing must not run synchronously on the GTK startup
+        // path. Some workspaces can make `git status` block long enough to
+        // prevent the first shell from spawning. Keep these timers disabled
+        // until probing is moved to a bounded worker with subprocess timeouts.
+        if (startupBackgroundProbesEnabled()) {
+            priv.port_scan_timer = glib.timeoutAdd(10000, combinedProbeCallback, self);
+            priv.initial_probe_timer = glib.timeoutAdd(500, initialProbeCallback, self);
+        } else {
+            priv.port_scan_timer = null;
+            priv.initial_probe_timer = null;
+        }
 
         // Termplex: start the autosave timer.
         const autosave_minutes: u64 = if (priv.termplex_cfg.session.autosave_interval == 0)
@@ -3159,6 +3219,10 @@ pub const Application = extern struct {
 
         if (std.mem.eql(u8, method, "dashboard.status")) {
             return self.ipcDashboardStatus(alloc, id, root.object);
+        }
+
+        if (std.mem.eql(u8, method, "orchestrator.status")) {
+            return self.ipcOrchestratorStatus(alloc, id);
         }
 
         if (std.mem.eql(u8, method, "dashboard.show")) {
@@ -4254,6 +4318,218 @@ pub const Application = extern struct {
         try buf.appendSlice(alloc, ",\"storage\":");
         try appendDashboardStorageJson(buf, alloc, status.storage);
         try buf.append(alloc, '}');
+    }
+
+    fn appendOrchestratorLiveJson(
+        self: *Self,
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+    ) !void {
+        const priv = self.private();
+        try buf.appendSlice(alloc, "{\"workspace_count\":");
+        try appendJsonInt(buf, alloc, priv.workspace_names.items.len);
+        try buf.appendSlice(alloc, ",\"active_workspace\":");
+        try appendJsonInt(buf, alloc, priv.active_workspace_idx);
+        try buf.appendSlice(alloc, ",\"workspaces\":[");
+        for (priv.workspace_names.items, 0..) |name, i| {
+            if (i > 0) try buf.append(alloc, ',');
+            const idx: u32 = @intCast(i);
+            const id_text = self.workspaceIdString(alloc, idx) catch null;
+            defer if (id_text) |value| alloc.free(value);
+            const tab_count: u32 = if (self.workspaceTabView(idx)) |view|
+                @intCast(@max(view.getNPages(), 0))
+            else
+                0;
+
+            try buf.appendSlice(alloc, "{\"index\":");
+            try appendJsonInt(buf, alloc, i);
+            try buf.appendSlice(alloc, ",\"ref\":");
+            try appendJsonString(buf, alloc, name);
+            try buf.appendSlice(alloc, ",\"id\":");
+            try appendOptionalJsonString(buf, alloc, id_text);
+            try buf.appendSlice(alloc, ",\"name\":");
+            try appendJsonString(buf, alloc, name);
+            try buf.appendSlice(alloc, ",\"dir\":");
+            try appendJsonString(buf, alloc, self.workspaceDir(idx) orelse "");
+            try buf.appendSlice(alloc, ",\"active\":");
+            try buf.appendSlice(alloc, if (idx == priv.active_workspace_idx) "true" else "false");
+            try buf.appendSlice(alloc, ",\"tab_count\":");
+            try appendJsonInt(buf, alloc, tab_count);
+            try buf.appendSlice(alloc, ",\"unread_count\":");
+            try appendJsonInt(buf, alloc, self.workspaceUnreadCount(idx));
+            try buf.append(alloc, '}');
+        }
+        try buf.appendSlice(alloc, "]}");
+    }
+
+    fn appendOrchestratorAgentsJson(
+        self: *Self,
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+    ) !void {
+        const priv = self.private();
+        priv.agent_registry.cleanupDead();
+        try buf.append(alloc, '[');
+        for (priv.agent_registry.agents.items, 0..) |agent, idx| {
+            if (idx > 0) try buf.append(alloc, ',');
+            try buf.appendSlice(alloc, "{\"agent_id\":");
+            try appendJsonString(buf, alloc, &agent.agent_id);
+            try buf.appendSlice(alloc, ",\"workspace\":");
+            try appendJsonString(buf, alloc, agent.workspace);
+            try buf.appendSlice(alloc, ",\"tab\":");
+            try appendJsonInt(buf, alloc, agent.tab);
+            try buf.appendSlice(alloc, ",\"type\":");
+            try appendJsonString(buf, alloc, agent.agent_type.toString());
+            try buf.appendSlice(alloc, ",\"pid\":");
+            try appendJsonInt(buf, alloc, agent.pid);
+            try buf.appendSlice(alloc, ",\"alive\":true}");
+        }
+        try buf.append(alloc, ']');
+    }
+
+    fn appendResumeCandidateJson(
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+        candidate: terminal_history_db.ResumeCandidate,
+    ) !void {
+        try buf.appendSlice(alloc, "{\"history_id\":");
+        try appendJsonString(buf, alloc, candidate.history_id);
+        try buf.appendSlice(alloc, ",\"workspace_id\":");
+        try appendJsonString(buf, alloc, candidate.workspace_id);
+        try buf.appendSlice(alloc, ",\"workspace_name\":");
+        try appendJsonString(buf, alloc, candidate.workspace_name);
+        try buf.appendSlice(alloc, ",\"workspace_dir\":");
+        try appendJsonString(buf, alloc, candidate.workspace_dir);
+        try buf.appendSlice(alloc, ",\"working_directory\":");
+        try appendJsonString(buf, alloc, candidate.working_directory);
+        try buf.appendSlice(alloc, ",\"status\":");
+        try appendJsonString(buf, alloc, candidate.status);
+        try buf.appendSlice(alloc, ",\"process_alive\":true,\"process_pid\":");
+        if (candidate.process_pid) |pid| {
+            try appendJsonInt(buf, alloc, pid);
+        } else {
+            try buf.appendSlice(alloc, "null");
+        }
+        try buf.appendSlice(alloc, ",\"detection_method\":");
+        try appendOptionalJsonString(buf, alloc, candidate.detection_method);
+        try buf.appendSlice(alloc, ",\"ports_json\":");
+        try appendOptionalJsonString(buf, alloc, candidate.ports_json);
+        try buf.appendSlice(alloc, ",\"command_started_at\":");
+        try appendOptionalJsonString(buf, alloc, candidate.command_started_at);
+        try buf.appendSlice(alloc, ",\"last_command\":");
+        try appendOptionalJsonString(buf, alloc, candidate.last_command);
+        try buf.appendSlice(alloc, ",\"updated_at\":");
+        try appendJsonString(buf, alloc, candidate.updated_at);
+        try buf.append(alloc, '}');
+    }
+
+    fn ipcOrchestratorStatus(self: *Self, alloc: std.mem.Allocator, id: i64) ?[]u8 {
+        var recent_commands: ?terminal_history_db.CommandList = null;
+        defer if (recent_commands) |list| list.deinit(std.heap.c_allocator);
+        var tasks: ?terminal_history_db.TaskList = null;
+        defer if (tasks) |list| list.deinit(std.heap.c_allocator);
+        var resume_candidates: ?terminal_history_db.ResumeCandidateList = null;
+        defer if (resume_candidates) |list| list.deinit(std.heap.c_allocator);
+
+        var history_warning: ?[]const u8 = null;
+        var resume_warning: ?[]const u8 = null;
+        var storage_warning: ?[]const u8 = null;
+
+        if (self.private().terminal_history_db) |*db| {
+            recent_commands = db.listRecentCommands(.{ .limit = 10 }) catch |err| blk: {
+                log.warn("failed to list orchestrator recent commands: {}", .{err});
+                history_warning = "failed to load recent commands";
+                break :blk null;
+            };
+
+            const active_workspace_id = self.currentWorkspaceIdString(alloc) catch null;
+            defer if (active_workspace_id) |value| alloc.free(value);
+            if (active_workspace_id) |workspace_id| {
+                tasks = db.listTasks(workspace_id, 25) catch |err| blk: {
+                    log.warn("failed to list orchestrator tasks: {}", .{err});
+                    history_warning = "failed to load workspace tasks";
+                    break :blk null;
+                };
+            }
+
+            resume_candidates = db.listResumeCandidates(.{ .limit = 20 }) catch |err| blk: {
+                log.warn("failed to list orchestrator resume candidates: {}", .{err});
+                resume_warning = "failed to load resume candidates";
+                break :blk null;
+            };
+        } else {
+            history_warning = "terminal history database unavailable";
+            resume_warning = "terminal history database unavailable";
+        }
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(alloc);
+        buf.appendSlice(alloc, "{\"live\":") catch return null;
+        self.appendOrchestratorLiveJson(&buf, alloc) catch return null;
+        buf.appendSlice(alloc, ",\"agents\":") catch return null;
+        self.appendOrchestratorAgentsJson(&buf, alloc) catch return null;
+
+        buf.appendSlice(alloc, ",\"history\":{\"history_enabled\":") catch return null;
+        buf.appendSlice(alloc, if (self.private().terminal_history_db != null) "true" else "false") catch return null;
+        buf.appendSlice(alloc, ",\"recent_commands\":[") catch return null;
+        if (recent_commands) |list| {
+            for (list.items, 0..) |item, index| {
+                if (index > 0) buf.append(alloc, ',') catch return null;
+                appendCommandRecordJson(&buf, alloc, item) catch return null;
+            }
+        }
+        buf.appendSlice(alloc, "],\"tasks\":[") catch return null;
+        if (tasks) |list| {
+            for (list.items, 0..) |item, index| {
+                if (index > 0) buf.append(alloc, ',') catch return null;
+                appendTaskRecordJson(&buf, alloc, item) catch return null;
+            }
+        }
+        buf.appendSlice(alloc, "]}") catch return null;
+
+        buf.appendSlice(alloc, ",\"resume\":{\"candidates\":[") catch return null;
+        if (resume_candidates) |list| {
+            for (list.items, 0..) |candidate, index| {
+                if (index > 0) buf.append(alloc, ',') catch return null;
+                appendResumeCandidateJson(&buf, alloc, candidate) catch return null;
+            }
+        }
+        buf.appendSlice(alloc, "]}") catch return null;
+
+        buf.appendSlice(alloc, ",\"storage\":") catch return null;
+        var storage_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer storage_buf.deinit(alloc);
+        self.appendStorageStatusJson(&storage_buf, alloc) catch |err| {
+            log.warn("failed to build orchestrator storage status: {}", .{err});
+            storage_warning = "failed to load storage status";
+            buf.appendSlice(alloc, "null") catch return null;
+        };
+        if (storage_warning == null) {
+            buf.appendSlice(alloc, storage_buf.items) catch return null;
+        }
+
+        buf.appendSlice(alloc, ",\"warnings\":[") catch return null;
+        var warning_count: usize = 0;
+        if (history_warning) |warning| {
+            appendJsonString(&buf, alloc, warning) catch return null;
+            warning_count += 1;
+        }
+        if (resume_warning) |warning| {
+            if (warning_count > 0) buf.append(alloc, ',') catch return null;
+            appendJsonString(&buf, alloc, warning) catch return null;
+            warning_count += 1;
+        }
+        if (storage_warning) |warning| {
+            if (warning_count > 0) buf.append(alloc, ',') catch return null;
+            appendJsonString(&buf, alloc, warning) catch return null;
+        }
+        buf.appendSlice(alloc, "]}") catch return null;
+
+        return std.fmt.allocPrint(
+            alloc,
+            "{{\"ok\":true,\"result\":{s},\"id\":{d}}}",
+            .{ buf.items, id },
+        ) catch null;
     }
 
     fn appendCommandRecordJson(
@@ -8036,14 +8312,42 @@ pub const Application = extern struct {
                     };
                 }
 
-                // Build manifest with per-workspace memories
-                const manifest = memory_resume.buildManifest(
-                    alloc,
-                    mem_state,
-                    global_memory,
-                    ws_mem_names.items,
-                    ws_mem_contents.items,
-                ) catch null;
+                var resume_candidates: ?terminal_history_db.ResumeCandidateList = null;
+                defer if (resume_candidates) |candidate_list| {
+                    candidate_list.deinit(std.heap.c_allocator);
+                };
+                if (priv.terminal_history_db) |*db| {
+                    resume_candidates = db.listResumeCandidates(.{ .limit = 50 }) catch |err| blk: {
+                        log.warn("failed to load sqlite resume candidates: {}", .{err});
+                        break :blk null;
+                    };
+                }
+
+                // Build manifest with per-workspace memories. Prefer SQLite
+                // runtime candidates because JSON memory can contain closed
+                // workspaces from old sessions.
+                var manifest: ?[]u8 = null;
+                if (resume_candidates) |candidate_list| {
+                    if (candidate_list.items.len > 0) {
+                        manifest = memory_resume.buildManifestFromResumeCandidates(
+                            alloc,
+                            candidate_list.items,
+                            mem_state.last_shutdown,
+                            global_memory,
+                            ws_mem_names.items,
+                            ws_mem_contents.items,
+                        ) catch null;
+                    }
+                }
+                if (manifest == null) {
+                    manifest = memory_resume.buildManifest(
+                        alloc,
+                        mem_state,
+                        global_memory,
+                        ws_mem_names.items,
+                        ws_mem_contents.items,
+                    ) catch null;
+                }
                 defer if (manifest) |m| alloc.free(m);
 
                 if (manifest) |m| {
@@ -8750,15 +9054,17 @@ pub const Application = extern struct {
         const alloc = self.allocator();
         const priv = self.private();
 
+        if (!workspacePwdChanged(priv.current_pwd, pwd)) {
+            log.debug("pwd unchanged; skipping git and port probe scheduling: {s}", .{pwd});
+            return;
+        }
+
         // Update stored pwd.
         if (priv.current_pwd) |old| alloc.free(old);
         priv.current_pwd = alloc.dupeZ(u8, pwd) catch null;
 
         // Trigger debounced git probe.
         self.triggerGitProbe();
-
-        // Trigger burst port scans.
-        self.triggerBurstPortScan();
     }
 
     /// Schedule a git probe after a 2-second debounce.
@@ -8782,7 +9088,6 @@ pub const Application = extern struct {
     /// This fires once (SOURCE_REMOVE) after the 2 s debounce.
     fn gitProbeCallback(ud: ?*anyopaque) callconv(.c) c_int {
         const self: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
-        const alloc = self.allocator();
         const priv = self.private();
 
         // Clear the stored timer id.
@@ -8790,39 +9095,10 @@ pub const Application = extern struct {
 
         // Run the probe only if we have a pwd.
         const pwd = priv.current_pwd orelse return @intFromBool(glib.SOURCE_REMOVE);
-
-        var result = git_probe.probe(alloc, pwd);
-        defer result.deinit(alloc);
-
-        // Update stored git state.
-        if (priv.git_branch) |old| alloc.free(old);
-        priv.git_branch = if (result.branch) |b|
-            alloc.dupeZ(u8, b) catch null
-        else
-            null;
-        priv.git_dirty = result.dirty;
-
-        // Also update per-workspace arrays for the active workspace.
         const active_idx = priv.active_workspace_idx;
-        if (active_idx < priv.workspace_git_branches.items.len) {
-            if (priv.workspace_git_branches.items[active_idx]) |old_b| alloc.free(old_b);
-            priv.workspace_git_branches.items[active_idx] = if (result.branch) |b|
-                alloc.dupeZ(u8, b) catch null
-            else
-                null;
-            priv.workspace_git_dirty.items[active_idx] = result.dirty;
-            priv.workspace_git_staged_counts.items[active_idx] = result.staged_count;
-            priv.workspace_git_unstaged_counts.items[active_idx] = result.unstaged_count;
-            self.upsertTerminalHistoryProject(active_idx);
-        }
 
-        log.debug(
-            "git probe: branch={s} dirty={}",
-            .{ priv.git_branch orelse "<none>", priv.git_dirty },
-        );
-
-        // Update sidebar for the active workspace.
-        self.updateSidebarGitState();
+        const changed = self.probeWorkspaceGitAtDir(active_idx, pwd);
+        if (changed) self.updateWorkspaceSidebarRow(active_idx);
 
         return @intFromBool(glib.SOURCE_REMOVE);
     }
@@ -8889,6 +9165,124 @@ pub const Application = extern struct {
         return burstPortScanCallbackIndex(ud, 5);
     }
 
+    fn elapsedMs(start_ns: i128) i128 {
+        return @divTrunc(std.time.nanoTimestamp() - start_ns, std.time.ns_per_ms);
+    }
+
+    fn branchChanged(old_branch: ?[:0]const u8, new_branch: ?[]const u8) bool {
+        if (old_branch == null and new_branch == null) return false;
+        if (old_branch == null or new_branch == null) return true;
+        return !std.mem.eql(u8, old_branch.?, new_branch.?);
+    }
+
+    fn applyWorkspaceGitResult(self: *Self, index: u32, result: *const git_probe.GitResult) bool {
+        const alloc = self.allocator();
+        const priv = self.private();
+        if (index >= priv.workspace_git_branches.items.len or
+            index >= priv.workspace_git_dirty.items.len or
+            index >= priv.workspace_git_staged_counts.items.len or
+            index >= priv.workspace_git_unstaged_counts.items.len) return false;
+
+        const old_branch = priv.workspace_git_branches.items[index];
+        const changed = branchChanged(old_branch, result.branch) or
+            priv.workspace_git_dirty.items[index] != result.dirty or
+            priv.workspace_git_staged_counts.items[index] != result.staged_count or
+            priv.workspace_git_unstaged_counts.items[index] != result.unstaged_count;
+
+        if (!changed) return false;
+
+        if (old_branch) |branch| alloc.free(branch);
+        priv.workspace_git_branches.items[index] = if (result.branch) |branch|
+            alloc.dupeZ(u8, branch) catch null
+        else
+            null;
+        priv.workspace_git_dirty.items[index] = result.dirty;
+        priv.workspace_git_staged_counts.items[index] = result.staged_count;
+        priv.workspace_git_unstaged_counts.items[index] = result.unstaged_count;
+
+        if (index == priv.active_workspace_idx) {
+            if (priv.git_branch) |old| alloc.free(old);
+            priv.git_branch = if (result.branch) |branch|
+                alloc.dupeZ(u8, branch) catch null
+            else
+                null;
+            priv.git_dirty = result.dirty;
+        }
+
+        self.upsertTerminalHistoryProject(index);
+        return true;
+    }
+
+    fn probeWorkspaceGitAtDir(self: *Self, index: u32, dir: []const u8) bool {
+        const start = std.time.nanoTimestamp();
+        var result = git_probe.probe(self.allocator(), dir);
+        defer result.deinit(self.allocator());
+
+        const changed = self.applyWorkspaceGitResult(index, &result);
+        log.debug(
+            "git probe workspace={d} changed={} elapsed_ms={} dir={s}",
+            .{ index, changed, elapsedMs(start), dir },
+        );
+        return changed;
+    }
+
+    fn probeWorkspaceGit(self: *Self, index: u32) bool {
+        const priv = self.private();
+        if (index >= priv.workspace_dirs.items.len) return false;
+        if (priv.orchestration_workspace_idx) |orch_idx| {
+            if (index == orch_idx) return false;
+        }
+        return self.probeWorkspaceGitAtDir(index, priv.workspace_dirs.items[index]);
+    }
+
+    fn updateWorkspaceSidebarRow(self: *Self, index: u32) void {
+        const priv = self.private();
+        const name = if (index < priv.workspace_names.items.len)
+            priv.workspace_names.items[index]
+        else
+            return;
+
+        const is_orchestrator = if (priv.orchestration_workspace_idx) |orch_idx| index == orch_idx else false;
+        const is_active = index == priv.active_workspace_idx;
+        const port_text: ?[:0]const u8 = if (is_active and !is_orchestrator) priv.listening_ports_str else null;
+
+        var branch_buf: [256]u8 = undefined;
+        const branch_z: ?[:0]const u8 = blk: {
+            if (is_orchestrator or index >= priv.workspace_git_branches.items.len) break :blk null;
+            const b = priv.workspace_git_branches.items[index] orelse break :blk null;
+            const dirty = if (index < priv.workspace_git_dirty.items.len) priv.workspace_git_dirty.items[index] else false;
+            const staged_count = if (index < priv.workspace_git_staged_counts.items.len) priv.workspace_git_staged_counts.items[index] else 0;
+            const unstaged_count = if (index < priv.workspace_git_unstaged_counts.items.len) priv.workspace_git_unstaged_counts.items[index] else 0;
+            const label = std.fmt.bufPrintZ(
+                &branch_buf,
+                "{s}{s}",
+                .{ b, if (dirty and staged_count == 0 and unstaged_count == 0) "*" else "" },
+            ) catch break :blk null;
+            break :blk label;
+        };
+
+        var dir_buf: [512]u8 = undefined;
+        const dir_z = self.formatDirDisplay(index, &dir_buf);
+        const staged_count = if (!is_orchestrator and index < priv.workspace_git_staged_counts.items.len)
+            priv.workspace_git_staged_counts.items[index]
+        else
+            0;
+        const unstaged_count = if (!is_orchestrator and index < priv.workspace_git_unstaged_counts.items.len)
+            priv.workspace_git_unstaged_counts.items[index]
+        else
+            0;
+
+        updateSidebarForAllWindows(self, index, name, port_text, branch_z, dir_z, staged_count, unstaged_count);
+    }
+
+    fn hasPortScanRoots(self: *Self) bool {
+        _ = self;
+        // Port scanning needs shell/root PIDs per terminal surface. The old
+        // fallback scanned the Termplex app PID, which creates background work
+        // without accurately representing workspace processes.
+        return false;
+    }
+
     /// GLib timer callback: runs git probing for all workspaces and port
     /// scanning for the active workspace every 10 seconds.
     fn combinedProbeCallback(ud: ?*anyopaque) callconv(.c) c_int {
@@ -8897,52 +9291,24 @@ pub const Application = extern struct {
 
         if (priv.port_scan_timer == null) return @intFromBool(glib.SOURCE_REMOVE);
 
-        const alloc = self.allocator();
-
-        // 1. Probe git for all workspaces (skip orchestration).
-        for (priv.workspace_dirs.items, 0..) |dir, i| {
-            if (priv.orchestration_workspace_idx) |orch_idx| {
-                if (i == orch_idx) continue;
-            }
-
-            var result = git_probe.probe(alloc, dir);
-            defer result.deinit(alloc);
-
-            const old_branch = priv.workspace_git_branches.items[i];
-            const new_branch = result.branch;
-            const old_dirty = priv.workspace_git_dirty.items[i];
-            const new_dirty = result.dirty;
-            const old_staged = priv.workspace_git_staged_counts.items[i];
-            const old_unstaged = priv.workspace_git_unstaged_counts.items[i];
-
-            const branch_changed = blk: {
-                if (old_branch == null and new_branch == null) break :blk false;
-                if (old_branch == null or new_branch == null) break :blk true;
-                break :blk !std.mem.eql(u8, old_branch.?, new_branch.?);
-            };
-
-            if (branch_changed or
-                old_dirty != new_dirty or
-                old_staged != result.staged_count or
-                old_unstaged != result.unstaged_count)
-            {
-                if (old_branch) |b| alloc.free(b);
-                priv.workspace_git_branches.items[i] = if (new_branch) |b|
-                    alloc.dupeZ(u8, b) catch null
-                else
-                    null;
-                priv.workspace_git_dirty.items[i] = new_dirty;
-                priv.workspace_git_staged_counts.items[i] = result.staged_count;
-                priv.workspace_git_unstaged_counts.items[i] = result.unstaged_count;
-                self.upsertTerminalHistoryProject(@intCast(i));
+        const tick_start = std.time.nanoTimestamp();
+        if (nextScheduledWorkspaceProbeIndex(
+            priv.workspace_dirs.items.len,
+            priv.scheduled_workspace_probe_idx,
+            priv.orchestration_workspace_idx,
+        )) |idx| {
+            priv.scheduled_workspace_probe_idx = @intCast((@as(usize, idx) + 1) % priv.workspace_dirs.items.len);
+            if (self.probeWorkspaceGit(idx)) {
+                self.updateWorkspaceSidebarRow(idx);
             }
         }
 
-        // 2. Run port scan (active workspace only, uses app PID).
-        runPortScan(self);
+        if (self.hasPortScanRoots()) {
+            runPortScan(self);
+            self.updateSidebarPortState();
+        }
 
-        // 3. Always refresh all workspace sidebars.
-        self.refreshAllWorkspaceSidebars();
+        log.debug("scheduled background probe elapsed_ms={}", .{elapsedMs(tick_start)});
 
         return @intFromBool(glib.SOURCE_CONTINUE);
     }
@@ -8959,31 +9325,18 @@ pub const Application = extern struct {
     /// Fires once ~500ms after launch so branch info appears quickly.
     fn initialProbeCallback(ud: ?*anyopaque) callconv(.c) c_int {
         const self_ptr: *Self = @ptrCast(@alignCast(ud orelse return @intFromBool(glib.SOURCE_REMOVE)));
-        const alloc = self_ptr.allocator();
         const priv = self_ptr.private();
 
         // Mark as fired so the shutdown path doesn't try to cancel it.
         priv.initial_probe_timer = null;
 
-        for (priv.workspace_dirs.items, 0..) |dir, i| {
-            if (priv.orchestration_workspace_idx) |orch_idx| {
-                if (i == orch_idx) continue;
-            }
-            var result = git_probe.probe(alloc, dir);
-            defer result.deinit(alloc);
-
-            if (priv.workspace_git_branches.items[i]) |old_b| alloc.free(old_b);
-            priv.workspace_git_branches.items[i] = if (result.branch) |b|
-                alloc.dupeZ(u8, b) catch null
-            else
-                null;
-            priv.workspace_git_dirty.items[i] = result.dirty;
-            priv.workspace_git_staged_counts.items[i] = result.staged_count;
-            priv.workspace_git_unstaged_counts.items[i] = result.unstaged_count;
-            self_ptr.upsertTerminalHistoryProject(@intCast(i));
+        const active_idx = priv.active_workspace_idx;
+        if (self_ptr.probeWorkspaceGit(active_idx)) {
+            self_ptr.updateWorkspaceSidebarRow(active_idx);
         }
-
-        self_ptr.refreshAllWorkspaceSidebars();
+        if (priv.workspace_dirs.items.len > 0) {
+            priv.scheduled_workspace_probe_idx = @intCast((@as(usize, active_idx) + 1) % priv.workspace_dirs.items.len);
+        }
         return @intFromBool(glib.SOURCE_REMOVE);
     }
 
@@ -9119,22 +9472,24 @@ pub const Application = extern struct {
     ) void {
         const is_pinned = self.workspacePinned(active_idx);
         const Ctx = struct {
-            active_idx: u32,
+            idx: u32,
             name: ?[:0]const u8,
             port_text: ?[:0]const u8,
             branch_text: ?[:0]const u8,
             dir_text: ?[:0]const u8,
+            active: bool,
             staged_count: u32,
             unstaged_count: u32,
             is_pinned: bool,
             has_unread: bool,
         };
         var ctx = Ctx{
-            .active_idx = active_idx,
+            .idx = active_idx,
             .name = name,
             .port_text = port_text,
             .branch_text = branch_text,
             .dir_text = dir_text,
+            .active = active_idx == self.private().active_workspace_idx,
             .staged_count = staged_count,
             .unstaged_count = unstaged_count,
             .is_pinned = is_pinned,
@@ -9146,7 +9501,7 @@ pub const Application = extern struct {
                 const c: *Ctx = @ptrCast(@alignCast(userdata orelse return));
                 const ptr: *gtk.Window = @ptrCast(@alignCast(data orelse return));
                 const win = gobject.ext.cast(Window, ptr) orelse return;
-                win.getSidebar().updateWorkspace(c.active_idx, c.name, c.port_text, c.branch_text, c.dir_text, true, c.has_unread, c.staged_count, c.unstaged_count, c.is_pinned);
+                win.getSidebar().updateWorkspace(c.idx, c.name, c.port_text, c.branch_text, c.dir_text, c.active, c.has_unread, c.staged_count, c.unstaged_count, c.is_pinned);
             }
         }.cb, @ptrCast(&ctx));
     }
@@ -12154,4 +12509,22 @@ test "task default name is derived from command text" {
     const empty = try Application.defaultTaskNameFromCommand(alloc, "", 7);
     defer alloc.free(empty);
     try std.testing.expectEqualStrings("command 7", empty);
+}
+
+test "workspace pwd updates are skipped when unchanged" {
+    try std.testing.expect(Application.workspacePwdChanged(null, "/repo"));
+    try std.testing.expect(Application.workspacePwdChanged("/repo", "/repo/subdir"));
+    try std.testing.expect(!Application.workspacePwdChanged("/repo", "/repo"));
+}
+
+test "scheduled workspace git probe advances one eligible workspace and skips orchestrator" {
+    try std.testing.expectEqual(@as(?u32, 0), Application.nextScheduledWorkspaceProbeIndex(3, 0, null));
+    try std.testing.expectEqual(@as(?u32, 2), Application.nextScheduledWorkspaceProbeIndex(3, 1, 1));
+    try std.testing.expectEqual(@as(?u32, 0), Application.nextScheduledWorkspaceProbeIndex(3, 2, 2));
+    try std.testing.expectEqual(@as(?u32, null), Application.nextScheduledWorkspaceProbeIndex(1, 0, 0));
+    try std.testing.expectEqual(@as(?u32, null), Application.nextScheduledWorkspaceProbeIndex(0, 0, null));
+}
+
+test "startup background probes stay disabled until moved off gtk startup path" {
+    try std.testing.expect(!Application.startupBackgroundProbesEnabled());
 }

@@ -223,6 +223,7 @@ pub const Target = enum(c_int) {
     tab,
     task,
     rename_task,
+    workspace_dir,
 
     pub fn title(self: Target) [*:0]const u8 {
         return switch (self) {
@@ -230,6 +231,7 @@ pub const Target = enum(c_int) {
             .tab => i18n._("Change Tab Title"),
             .task => i18n._("Save Command As Task"),
             .rename_task => i18n._("Rename Task"),
+            .workspace_dir => i18n._("New Workspace"),
         };
     }
 
@@ -238,6 +240,7 @@ pub const Target = enum(c_int) {
             .surface, .tab => i18n._("Leave blank to restore the default title."),
             .task => i18n._("Choose the task name to save for this workspace."),
             .rename_task => i18n._("Choose a new name for this workspace task."),
+            .workspace_dir => i18n._("Enter the workspace folder path. New terminals in this workspace will use it as their base directory."),
         };
     }
 

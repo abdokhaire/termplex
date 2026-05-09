@@ -745,10 +745,14 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
     self.processOutputLocked(buf, true);
 }
 
-fn processOutputNoHistory(self: *Termio, buf: []const u8) void {
+pub fn replayOutputNoHistory(self: *Termio, buf: []const u8) void {
     self.renderer_state.mutex.lock();
     defer self.renderer_state.mutex.unlock();
     self.processOutputLocked(buf, false);
+}
+
+fn processOutputNoHistory(self: *Termio, buf: []const u8) void {
+    self.replayOutputNoHistory(buf);
 }
 
 /// Process output from readdata but the lock is already held.
